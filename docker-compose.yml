@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  web:
+    container_name: SiBS-PMS-Server
+    build: .
+    ports:
+      - 5013:5013
+    env_file:
+      - sibs-pms-server.env
+    volumes:
+      - /mnt/smb_files/web-dev:/mnt/smb_files/web-dev
+    environment:
+      - TZ=Asia/Manila
+    restart: unless-stopped
