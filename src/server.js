@@ -12,6 +12,7 @@ import { testDbConnections } from "./config/db.js";
 import employeeRoutes from "./routes/employees.js";
 import sampleRoutes from "./routes/sample.js";
 import loginRoutes from "./routes/login.js";
+import superAdminRoutes from "./routes/super-admin.js";
 
 const app = express();
 const server = http.createServer(app);
@@ -116,6 +117,7 @@ app.use("/uploads", express.static(FILE_UPLOAD_ROOT));
 app.use("/api/employees", employeeRoutes);
 app.use("/api/sample", sampleRoutes);
 app.use("/api/login", loginRoutes);
+app.use("/api/super-admin", superAdminRoutes);
 
 app.get("/", (req, res) => {
   return res.send("PMS API Running");

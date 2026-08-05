@@ -1,15 +1,37 @@
 import crypto from "crypto";
 
-import bcrypt from "bcryptjs";
 import express from "express";
 
 import { kronosDb, kronosTables } from "../config/db.js";
 
 const router = express.Router();
 
-const TEMP_AGENT_TEST_PASSWORD = "123";
-const BCRYPT_HASH_PATTERN = /^\$2[aby]\$\d{2}\$/;
-const MD5_HASH_PATTERN = /^[a-f0-9]{32}$/i;
+function encryptPass(password) {
+  const method = process.env.ENCRYPT_METHOD;
+  const secretKey = process.env.ENCRYPT_SECRET_KEY;
+  const secretIv = process.env.ENCRYPT_SECRET_IV;
+
+  if (!method || !secretKey || !secretIv) {
+    throw new Error("Missing encryption environment variables");
+  }
+
+  const key = Buffer.from(
+    crypto.createHash("sha256").update(secretKey).digest("hex"),
+    "utf8",
+  ).slice(0, 32);
+
+  const iv = Buffer.from(
+    crypto.createHash("sha256").update(secretIv).digest("hex").substring(0, 16),
+    "utf8",
+  );
+
+  const cipher = crypto.createCipheriv(method, key, iv);
+
+  let encrypted = cipher.update(password, "utf8", "base64");
+  encrypted += cipher.final("base64");
+
+  return Buffer.from(encrypted, "utf8").toString("base64");
+}
 
 function constantTimeEqual(value, expectedValue) {
   const valueBuffer = Buffer.from(String(value));
@@ -22,32 +44,94 @@ function constantTimeEqual(value, expectedValue) {
   return crypto.timingSafeEqual(valueBuffer, expectedValueBuffer);
 }
 
-async function isPasswordMatch(password, storedPassword) {
+function isPasswordMatch(password, storedPassword) {
   const normalizedStoredPassword = String(storedPassword || "").trim();
-
-  if (constantTimeEqual(password, TEMP_AGENT_TEST_PASSWORD)) {
-    return true;
-  }
 
   if (!normalizedStoredPassword) {
     return false;
   }
 
-  if (BCRYPT_HASH_PATTERN.test(normalizedStoredPassword)) {
-    return bcrypt.compare(password, normalizedStoredPassword);
-  }
-
-  if (MD5_HASH_PATTERN.test(normalizedStoredPassword)) {
-    const passwordMd5 = crypto
-      .createHash("md5")
-      .update(password)
-      .digest("hex");
-
-    return constantTimeEqual(passwordMd5, normalizedStoredPassword.toLowerCase());
-  }
-
-  return constantTimeEqual(password, normalizedStoredPassword);
+  return constantTimeEqual(encryptPass(password), normalizedStoredPassword);
 }
+
+router.get("/employees/search", async (req, res) => {
+  try {
+    const search = String(req.query?.q || "").trim();
+
+    if (search.length < 2) {
+      return res.status(200).json({
+        success: true,
+        employees: [],
+      });
+    }
+
+    const searchValue = `%${search}%`;
+
+    const [employees] = await kronosDb.execute(
+      `
+        SELECT
+          user.gy_user_id AS userId,
+          user.gy_user_code AS employeeId,
+          user.gy_username AS username,
+          user.gy_full_name AS userFullName,
+          user.gy_user_type AS userType,
+          employee.gy_emp_id AS gyEmployeeId,
+          employee.gy_emp_code AS employeeCode,
+          employee.gy_emp_fullname AS employeeFullName,
+          employee.gy_emp_fname AS firstName,
+          employee.gy_emp_mname AS middleName,
+          employee.gy_emp_lname AS lastName,
+          employee.gy_emp_email AS email,
+          employee.gy_emp_account AS account,
+          accounts.gy_acc_name AS accountName,
+          department.name_department AS department
+        FROM ${kronosTables.user} user
+        INNER JOIN ${kronosTables.employee} employee
+          ON TRIM(user.gy_user_code) = TRIM(employee.gy_emp_code)
+        LEFT JOIN ${kronosTables.accounts} accounts
+          ON CAST(employee.gy_acc_id AS CHAR) = CAST(accounts.gy_acc_id AS CHAR)
+        LEFT JOIN ${kronosTables.department} department
+          ON CAST(accounts.gy_dept_id AS CHAR) = CAST(department.id_department AS CHAR)
+        WHERE user.gy_user_status = 0
+          AND (
+            TRIM(user.gy_user_code) LIKE ?
+            OR employee.gy_emp_fullname LIKE ?
+            OR employee.gy_emp_fname LIKE ?
+            OR employee.gy_emp_lname LIKE ?
+            OR user.gy_full_name LIKE ?
+            OR user.gy_username LIKE ?
+          )
+        ORDER BY employee.gy_emp_fullname ASC, user.gy_user_code ASC
+        LIMIT 25
+      `,
+      [searchValue, searchValue, searchValue, searchValue, searchValue, searchValue],
+    );
+
+    return res.status(200).json({
+      success: true,
+      employees: employees.map((employee) => ({
+        employeeId: employee.employeeId || employee.employeeCode || "",
+        name:
+          employee.employeeFullName ||
+          employee.userFullName ||
+          [employee.firstName, employee.middleName, employee.lastName]
+            .filter(Boolean)
+            .join(" "),
+        email: employee.email || employee.username || "",
+        role: employee.userType ? `User Type ${employee.userType}` : "Employee",
+        department: employee.department || employee.accountName || employee.account || "",
+        account: employee.accountName || employee.account || "",
+      })),
+    });
+  } catch (error) {
+    console.error("GET /api/login/employees/search error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to search employees",
+    });
+  }
+});
 
 router.post("/user", async (req, res) => {
   try {
@@ -76,7 +160,8 @@ router.post("/user", async (req, res) => {
         FROM ${kronosTables.user} user
         INNER JOIN ${kronosTables.employee} employee
           ON user.gy_user_code = employee.gy_emp_code
-        WHERE user.gy_user_code = ?
+        WHERE TRIM(user.gy_user_code) = TRIM(?)
+          AND user.gy_user_status = 0
         LIMIT 1
       `,
       [username],
@@ -84,7 +169,7 @@ router.post("/user", async (req, res) => {
 
     const user = users[0];
     const passwordMatches = user
-      ? await isPasswordMatch(password, user.password)
+      ? isPasswordMatch(password, user.password)
       : false;
 
     if (!user || !passwordMatches) {
