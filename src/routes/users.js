@@ -3,9 +3,9 @@ import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import {
   kronosDb,
-  hrisDb,
+  pmsDb,
   kronosTables,
-  hrisTables,
+  pmsTables,
 } from "../config/db.js";
 import authMiddleware from "../middleware/authMiddleware.js";
 
@@ -89,15 +89,38 @@ function buildClusterName(accountName = "", ghlName = "", fallbackCluster = "") 
 function getResolvedRole(adminAccess) {
   const access = Number(adminAccess || 0);
 
-  if (access === 1) return "ta";
-  if (access === 2) return "hr";
-  if (access === 3) return "hr_admin";
-  if (access === 4) return "finance";
-  if (access === 5) return "manager";
-  if (access === 6) return "executive";
-  if (access === 7) return "super_admin";
+  if (access === 1) return "admin";
+  if (access === 2) return "bod";
+  if (access === 3) return "om";
+  if (access === 4) return "wfm";
+  if (access === 5) return "tl";
 
-  return null;
+  return "employee";
+}
+
+function getDashboardPath(adminAccess) {
+  switch (Number(adminAccess || 0)) {
+    case 1:
+      return "/dashboard/superadmin";
+
+    case 2:
+      return "/dashboard/bod";
+
+    case 3:
+      return "/dashboard/om";
+
+    case 4:
+      return "/dashboard/wfm";
+
+    case 5:
+      return "/dashboard/tl";
+
+    case 6:
+      return "/dashboard/client";
+
+    default:
+      return "/dashboard/agent";
+  }
 }
 
 function getHighestAdminAccess(assignedAccounts = []) {
@@ -202,7 +225,7 @@ async function getAssignedAccountsByEmployee({ gyEmpId, sibsId }) {
     params.push(sibsId);
   }
 
-  const [rows] = await hrisDb.query(
+  const [rows] = await pmsDb.query(
     `
     SELECT
       aa.id,
@@ -220,7 +243,7 @@ async function getAssignedAccountsByEmployee({ gyEmpId, sibsId }) {
       a.gy_dept_id AS gyDeptId,
 
       COALESCE(d.name_department, kd.name_department) AS department
-    FROM ${hrisTables.assignedAccounts} aa
+    FROM ${pmsTables.assignedAccounts} aa
     LEFT JOIN ${kronosTables.accounts} a
       ON CAST(a.gy_acc_id AS CHAR) = CAST(aa.account_id AS CHAR)
     LEFT JOIN ${kronosTables.department} d
@@ -299,7 +322,7 @@ function getPrimaryAssignedAccount(assignedAccounts = [], fallbackUser = {}) {
   };
 }
 
-function signEmployeeToken(user) {
+function signEmployeeToken(user, adminAccess = null, resolvedRole = "employee") {
   if (!process.env.JWT_SECRET) {
     throw new Error("JWT_SECRET is missing in .env");
   }
@@ -309,11 +332,12 @@ function signEmployeeToken(user) {
       id: user.gy_user_id,
       username: user.gy_user_code,
       gy_emp_id: user.gy_emp_id || null,
-      role: "employee",
+      role: resolvedRole || "employee",
       deptId: user.gy_dept_id || null,
       accountId: user.accountId || null,
       account: user.account || null,
       tokenType: "employee",
+      adminAccess,
     },
     process.env.JWT_SECRET,
     {
@@ -403,6 +427,8 @@ function buildUserResponse({
     role,
     tokenType,
     adminAccess,
+    dashboard: getDashboardPath(adminAccess),
+    redirectTo: getDashboardPath(adminAccess),
   };
 }
 
@@ -493,9 +519,9 @@ router.post("/login", async (req, res) => {
 
     const adminAccess = getHighestAdminAccess(assignedAccounts);
 
-    const resolvedRole = getResolvedRole(adminAccess) || "employee";
+    const resolvedRole = getResolvedRole(adminAccess);
 
-    const isAdmin = resolvedRole !== "employee";
+    const isAdmin = Number(adminAccess || 0) === 1;
 
     const token = isAdmin
       ? signAdminToken(
@@ -504,7 +530,7 @@ router.post("/login", async (req, res) => {
           adminAccess,
           assignedAccounts
         )
-      : signEmployeeToken(user);
+      : signEmployeeToken(user, adminAccess, resolvedRole);
 
     const cookieName = isAdmin ? "admin_token" : "token";
 
@@ -623,7 +649,7 @@ router.post("/admin-login", authMiddleware, async (req, res) => {
     const adminAccess = getHighestAdminAccess(assignedAccounts);
     const resolvedRole = getResolvedRole(adminAccess);
 
-    if (!adminAccess || !resolvedRole) {
+    if (Number(adminAccess || 0) !== 1 || resolvedRole !== "admin") {
       return res.status(403).json({
         success: false,
         message: "No assigned admin access found",
@@ -812,30 +838,6 @@ router.get("/me", authMiddleware, async (req, res) => {
 
     const adminAccess = getHighestAdminAccess(assignedAccounts);
 
-    let benefits = {};
-
-    if (hrisTables.statutoryBenefits) {
-      try {
-        const [benefitRows] = await hrisDb.query(
-          `
-          SELECT
-            sss,
-            phic,
-            hdmf,
-            tin
-          FROM ${hrisTables.statutoryBenefits}
-          WHERE TRIM(sibs_id) = TRIM(?)
-          LIMIT 1
-          `,
-          [empCode]
-        );
-
-        benefits = benefitRows[0] || {};
-      } catch (benefitError) {
-        console.error("GET /api/users/me benefits error:", benefitError.message);
-      }
-    }
-
     const tokenMetadata = getRequestTokenMetadata(req);
 
     return res.json({
@@ -850,7 +852,6 @@ router.get("/me", authMiddleware, async (req, res) => {
         tokenType: req.user.tokenType || "employee",
         adminAccess,
         assignedAccounts,
-        benefits,
       }),
     });
   } catch (error) {
