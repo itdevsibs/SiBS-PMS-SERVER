@@ -8,7 +8,66 @@ const EMPLOYEE_ALLOWED_PATHS = [
   "/schedule",
 ];
 
-const ADMIN_ROLES = ["hr", "ta", "hr_admin", "super_admin"];
+const ROLE_DASHBOARD_MAP = {
+  1: "/dashboard/admin",
+  2: "/dashboard/bod",
+  3: "/dashboard/om",
+  4: "/dashboard/wfm",
+  5: "/dashboard/tl",
+  6: "/dashboard/client",
+};
+
+function normalizeRole(value = "") {
+  return String(value || "").toLowerCase().trim();
+}
+
+function getAccessValue(decoded = {}) {
+  const payloadValue = Number(decoded?.adminAccess ?? decoded?.admin_access ?? 0);
+
+  if (Number.isFinite(payloadValue) && payloadValue > 0) {
+    return payloadValue;
+  }
+
+  const role = normalizeRole(decoded?.role);
+
+  if (role === "admin") return 1;
+  if (role === "bod") return 2;
+  if (role === "om") return 3;
+  if (role === "wfm") return 4;
+  if (role === "tl") return 5;
+  if (role === "client") return 6;
+
+  return 0;
+}
+
+function getDashboardPathFromToken(decoded = {}) {
+  const accessValue = getAccessValue(decoded);
+  return ROLE_DASHBOARD_MAP[accessValue] || "/dashboard/employee";
+}
+
+function getAllowedPathsForAccess(accessValue) {
+  if (accessValue === 1) return ["/dashboard/admin"];
+  if (accessValue === 2) return ["/dashboard/bod"];
+  if (accessValue === 3) return ["/dashboard/om"];
+  if (accessValue === 4) return ["/dashboard/wfm"];
+  if (accessValue === 5) return ["/dashboard/tl"];
+  if (accessValue === 6) return ["/dashboard/client"];
+
+  return EMPLOYEE_ALLOWED_PATHS;
+}
+
+function isPathAllowed(pathname, accessValue) {
+  const allowedPaths = getAllowedPathsForAccess(accessValue);
+
+  return allowedPaths.some(
+    (path) => pathname === path || pathname.startsWith(`${path}/`)
+  );
+}
+
+function isRecognizedRole(decoded = {}) {
+  const accessValue = getAccessValue(decoded);
+  return [1, 2, 3, 4, 5, 6].includes(accessValue);
+}
 
 export function middleware(req) {
   const { pathname } = req.nextUrl;
@@ -22,8 +81,10 @@ export function middleware(req) {
   if (pathname === "/login") {
     if (adminToken) {
       try {
-        jwt.verify(adminToken, process.env.JWT_ADMIN_SECRET);
-        return NextResponse.redirect(new URL("/dashboard/admin", req.url));
+        const decoded = jwt.verify(adminToken, process.env.JWT_ADMIN_SECRET);
+        return NextResponse.redirect(
+          new URL(getDashboardPathFromToken(decoded), req.url)
+        );
       } catch {
         const res = NextResponse.next();
         res.cookies.delete("admin_token");
@@ -33,8 +94,10 @@ export function middleware(req) {
 
     if (employeeToken) {
       try {
-        jwt.verify(employeeToken, process.env.JWT_SECRET);
-        return NextResponse.redirect(new URL("/dashboard/employee", req.url));
+        const decoded = jwt.verify(employeeToken, process.env.JWT_SECRET);
+        return NextResponse.redirect(
+          new URL(getDashboardPathFromToken(decoded), req.url)
+        );
       } catch {
         const res = NextResponse.next();
         res.cookies.delete("token");
@@ -45,34 +108,37 @@ export function middleware(req) {
     return NextResponse.next();
   }
 
-  /* ================================
-     ✅ ADMIN SESSION
-  ================================ */
   if (adminToken) {
     try {
       const decoded = jwt.verify(adminToken, process.env.JWT_ADMIN_SECRET);
+      const accessValue = getAccessValue(decoded);
 
-      if (pathname.startsWith("/dashboard/employee")) {
-        return NextResponse.redirect(new URL("/dashboard/admin", req.url));
+      if (!isPathAllowed(pathname, accessValue)) {
+        return NextResponse.redirect(
+          new URL(getDashboardPathFromToken(decoded), req.url)
+        );
       }
 
       return NextResponse.next();
-    } catch (error) {
+    } catch {
       const res = NextResponse.redirect(new URL("/login", req.url));
       res.cookies.delete("admin_token");
       return res;
     }
   }
 
-  /* ================================
-     ✅ EMPLOYEE SESSION
-  ================================ */
   if (employeeToken) {
     try {
       const decoded = jwt.verify(employeeToken, process.env.JWT_SECRET);
-      const isEmployee = decoded?.role === "employee";
+      const accessValue = getAccessValue(decoded);
 
-      if (isEmployee) {
+      if (isRecognizedRole(decoded)) {
+        if (!isPathAllowed(pathname, accessValue)) {
+          return NextResponse.redirect(
+            new URL(getDashboardPathFromToken(decoded), req.url)
+          );
+        }
+      } else {
         const isAllowed = EMPLOYEE_ALLOWED_PATHS.some(
           (path) => pathname === path || pathname.startsWith(`${path}/`)
         );
@@ -85,7 +151,7 @@ export function middleware(req) {
       }
 
       return NextResponse.next();
-    } catch (error) {
+    } catch {
       const res = NextResponse.redirect(new URL("/login", req.url));
       res.cookies.delete("token");
       return res;

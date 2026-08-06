@@ -2,40 +2,90 @@ import jwt from "jsonwebtoken";
 
 const authMiddleware = (req, res, next) => {
   let token = null;
-  let tokenType = null;
+  let sourceTokenType = null;
 
   if (req.cookies?.admin_token) {
     token = req.cookies.admin_token;
-    tokenType = "admin";
+    sourceTokenType = "admin";
   } else if (req.cookies?.token) {
     token = req.cookies.token;
-    tokenType = "employee";
-  }
+    sourceTokenType = "employee";
+  } else if (
+    req.headers.authorization?.startsWith("Bearer ")
+  ) {
+    token = req.headers.authorization
+      .slice(7)
+      .trim();
 
-  if (!token && req.headers.authorization?.startsWith("Bearer ")) {
-    token = req.headers.authorization.split(" ")[1];
-    tokenType = "bearer";
+    sourceTokenType = "bearer";
   }
 
   if (!token) {
     return res.status(401).json({
       success: false,
       message: "Unauthorized - No token provided",
+      code: "NO_TOKEN",
     });
   }
 
   try {
     let decoded;
 
-    if (tokenType === "admin") {
-      decoded = jwt.verify(token, process.env.JWT_ADMIN_SECRET);
+    if (sourceTokenType === "admin") {
+      if (!process.env.JWT_ADMIN_SECRET) {
+        throw new Error(
+          "JWT_ADMIN_SECRET is not configured",
+        );
+      }
+
+      decoded = jwt.verify(
+        token,
+        process.env.JWT_ADMIN_SECRET,
+      );
+    } else if (sourceTokenType === "employee") {
+      if (!process.env.JWT_SECRET) {
+        throw new Error(
+          "JWT_SECRET is not configured",
+        );
+      }
+
+      decoded = jwt.verify(
+        token,
+        process.env.JWT_SECRET,
+      );
     } else {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
+      /*
+        Bearer token may be either an employee token
+        or an admin token.
+      */
+      try {
+        decoded = jwt.verify(
+          token,
+          process.env.JWT_SECRET,
+        );
+      } catch (employeeTokenError) {
+        decoded = jwt.verify(
+          token,
+          process.env.JWT_ADMIN_SECRET,
+        );
+      }
     }
 
     req.user = {
       ...decoded,
-      tokenType,
+
+      /*
+        Preserve tokenType inside the JWT payload.
+        Do not replace "admin" or "employee" with
+        the generic value "bearer".
+      */
+      tokenType:
+        decoded?.tokenType ||
+        (sourceTokenType === "admin"
+          ? "admin"
+          : "employee"),
+
+      tokenSource: sourceTokenType,
     };
 
     return next();
@@ -44,6 +94,7 @@ const authMiddleware = (req, res, next) => {
       return res.status(401).json({
         success: false,
         message: "Token expired",
+        code: "TOKEN_EXPIRED",
       });
     }
 
@@ -51,6 +102,7 @@ const authMiddleware = (req, res, next) => {
       return res.status(401).json({
         success: false,
         message: "Invalid token",
+        code: "INVALID_TOKEN",
       });
     }
 
@@ -59,6 +111,7 @@ const authMiddleware = (req, res, next) => {
     return res.status(500).json({
       success: false,
       message: "Server error",
+      code: "AUTH_SERVER_ERROR",
     });
   }
 };

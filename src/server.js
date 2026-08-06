@@ -10,6 +10,7 @@ import fs from "fs";
 
 import { testDbConnections } from "./config/db.js";
 import sampleRoutes from "./routes/sample.js";
+import userRoutes from "./routes/users.js";
 
 const app = express();
 const server = http.createServer(app);
@@ -112,6 +113,7 @@ ensureLocalDirectory(FILE_UPLOAD_ROOT, "Local upload directory");
 app.use("/uploads", express.static(FILE_UPLOAD_ROOT));
 
 app.use("/api/sample", sampleRoutes);
+app.use("/api/users", userRoutes);
 
 app.get("/", (req, res) => {
   return res.send("PMS API Running");
