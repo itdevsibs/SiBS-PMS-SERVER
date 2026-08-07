@@ -3,9 +3,9 @@ import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import {
   kronosDb,
-  hrisDb,
   kronosTables,
-  hrisTables,
+  pmsDb,
+  pmsTables,
 } from "../config/db.js";
 import authMiddleware from "../middleware/authMiddleware.js";
 
@@ -56,7 +56,7 @@ function safeString(value) {
 }
 
 function buildClusterName(accountName = "", ghlName = "", fallbackCluster = "") {
-  const text = `${accountName} ${ghlName}`.toLowerCase();
+  const text = `${accountName} ${ghlName}`.toLowerCase(); 
 
   if (
     text.includes("cd -") ||
@@ -202,7 +202,7 @@ async function getAssignedAccountsByEmployee({ gyEmpId, sibsId }) {
     params.push(sibsId);
   }
 
-  const [rows] = await hrisDb.query(
+  const [rows] = await pmsDb.query(
     `
     SELECT
       aa.id,
@@ -220,7 +220,7 @@ async function getAssignedAccountsByEmployee({ gyEmpId, sibsId }) {
       a.gy_dept_id AS gyDeptId,
 
       COALESCE(d.name_department, kd.name_department) AS department
-    FROM ${hrisTables.assignedAccounts} aa
+    FROM ${pmsTables.assignedAccounts} aa
     LEFT JOIN ${kronosTables.accounts} a
       ON CAST(a.gy_acc_id AS CHAR) = CAST(aa.account_id AS CHAR)
     LEFT JOIN ${kronosTables.department} d
@@ -801,16 +801,16 @@ router.get("/me", authMiddleware, async (req, res) => {
 
     let benefits = {};
 
-    if (hrisTables.statutoryBenefits) {
+    if (pmsTables.statutoryBenefits) {
       try {
-        const [benefitRows] = await hrisDb.query(
+        const [benefitRows] = await pmsDb.query(
           `
           SELECT
             sss,
             phic,
             hdmf,
             tin
-          FROM ${hrisTables.statutoryBenefits}
+          FROM ${pmsTables.statutoryBenefits}
           WHERE TRIM(sibs_id) = TRIM(?)
           LIMIT 1
           `,

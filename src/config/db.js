@@ -81,6 +81,7 @@ export const kronosTables = {
 
 export const pmsTables = {
   sample: dbTable(PMS_DB_NAME, "sample"),
+  assignedAccounts: dbTable(PMS_DB_NAME, "assigned_accounts"),
 };
 
 export const kronosDb = createDbPool({
