@@ -151,7 +151,7 @@ app.use((err, req, res, _next) => {
   });
 });
 
-const PORT = Number(process.env.PORT) || 5002;
+const PORT = Number(process.env.PORT) || 5003;
 
 const startServer = async () => {
   try {
