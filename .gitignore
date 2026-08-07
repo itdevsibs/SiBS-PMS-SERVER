@@ -31,3 +31,5 @@ sibs-pms-server.env
 
 # folders
 /uploads
+
+*.log
