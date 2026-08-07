@@ -369,11 +369,21 @@ function buildUserResponse({
     assignedAccounts,
     user
   );
+  const fullName = [
+    user.gy_emp_fname,
+    user.gy_emp_mname,
+    user.gy_emp_lname,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
 
   return {
     gy_emp_id: user.gy_emp_id || "",
     sibs_id: user.gy_user_code || user.gy_emp_code || "",
 
+    name: fullName || user.gy_full_name || user.gy_username || "",
+    fullName: fullName || user.gy_full_name || user.gy_username || "",
     firstName: user.gy_emp_fname || "",
     middleName: user.gy_emp_mname || "",
     lastName: user.gy_emp_lname || "",

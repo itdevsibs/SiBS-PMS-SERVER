@@ -66,45 +66,105 @@ router.get("/employees/search", async (req, res) => {
     }
 
     const searchValue = `%${search}%`;
+    const exactSearch = search;
 
     const [employees] = await kronosDb.execute(
       `
-        SELECT
-          user.gy_user_id AS userId,
-          user.gy_user_code AS employeeId,
-          user.gy_username AS username,
-          user.gy_full_name AS userFullName,
-          user.gy_user_type AS userType,
-          employee.gy_emp_id AS gyEmployeeId,
-          employee.gy_emp_code AS employeeCode,
-          employee.gy_emp_fullname AS employeeFullName,
-          employee.gy_emp_fname AS firstName,
-          employee.gy_emp_mname AS middleName,
-          employee.gy_emp_lname AS lastName,
-          employee.gy_emp_email AS email,
-          employee.gy_emp_account AS account,
-          accounts.gy_acc_name AS accountName,
-          department.name_department AS department
-        FROM ${kronosTables.user} user
-        INNER JOIN ${kronosTables.employee} employee
-          ON TRIM(user.gy_user_code) = TRIM(employee.gy_emp_code)
-        LEFT JOIN ${kronosTables.accounts} accounts
-          ON CAST(employee.gy_acc_id AS CHAR) = CAST(accounts.gy_acc_id AS CHAR)
-        LEFT JOIN ${kronosTables.department} department
-          ON CAST(accounts.gy_dept_id AS CHAR) = CAST(department.id_department AS CHAR)
-        WHERE user.gy_user_status = 0
-          AND (
-            TRIM(user.gy_user_code) LIKE ?
-            OR employee.gy_emp_fullname LIKE ?
-            OR employee.gy_emp_fname LIKE ?
-            OR employee.gy_emp_lname LIKE ?
-            OR user.gy_full_name LIKE ?
-            OR user.gy_username LIKE ?
-          )
-        ORDER BY employee.gy_emp_fullname ASC, user.gy_user_code ASC
+        SELECT *
+        FROM (
+          SELECT
+            user.gy_user_id AS userId,
+            user.gy_user_code AS employeeId,
+            user.gy_username AS username,
+            user.gy_full_name AS userFullName,
+            user.gy_user_type AS userType,
+            employee.gy_emp_id AS gyEmployeeId,
+            employee.gy_emp_code AS employeeCode,
+            employee.gy_emp_fullname AS employeeFullName,
+            employee.gy_emp_fname AS firstName,
+            employee.gy_emp_mname AS middleName,
+            employee.gy_emp_lname AS lastName,
+            employee.gy_emp_email AS email,
+            employee.gy_emp_account AS account,
+            accounts.gy_acc_name AS accountName,
+            department.name_department AS department
+          FROM ${kronosTables.user} user
+          LEFT JOIN ${kronosTables.employee} employee
+            ON TRIM(user.gy_user_code) = TRIM(employee.gy_emp_code)
+          LEFT JOIN ${kronosTables.accounts} accounts
+            ON CAST(employee.gy_acc_id AS CHAR) = CAST(accounts.gy_acc_id AS CHAR)
+          LEFT JOIN ${kronosTables.department} department
+            ON CAST(accounts.gy_dept_id AS CHAR) = CAST(department.id_department AS CHAR)
+          WHERE user.gy_user_status = 0
+            AND (
+              CAST(user.gy_user_id AS CHAR) = ?
+              OR TRIM(user.gy_user_code) = ?
+              OR TRIM(user.gy_user_code) LIKE ?
+              OR employee.gy_emp_fullname LIKE ?
+              OR employee.gy_emp_fname LIKE ?
+              OR employee.gy_emp_lname LIKE ?
+              OR user.gy_full_name LIKE ?
+              OR user.gy_username LIKE ?
+            )
+
+          UNION
+
+          SELECT
+            user.gy_user_id AS userId,
+            COALESCE(user.gy_user_code, employee.gy_emp_code) AS employeeId,
+            user.gy_username AS username,
+            user.gy_full_name AS userFullName,
+            user.gy_user_type AS userType,
+            employee.gy_emp_id AS gyEmployeeId,
+            employee.gy_emp_code AS employeeCode,
+            employee.gy_emp_fullname AS employeeFullName,
+            employee.gy_emp_fname AS firstName,
+            employee.gy_emp_mname AS middleName,
+            employee.gy_emp_lname AS lastName,
+            employee.gy_emp_email AS email,
+            employee.gy_emp_account AS account,
+            accounts.gy_acc_name AS accountName,
+            department.name_department AS department
+          FROM ${kronosTables.employee} employee
+          LEFT JOIN ${kronosTables.user} user
+            ON TRIM(user.gy_user_code) = TRIM(employee.gy_emp_code)
+          LEFT JOIN ${kronosTables.accounts} accounts
+            ON CAST(employee.gy_acc_id AS CHAR) = CAST(accounts.gy_acc_id AS CHAR)
+          LEFT JOIN ${kronosTables.department} department
+            ON CAST(accounts.gy_dept_id AS CHAR) = CAST(department.id_department AS CHAR)
+          WHERE (user.gy_user_status = 0 OR user.gy_user_status IS NULL)
+            AND (
+              CAST(employee.gy_emp_id AS CHAR) = ?
+              OR TRIM(employee.gy_emp_code) = ?
+              OR TRIM(employee.gy_emp_code) LIKE ?
+              OR employee.gy_emp_fullname LIKE ?
+              OR employee.gy_emp_fname LIKE ?
+              OR employee.gy_emp_lname LIKE ?
+              OR user.gy_full_name LIKE ?
+              OR user.gy_username LIKE ?
+            )
+        ) employee_results
+        ORDER BY employeeFullName ASC, employeeId ASC
         LIMIT 25
       `,
-      [searchValue, searchValue, searchValue, searchValue, searchValue, searchValue],
+      [
+        exactSearch,
+        exactSearch,
+        searchValue,
+        searchValue,
+        searchValue,
+        searchValue,
+        searchValue,
+        searchValue,
+        exactSearch,
+        exactSearch,
+        searchValue,
+        searchValue,
+        searchValue,
+        searchValue,
+        searchValue,
+        searchValue,
+      ],
     );
 
     return res.status(200).json({
