@@ -89,13 +89,12 @@ function buildClusterName(accountName = "", ghlName = "", fallbackCluster = "") 
 function getResolvedRole(adminAccess) {
   const access = Number(adminAccess || 0);
 
-  if (access === 1) return "ta";
-  if (access === 2) return "hr";
-  if (access === 3) return "hr_admin";
-  if (access === 4) return "finance";
-  if (access === 5) return "manager";
-  if (access === 6) return "executive";
-  if (access === 7) return "super_admin";
+  if (access === 1) return "admin";
+  if (access === 2) return "bod";
+  if (access === 3) return "om";
+  if (access === 4) return "wfm";
+  if (access === 5) return "tl";
+  if (access === 6) return "client";
 
   return null;
 }
