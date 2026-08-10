@@ -1,3 +1,4 @@
+// Configures Kronos and PMS database pools and table helpers.
 import mysql from "mysql2/promise";
 import dotenv from "dotenv";
 

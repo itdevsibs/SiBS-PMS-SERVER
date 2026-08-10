@@ -1,3 +1,4 @@
+// Starts the PMS API server and mounts all backend routes.
 import "dotenv/config";
 
 import express from "express";

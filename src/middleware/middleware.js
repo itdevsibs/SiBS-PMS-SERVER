@@ -1,3 +1,4 @@
+// Shared middleware helpers for authentication and route access.
 import { NextResponse } from "next/server";
 import jwt from "jsonwebtoken";
 

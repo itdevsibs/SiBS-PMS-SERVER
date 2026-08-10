@@ -1,3 +1,4 @@
+// Simple sample route used for API smoke testing.
 import express from "express";
 
 const router = express.Router();

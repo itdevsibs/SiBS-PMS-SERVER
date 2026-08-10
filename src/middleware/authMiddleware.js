@@ -1,3 +1,4 @@
+// Verifies user/admin JWT cookies before protected routes run.
 import jwt from "jsonwebtoken";
 
 const authMiddleware = (req, res, next) => {

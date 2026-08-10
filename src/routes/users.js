@@ -1,3 +1,4 @@
+// Handles user login, session refresh, profile, and role routing.
 import express from "express";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
@@ -85,6 +86,7 @@ function buildClusterName(
   return fallbackCluster || "Corporate";
 }
 
+// Converts assigned account access levels into frontend dashboard roles.
 function getResolvedRole(adminAccess) {
   const access = Number(adminAccess || 0);
 
@@ -226,6 +228,7 @@ function getAssignedAccountIds(assignedAccounts = []) {
   ];
 }
 
+// Loads PMS account assignments used to decide dashboard access after login.
 async function getAssignedAccountsByEmployee({ gyEmpId, sibsId }) {
   if (!gyEmpId && !sibsId) return [];
 
@@ -452,6 +455,7 @@ function signAdminToken(
   );
 }
 
+// Shapes database user rows into the auth user object saved by the frontend.
 function buildUserResponse({
   user,
   role = "employee",

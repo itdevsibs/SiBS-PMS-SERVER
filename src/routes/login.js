@@ -1,3 +1,4 @@
+// Provides employee search and legacy login helper routes.
 import crypto from "crypto";
 
 import express from "express";
@@ -54,6 +55,7 @@ function isPasswordMatch(password, storedPassword) {
   return constantTimeEqual(encryptPass(password), normalizedStoredPassword);
 }
 
+// Searches Kronos users and employees for the admin Add User Access modal.
 router.get("/employees/search", async (req, res) => {
   try {
     const search = String(req.query?.q || "").trim();
