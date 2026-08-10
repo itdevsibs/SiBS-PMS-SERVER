@@ -18,9 +18,12 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+server.out.log
+server.err.log
 
 # env files
 .env*
+!.env.example
 sibs-pms-server.env
 
 # sql files
@@ -28,3 +31,5 @@ sibs-pms-server.env
 
 # folders
 /uploads
+
+*.log

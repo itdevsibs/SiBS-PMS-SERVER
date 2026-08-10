@@ -5,8 +5,30 @@ dotenv.config();
 
 const DB_TIMEZONE = "+08:00";
 
-export const KRONOS_DB_NAME = process.env.DB1_NAME;
-export const PMS_DB_NAME = process.env.DB2_NAME;
+const REQUIRED_DB_ENV_VARS = [
+  "DB1_HOST",
+  "DB1_USER",
+  "DB1_PASSWORD",
+  "DB1_NAME",
+  "DB2_HOST",
+  "DB2_USER",
+  "DB2_PASSWORD",
+  "DB2_NAME",
+];
+
+const SKIP_DB_CHECK = process.env.SKIP_DB_CHECK === "true";
+const missingDbEnvVars = REQUIRED_DB_ENV_VARS.filter(
+  (envVar) => !process.env[envVar],
+);
+
+if (missingDbEnvVars.length > 0 && !SKIP_DB_CHECK) {
+  throw new Error(
+    `Missing required database env vars: ${missingDbEnvVars.join(", ")}`,
+  );
+}
+
+export const KRONOS_DB_NAME = process.env.DB1_NAME || "kronos";
+export const PMS_DB_NAME = process.env.DB2_NAME || "pms";
 
 function createDbPool({
   host,
@@ -141,6 +163,12 @@ async function setPoolTimezone(pool, label) {
 }
 
 export async function testDbConnections() {
+  if (SKIP_DB_CHECK) {
+    console.warn("Skipping database connection checks because SKIP_DB_CHECK=true");
+
+    return true;
+  }
+
   const connectionResults = await Promise.all([
     testSingleConnection(kronosDb, "Kronos DB"),
     testSingleConnection(pmsDb, "PMS DB"),
@@ -151,5 +179,9 @@ export async function testDbConnections() {
     setPoolTimezone(pmsDb, "PMS DB"),
   ]);
 
-  return connectionResults.every(Boolean);
+  if (!connectionResults.every(Boolean)) {
+    throw new Error("One or more database connections failed.");
+  }
+
+  return true;
 }

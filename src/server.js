@@ -9,6 +9,8 @@ import path from "path";
 import fs from "fs";
 
 import { testDbConnections } from "./config/db.js";
+import employeeRoutes from "./routes/employees.js";
+import loginRoutes from "./routes/login.js";
 import sampleRoutes from "./routes/sample.js";
 import userRoutes from "./routes/users.js";
 
@@ -18,14 +20,18 @@ const server = http.createServer(app);
 const defaultAllowedOrigins = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
+  "http://localhost:5174",
+  "http://127.0.0.1:5174",
+  "http://localhost:5175",
+  "http://127.0.0.1:5175",
   "http://localhost:3000",
   "http://127.0.0.1:3000",
 ];
 
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(",")
-      .map((origin) => origin.trim())
-      .filter(Boolean)
+    .map((origin) => origin.trim())
+    .filter(Boolean)
   : defaultAllowedOrigins;
 
 app.use(
@@ -112,6 +118,8 @@ ensureLocalDirectory(FILE_UPLOAD_ROOT, "Local upload directory");
 
 app.use("/uploads", express.static(FILE_UPLOAD_ROOT));
 
+app.use("/api/employees", employeeRoutes);
+app.use("/api/login", loginRoutes);
 app.use("/api/sample", sampleRoutes);
 app.use("/api/users", userRoutes);
 
