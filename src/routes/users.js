@@ -3,8 +3,8 @@ import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import {
   kronosDb,
-  kronosTables,
   pmsDb,
+  kronosTables,
   pmsTables,
 } from "../config/db.js";
 import authMiddleware from "../middleware/authMiddleware.js";
@@ -56,7 +56,7 @@ function safeString(value) {
 }
 
 function buildClusterName(accountName = "", ghlName = "", fallbackCluster = "") {
-  const text = `${accountName} ${ghlName}`.toLowerCase(); 
+  const text = `${accountName} ${ghlName}`.toLowerCase();
 
   if (
     text.includes("cd -") ||
@@ -94,9 +94,33 @@ function getResolvedRole(adminAccess) {
   if (access === 3) return "om";
   if (access === 4) return "wfm";
   if (access === 5) return "tl";
-  if (access === 6) return "client";
 
-  return null;
+  return "employee";
+}
+
+function getDashboardPath(adminAccess) {
+  switch (Number(adminAccess || 0)) {
+    case 1:
+      return "/dashboard/superadmin";
+
+    case 2:
+      return "/dashboard/bod";
+
+    case 3:
+      return "/dashboard/om";
+
+    case 4:
+      return "/dashboard/wfm";
+
+    case 5:
+      return "/dashboard/tl";
+
+    case 6:
+      return "/dashboard/client";
+
+    default:
+      return "/dashboard/agent";
+  }
 }
 
 function getHighestAdminAccess(assignedAccounts = []) {
@@ -298,7 +322,7 @@ function getPrimaryAssignedAccount(assignedAccounts = [], fallbackUser = {}) {
   };
 }
 
-function signEmployeeToken(user) {
+function signEmployeeToken(user, adminAccess = null, resolvedRole = "employee") {
   if (!process.env.JWT_SECRET) {
     throw new Error("JWT_SECRET is missing in .env");
   }
@@ -308,11 +332,12 @@ function signEmployeeToken(user) {
       id: user.gy_user_id,
       username: user.gy_user_code,
       gy_emp_id: user.gy_emp_id || null,
-      role: "employee",
+      role: resolvedRole || "employee",
       deptId: user.gy_dept_id || null,
       accountId: user.accountId || null,
       account: user.account || null,
       tokenType: "employee",
+      adminAccess,
     },
     process.env.JWT_SECRET,
     {
@@ -368,21 +393,11 @@ function buildUserResponse({
     assignedAccounts,
     user
   );
-  const fullName = [
-    user.gy_emp_fname,
-    user.gy_emp_mname,
-    user.gy_emp_lname,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .trim();
 
   return {
     gy_emp_id: user.gy_emp_id || "",
     sibs_id: user.gy_user_code || user.gy_emp_code || "",
 
-    name: fullName || user.gy_full_name || user.gy_username || "",
-    fullName: fullName || user.gy_full_name || user.gy_username || "",
     firstName: user.gy_emp_fname || "",
     middleName: user.gy_emp_mname || "",
     lastName: user.gy_emp_lname || "",
@@ -412,6 +427,8 @@ function buildUserResponse({
     role,
     tokenType,
     adminAccess,
+    dashboard: getDashboardPath(adminAccess),
+    redirectTo: getDashboardPath(adminAccess),
   };
 }
 
@@ -425,13 +442,14 @@ router.post("/login", async (req, res) => {
     if (!sibsId || !password) {
       return res.status(400).json({
         success: false,
-        message: "Missing credentials",
+        message: "Missing credentials.",
+        code: "MISSING_CREDENTIALS",
       });
     }
 
     const [rows] = await kronosDb.query(
       `
-      SELECT 
+      SELECT
         u.*,
         e.gy_emp_id,
         e.gy_acc_id AS accountId,
@@ -450,35 +468,47 @@ router.post("/login", async (req, res) => {
         d.name_department AS department
       FROM ${kronosTables.user} u
       LEFT JOIN ${kronosTables.employee} e
-        ON TRIM(e.gy_emp_code) = TRIM(u.gy_user_code)
+        ON TRIM(e.gy_emp_code)=TRIM(u.gy_user_code)
       LEFT JOIN ${kronosTables.accounts} a
-        ON CAST(e.gy_acc_id AS CHAR) = CAST(a.gy_acc_id AS CHAR)
+        ON CAST(e.gy_acc_id AS CHAR)=CAST(a.gy_acc_id AS CHAR)
       LEFT JOIN ${kronosTables.department} d
-        ON CAST(a.gy_dept_id AS CHAR) = CAST(d.id_department AS CHAR)
-      WHERE (TRIM(u.gy_user_code) = TRIM(?) OR TRIM(u.gy_username) = TRIM(?))
-        AND u.gy_user_status = 0
+        ON CAST(a.gy_dept_id AS CHAR)=CAST(d.id_department AS CHAR)
+      WHERE
+      (
+        TRIM(u.gy_user_code)=TRIM(?)
+        OR
+        TRIM(u.gy_username)=TRIM(?)
+      )
+      AND u.gy_user_status=0
       LIMIT 1
       `,
       [sibsId, sibsId]
     );
 
-    const user = rows[0];
-
-    if (!user) {
-      return res.status(200).json({
+    if (!rows.length) {
+      return res.status(401).json({
         success: false,
-        message: "Login failed. Please check your credentials.",
-        code: "INVALID_LOGIN_CREDENTIALS",
+        message: "Invalid credentials.",
+        code: "USER_NOT_FOUND_OR_INACTIVE",
       });
     }
 
-    const encryptedPass = encryptPass(password);
+    const user = rows[0];
 
-    if (user.gy_password !== encryptedPass) {
-      return res.status(200).json({
+    const encryptedPassword = encryptPass(password);
+
+    const stored = Buffer.from(user.gy_password);
+    const computed = Buffer.from(encryptedPassword);
+
+    const passwordMatched =
+      stored.length === computed.length &&
+      crypto.timingSafeEqual(stored, computed);
+
+    if (!passwordMatched) {
+      return res.status(401).json({
         success: false,
-        message: "Login failed. Please check your credentials.",
-        code: "INVALID_LOGIN_CREDENTIALS",
+        message: "Invalid credentials.",
+        code: "PASSWORD_MISMATCH",
       });
     }
 
@@ -488,14 +518,22 @@ router.post("/login", async (req, res) => {
     });
 
     const adminAccess = getHighestAdminAccess(assignedAccounts);
-    const resolvedRole = getResolvedRole(adminAccess) || "employee";
-    const isAdmin = resolvedRole !== "employee";
+
+    const resolvedRole = getResolvedRole(adminAccess);
+
+    const isAdmin = Number(adminAccess || 0) === 1;
 
     const token = isAdmin
-      ? signAdminToken(user, resolvedRole, adminAccess, assignedAccounts)
-      : signEmployeeToken(user);
+      ? signAdminToken(
+          user,
+          resolvedRole,
+          adminAccess,
+          assignedAccounts
+        )
+      : signEmployeeToken(user, adminAccess, resolvedRole);
 
     const cookieName = isAdmin ? "admin_token" : "token";
+
     const expiresIn = isAdmin
       ? process.env.JWT_ADMIN_EXPIRES_IN || "1h"
       : process.env.JWT_EXPIRES_IN || "1h";
@@ -510,9 +548,10 @@ router.post("/login", async (req, res) => {
       maxAge: getMaxAgeFromExpiresIn(expiresIn),
     });
 
-    return res.json({
+    return res.status(200).json({
       success: true,
-      message: "Login successful",
+      message: "Login successful.",
+      code: "",
       ...tokenMetadata,
       user: buildUserResponse({
         user,
@@ -527,7 +566,8 @@ router.post("/login", async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Server error.",
+      code: "LOGIN_SERVER_ERROR",
       error: error.message,
     });
   }
@@ -609,7 +649,7 @@ router.post("/admin-login", authMiddleware, async (req, res) => {
     const adminAccess = getHighestAdminAccess(assignedAccounts);
     const resolvedRole = getResolvedRole(adminAccess);
 
-    if (!adminAccess || !resolvedRole) {
+    if (Number(adminAccess || 0) !== 1 || resolvedRole !== "admin") {
       return res.status(403).json({
         success: false,
         message: "No assigned admin access found",
@@ -798,30 +838,6 @@ router.get("/me", authMiddleware, async (req, res) => {
 
     const adminAccess = getHighestAdminAccess(assignedAccounts);
 
-    let benefits = {};
-
-    if (pmsTables.statutoryBenefits) {
-      try {
-        const [benefitRows] = await pmsDb.query(
-          `
-          SELECT
-            sss,
-            phic,
-            hdmf,
-            tin
-          FROM ${pmsTables.statutoryBenefits}
-          WHERE TRIM(sibs_id) = TRIM(?)
-          LIMIT 1
-          `,
-          [empCode]
-        );
-
-        benefits = benefitRows[0] || {};
-      } catch (benefitError) {
-        console.error("GET /api/users/me benefits error:", benefitError.message);
-      }
-    }
-
     const tokenMetadata = getRequestTokenMetadata(req);
 
     return res.json({
@@ -836,7 +852,6 @@ router.get("/me", authMiddleware, async (req, res) => {
         tokenType: req.user.tokenType || "employee",
         adminAccess,
         assignedAccounts,
-        benefits,
       }),
     });
   } catch (error) {

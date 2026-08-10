@@ -12,7 +12,6 @@ import { testDbConnections } from "./config/db.js";
 import employeeRoutes from "./routes/employees.js";
 import loginRoutes from "./routes/login.js";
 import sampleRoutes from "./routes/sample.js";
-import superAdminRoutes from "./routes/super-admin.js";
 import userRoutes from "./routes/users.js";
 
 const app = express();
@@ -122,7 +121,6 @@ app.use("/uploads", express.static(FILE_UPLOAD_ROOT));
 app.use("/api/employees", employeeRoutes);
 app.use("/api/login", loginRoutes);
 app.use("/api/sample", sampleRoutes);
-app.use("/api/super-admin", superAdminRoutes);
 app.use("/api/users", userRoutes);
 
 app.get("/", (req, res) => {
