@@ -13,7 +13,9 @@ import { testDbConnections } from "./config/db.js";
 
 import employeeRoutes from "./routes/employees.js";
 import sampleRoutes from "./routes/sample.js";
+import usVisaImportRoutes from "./routes/usVisaImports.js";
 import userRoutes from "./routes/users.js";
+import wfmRoutes from "./routes/wfm.js";
 
 const app = express();
 
@@ -246,6 +248,22 @@ app.use(
 app.use(
   "/api/users",
   userRoutes
+);
+
+/*
+  WFM imported raw data metadata
+*/
+app.use(
+  "/api/wfm",
+  wfmRoutes
+);
+
+/*
+  US VISA raw Excel import pipeline
+*/
+app.use(
+  "/api/us-visa",
+  usVisaImportRoutes
 );
 
 /* ================================
