@@ -1,3 +1,4 @@
+// Configures Kronos and PMS database pools and table helpers.
 import mysql from "mysql2/promise";
 import dotenv from "dotenv";
 
@@ -118,6 +119,15 @@ export const kronosTables = {
 
 export const pmsTables = {
   sample: dbTable(PMS_DB_NAME, "sample"),
+  wfmImportedFiles: dbTable(PMS_DB_NAME, "wfm_imported_files"),
+  usVisaImportProfiles: dbTable(PMS_DB_NAME, "us_visa_import_profiles"),
+  usVisaImportBatches: dbTable(PMS_DB_NAME, "us_visa_import_batches"),
+  usVisaRawImportRows: dbTable(PMS_DB_NAME, "us_visa_raw_import_rows"),
+  usVisaImportErrors: dbTable(PMS_DB_NAME, "us_visa_import_errors"),
+  usVisaRawSkillStatistics: dbTable(
+    PMS_DB_NAME,
+    "us_visa_raw_skill_statistics",
+  ),
 };
 
 // ============================================================

@@ -28,6 +28,8 @@ sibs-pms-server.env
 
 # sql files
 *.sql
+!migrations/
+!migrations/*.sql
 
 # folders
 /uploads

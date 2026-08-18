@@ -1,3 +1,4 @@
+// Maps role names to access values and checks route permissions.
 const ROLE_ACCESS_VALUES = {
   admin: 7,
   bod: 6,

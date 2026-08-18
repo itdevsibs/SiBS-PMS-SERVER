@@ -1,3 +1,4 @@
+// Provides employee listing and filtering endpoints.
 import express from "express";
 
 import { kronosDb, kronosTables } from "../config/db.js";

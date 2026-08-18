@@ -1,3 +1,4 @@
+// Manages super admin interface access and access history.
 import express from "express";
 import fs from "fs/promises";
 import path from "path";
@@ -18,6 +19,7 @@ const ACCESS_STORE_PATH = path.resolve(
   process.env.SUPER_ADMIN_ACCESS_STORE ||
     path.join(process.cwd(), "uploads", "super-admin-access.json"),
 );
+// Stores audit history for interface access changes.
 const ACTIVITY_LOG_PATH = path.resolve(
   process.env.SUPER_ADMIN_ACTIVITY_LOG ||
     path.join(process.cwd(), "uploads", "super-admin-access-logs.json"),
@@ -46,6 +48,7 @@ function normalizeUser(user = {}) {
   };
 }
 
+// Reads saved interface access and fills missing interfaces with empty lists.
 async function readAccessStore() {
   try {
     const rawData = await fs.readFile(ACCESS_STORE_PATH, "utf8");
@@ -64,6 +67,7 @@ async function readAccessStore() {
   }
 }
 
+// Persists the selected users allowed to open each dashboard interface.
 async function writeAccessStore(accessStore) {
   await fs.mkdir(path.dirname(ACCESS_STORE_PATH), {
     recursive: true,
