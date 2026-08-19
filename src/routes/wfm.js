@@ -1,7 +1,15 @@
 // WFM routes.
 import express from "express";
 
+import {
+  addHistoryLog,
+  getHistoryLogs,
+} from "../controllers/wfmHistoryLogController.js";
+
 const router = express.Router();
+
+router.get("/history-logs", getHistoryLogs);
+router.post("/history-logs", addHistoryLog);
 
 router.get("/imported-files", async (req, res) => {
   return res.json({
@@ -40,3 +48,4 @@ router.delete("/imported-files/:uploadId", async (req, res) => {
 });
 
 export default router;
+

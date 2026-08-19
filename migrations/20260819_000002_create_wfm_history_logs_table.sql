@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS wfm_history_logs (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  action VARCHAR(50) NOT NULL,
+  account VARCHAR(100) NULL,
+  raw_data_title VARCHAR(191) NULL,
+  file_name VARCHAR(255) NULL,
+  message TEXT NOT NULL,
+  user_id VARCHAR(100) NULL,
+  user_name VARCHAR(191) NULL,
+  user_email VARCHAR(191) NULL,
+  ip_address VARCHAR(45) NULL,
+  user_agent VARCHAR(255) NULL,
+  log_date DATE NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_wfm_history_logs_date (log_date),
+  KEY idx_wfm_history_logs_account (account),
+  KEY idx_wfm_history_logs_action (action),
+  KEY idx_wfm_history_logs_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
