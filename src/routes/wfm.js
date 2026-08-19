@@ -1,10 +1,13 @@
-// WFM routes.
+// WFM reporting routes backed by canonical PMS data.
 import express from "express";
 
 import {
   addHistoryLog,
   getHistoryLogs,
 } from "../controllers/wfmHistoryLogController.js";
+import { getWfmCallsKpi } from "../controllers/wfmKpiController.js";
+import authMiddleware from "../middleware/authMiddleware.js";
+import { requireRole } from "../middleware/roleMiddleware.js";
 
 const router = express.Router();
 
@@ -18,34 +21,16 @@ router.get("/imported-files", async (req, res) => {
   });
 });
 
-router.get("/imported-files/:uploadId/report", async (req, res) => {
-  return res.json({
-    success: true,
-    data: null,
-  });
-});
+const requireWfm = [
+  authMiddleware,
+  requireRole([9]),
+];
 
-router.post("/imported-files/:uploadId/graph-ready", async (req, res) => {
-  return res.json({
-    success: true,
-    message: "WFM imported file is ready.",
-  });
-});
-
-router.post("/imported-files", async (req, res) => {
-  return res.status(200).json({
-    success: true,
-    message: "WFM import received.",
-  });
-});
-
-router.delete("/imported-files/:uploadId", async (req, res) => {
-  return res.json({
-    success: true,
-    deletedCount: 1,
-    message: "WFM imported file deleted.",
-  });
-});
+router.get(
+  "/kpis/calls",
+  ...requireWfm,
+  getWfmCallsKpi,
+);
 
 export default router;
 
