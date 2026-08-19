@@ -127,6 +127,7 @@ export const pmsTables = {
     PMS_DB_NAME,
     "us_visa_raw_skill_statistics",
   ),
+  wfmHistoryLogs: dbTable(PMS_DB_NAME, "wfm_history_logs"),
 };
 
 // ============================================================
