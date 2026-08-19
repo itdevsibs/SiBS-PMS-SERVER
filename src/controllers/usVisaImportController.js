@@ -6,6 +6,8 @@ import {
   UsVisaImportError,
 } from "../services/imports/usVisaImportService.js";
 import {
+  deleteBatchById,
+  findBatchByIdOrCode,
   getBatchById,
   listImportBatches,
 } from "../repositories/usVisaImportBatchRepository.js";
@@ -81,8 +83,37 @@ function getFatalCode(result = {}) {
 }
 
 function getFatalMessage(result = {}) {
+  const profileCode =
+    result.profile?.profileCode ||
+    result.profileCode ||
+    result.profile?.profileName ||
+    "";
+  const isHerodash = /hero/i.test(profileCode);
+  const isFusecom = /fuse/i.test(profileCode);
+
   if (result.workbookValidation?.errors?.length) {
-    return "The uploaded workbook does not match the expected report format.";
+    const firstError = result.workbookValidation.errors[0];
+
+    if (
+      firstError.errorCode === "MISSING_REQUIRED_WORKSHEET" ||
+      firstError.errorCode === "MISSING_REQUIRED_SHEET" ||
+      firstError.errorCode === "MISSING_REQUIRED_COLUMN" ||
+      firstError.errorCode === "MISSING_REQUIRED_HEADER"
+    ) {
+      if (isHerodash) {
+        return "Only HeroDash Skill Statistics (.xlsx) files are allowed for this card. The selected file is missing required HeroDash sheets or column headers.";
+      }
+      if (isFusecom) {
+        return "Only Fusecom Skill Statistics (.xlsx) files are allowed for this card. The selected file is missing required Fusecom sheets or column headers.";
+      }
+      return "The uploaded workbook does not match the required report template for this card.";
+    }
+
+    return (
+      firstError.errorMessage ||
+      firstError.message ||
+      "The uploaded workbook does not match the expected report format."
+    );
   }
 
   if (result.error instanceof UsVisaImportError) {
@@ -267,3 +298,37 @@ export async function listUsVisaImportBatchErrors(req, res) {
     });
   }
 }
+
+export async function deleteUsVisaImportBatch(req, res) {
+  try {
+    const { batchId } = req.params;
+    const batch = await findBatchByIdOrCode(batchId);
+
+    if (!batch) {
+      return res.status(404).json({
+        success: false,
+        code: "IMPORT_BATCH_NOT_FOUND",
+        message: "Import batch was not found.",
+      });
+    }
+
+    await deleteBatchById(batch.id);
+
+    return res.json({
+      success: true,
+      message: `Batch ${batch.batchCode} and all its imported rows were deleted successfully.`,
+    });
+  } catch (error) {
+    console.error("DELETE /api/us-visa/imports/:batchId error:", {
+      message: error.message,
+      code: error.code,
+    });
+
+    return res.status(500).json({
+      success: false,
+      code: "DELETE_BATCH_ERROR",
+      message: "Unable to delete import batch.",
+    });
+  }
+}
+
