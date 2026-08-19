@@ -522,7 +522,6 @@ export async function importUsVisaRawWorkbook(options = {}) {
 
   try {
     const fileHash = await calculateFileSha256(filePath);
-    const exactDuplicateBatch = await findCompletedBatchByFileHash(fileHash);
     const profile = await loadImportProfile(importProfileIdOrCode);
     const profileCode = profile.profileCode;
 
@@ -544,25 +543,7 @@ export async function importUsVisaRawWorkbook(options = {}) {
       reportDateFrom,
       reportDateTo,
       uploadedBy: getUploadedBy(options),
-      status: US_VISA_BATCH_STATUSES.UPLOADED,
-    });
-
-    if (exactDuplicateBatch) {
-      const duplicateBatch = await markDuplicate(
-        batch.id,
-        exactDuplicateBatch.id,
-      );
-
-      return {
-        batch: duplicateBatch,
-        fileHash,
-        exactDuplicateBatch,
-        worksheetNames: [],
-        counters,
-      };
-    }
-
-    await updateBatchStatus(batch.id, US_VISA_BATCH_STATUSES.VALIDATING, {
+      status: US_VISA_BATCH_STATUSES.VALIDATING,
       processingStartedAt: new Date(),
     });
 
@@ -590,8 +571,33 @@ export async function importUsVisaRawWorkbook(options = {}) {
 
       return {
         batch: failedBatch,
+        profile,
+        profileCode,
         fileHash,
         worksheetNames: getWorksheetNames(workbook),
+        workbookValidation,
+        counters,
+      };
+    }
+
+    const exactDuplicateBatch = await findCompletedBatchByFileHash(
+      fileHash,
+      profile.id,
+    );
+
+    if (exactDuplicateBatch) {
+      const duplicateBatch = await markDuplicate(
+        batch.id,
+        exactDuplicateBatch.id,
+      );
+
+      return {
+        batch: duplicateBatch,
+        profile,
+        profileCode,
+        fileHash,
+        exactDuplicateBatch,
+        worksheetNames: workbookValidation.worksheetNames,
         workbookValidation,
         counters,
       };

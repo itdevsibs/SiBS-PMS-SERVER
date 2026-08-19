@@ -119,7 +119,6 @@ export const kronosTables = {
 
 export const pmsTables = {
   sample: dbTable(PMS_DB_NAME, "sample"),
-  wfmImportedFiles: dbTable(PMS_DB_NAME, "wfm_imported_files"),
   usVisaImportProfiles: dbTable(PMS_DB_NAME, "us_visa_import_profiles"),
   usVisaImportBatches: dbTable(PMS_DB_NAME, "us_visa_import_batches"),
   usVisaRawImportRows: dbTable(PMS_DB_NAME, "us_visa_raw_import_rows"),

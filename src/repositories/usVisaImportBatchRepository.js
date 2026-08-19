@@ -125,6 +125,32 @@ export async function getBatchById(batchId) {
   return mapBatchRow(rows[0]);
 }
 
+export async function findBatchByIdOrCode(identifier) {
+  const [rows] = await pmsDb.query(
+    `
+      SELECT *
+      FROM ${pmsTables.usVisaImportBatches}
+      WHERE id = ? OR batch_code = ?
+      LIMIT 1
+    `,
+    [identifier, identifier],
+  );
+
+  return mapBatchRow(rows[0]);
+}
+
+export async function deleteBatchById(batchId) {
+  const [result] = await pmsDb.query(
+    `
+      DELETE FROM ${pmsTables.usVisaImportBatches}
+      WHERE id = ?
+    `,
+    [batchId],
+  );
+
+  return result.affectedRows > 0;
+}
+
 export async function listImportBatches(options = {}) {
   const limit = Math.min(Math.max(Number(options.limit) || 50, 1), 200);
   const offset = Math.max(Number(options.offset) || 0, 0);
@@ -193,18 +219,26 @@ export async function createBatch(batch = {}) {
   throw new Error("Unable to generate a unique US VISA import batch code.");
 }
 
-export async function findCompletedBatchByFileHash(fileHash) {
-  const [rows] = await pmsDb.query(
-    `
-      SELECT *
-      FROM ${pmsTables.usVisaImportBatches}
-      WHERE file_hash = ?
-        AND status IN (?, ?)
-      ORDER BY completed_at DESC, id DESC
-      LIMIT 1
-    `,
-    [fileHash, ...SUCCESSFUL_IMPORT_STATUSES],
-  );
+export async function findCompletedBatchByFileHash(fileHash, importProfileId = null) {
+  let sql = `
+    SELECT *
+    FROM ${pmsTables.usVisaImportBatches}
+    WHERE file_hash = ?
+      AND status IN (?, ?)
+  `;
+  const params = [fileHash, ...SUCCESSFUL_IMPORT_STATUSES];
+
+  if (importProfileId) {
+    sql += ` AND import_profile_id = ? `;
+    params.push(importProfileId);
+  }
+
+  sql += `
+    ORDER BY completed_at DESC, id DESC
+    LIMIT 1
+  `;
+
+  const [rows] = await pmsDb.query(sql, params);
 
   return mapBatchRow(rows[0]);
 }

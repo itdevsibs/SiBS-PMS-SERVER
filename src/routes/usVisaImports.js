@@ -2,6 +2,7 @@
 import express from "express";
 
 import {
+  deleteUsVisaImportBatch,
   getUsVisaImportBatchDetails,
   listUsVisaImportBatchErrors,
   listUsVisaImportHistory,
@@ -41,6 +42,12 @@ router.post(
   ...requireWfm,
   usVisaUploadMiddleware,
   uploadUsVisaImport,
+);
+
+router.delete(
+  "/imports/:batchId",
+  ...requireWfm,
+  deleteUsVisaImportBatch,
 );
 
 export default router;
