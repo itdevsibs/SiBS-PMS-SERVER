@@ -33,6 +33,7 @@ function pickBatchResponse(batch = {}) {
     errorMessage: batch.errorMessage,
     createdAt: batch.createdAt,
     completedAt: batch.completedAt,
+    formattedTime: batch.formattedTime,
   };
 }
 
