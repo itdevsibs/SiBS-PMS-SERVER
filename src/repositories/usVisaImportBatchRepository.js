@@ -48,8 +48,55 @@ export function generateUsVisaBatchCode(date = new Date()) {
   return `USV-IMP-${formatBatchDate(date)}-${suffix}`;
 }
 
+const US_VISA_DB_TIMEZONE = "+08:00";
+
+async function queryUsVisa(sql, params = []) {
+  const connection = await pmsDb.getConnection();
+
+  try {
+    await connection.query("SET time_zone = ?", [US_VISA_DB_TIMEZONE]);
+
+    return connection.query(sql, params);
+  } finally {
+    connection.release();
+  }
+}
+
+const US_VISA_LOCALE_TIMEZONE = "Asia/Singapore";
+const batchTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+  timeStyle: "short",
+  timeZone: US_VISA_LOCALE_TIMEZONE,
+});
+
+function toDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  if (typeof value === "string") {
+    const raw = value.trim();
+    if (!raw) return null;
+    const normalized =
+      raw.includes("Z") || raw.includes("+")
+        ? raw
+        : `${raw.replace(" ", "T")}+08:00`;
+    const date = new Date(normalized);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 function mapBatchRow(row) {
   if (!row) return null;
+
+  const createdAt = toDate(row.created_at);
+  const updatedAt = toDate(row.updated_at);
+  const completedAt = toDate(row.completed_at);
+  const processingStartedAt = toDate(row.processing_started_at);
 
   return {
     id: row.id,
@@ -71,10 +118,13 @@ function mapBatchRow(row) {
     duplicateRows: row.duplicate_rows,
     warningRows: row.warning_rows,
     errorMessage: row.error_message,
-    processingStartedAt: row.processing_started_at,
-    completedAt: row.completed_at,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    processingStartedAt: processingStartedAt
+      ? processingStartedAt.toISOString()
+      : null,
+    completedAt: completedAt ? completedAt.toISOString() : null,
+    createdAt: createdAt ? createdAt.toISOString() : null,
+    updatedAt: updatedAt ? updatedAt.toISOString() : null,
+    formattedTime: createdAt ? batchTimeFormatter.format(createdAt) : null,
   };
 }
 
@@ -99,7 +149,7 @@ async function updateBatchFields(batchId, fields) {
   const setSql = entries.map(([column]) => `${column} = ?`).join(", ");
   const values = entries.map(([, value]) => value);
 
-  await pmsDb.query(
+  await queryUsVisa(
     `
       UPDATE ${pmsTables.usVisaImportBatches}
       SET ${setSql}
@@ -112,7 +162,7 @@ async function updateBatchFields(batchId, fields) {
 }
 
 export async function getBatchById(batchId) {
-  const [rows] = await pmsDb.query(
+  const [rows] = await queryUsVisa(
     `
       SELECT *
       FROM ${pmsTables.usVisaImportBatches}
@@ -126,7 +176,7 @@ export async function getBatchById(batchId) {
 }
 
 export async function findBatchByIdOrCode(identifier) {
-  const [rows] = await pmsDb.query(
+  const [rows] = await queryUsVisa(
     `
       SELECT *
       FROM ${pmsTables.usVisaImportBatches}
@@ -140,7 +190,7 @@ export async function findBatchByIdOrCode(identifier) {
 }
 
 export async function deleteBatchById(batchId) {
-  const [result] = await pmsDb.query(
+  const [result] = await queryUsVisa(
     `
       DELETE FROM ${pmsTables.usVisaImportBatches}
       WHERE id = ?
@@ -154,15 +204,30 @@ export async function deleteBatchById(batchId) {
 export async function listImportBatches(options = {}) {
   const limit = Math.min(Math.max(Number(options.limit) || 50, 1), 200);
   const offset = Math.max(Number(options.offset) || 0, 0);
-  const [rows] = await pmsDb.query(
-    `
-      SELECT *
-      FROM ${pmsTables.usVisaImportBatches}
-      ORDER BY created_at DESC, id DESC
-      LIMIT ? OFFSET ?
-    `,
-    [limit, offset],
-  );
+  const statusFilter = options.status
+    ? [options.status]
+    : options.includeFailed
+    ? null
+    : SUCCESSFUL_IMPORT_STATUSES;
+
+  let sql = `
+    SELECT *
+    FROM ${pmsTables.usVisaImportBatches}
+  `;
+  const params = [];
+
+  if (statusFilter && statusFilter.length) {
+    sql += ` WHERE status IN (${statusFilter.map(() => "?").join(", ")}) `;
+    params.push(...statusFilter);
+  }
+
+  sql += `
+    ORDER BY created_at DESC, id DESC
+    LIMIT ? OFFSET ?
+  `;
+  params.push(limit, offset);
+
+  const [rows] = await queryUsVisa(sql, params);
 
   return rows.map(mapBatchRow);
 }
@@ -172,7 +237,7 @@ export async function createBatch(batch = {}) {
     const batchCode = batch.batchCode || generateUsVisaBatchCode();
 
     try {
-      const [result] = await pmsDb.query(
+      const [result] = await queryUsVisa(
         `
           INSERT INTO ${pmsTables.usVisaImportBatches} (
             batch_code,
@@ -238,7 +303,7 @@ export async function findCompletedBatchByFileHash(fileHash, importProfileId = n
     LIMIT 1
   `;
 
-  const [rows] = await pmsDb.query(sql, params);
+  const [rows] = await queryUsVisa(sql, params);
 
   return mapBatchRow(rows[0]);
 }

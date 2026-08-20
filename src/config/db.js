@@ -71,12 +71,13 @@ function createDbPool({
 
     connectTimeout: 10000,
 
-    timezone: DB_TIMEZONE,
+    timezone: "+00:00",
+    dateStrings: true,
 
     ssl: ssl
       ? {
-          rejectUnauthorized: false,
-        }
+        rejectUnauthorized: false,
+      }
       : undefined,
   });
 }
