@@ -35,8 +35,10 @@ export async function createWfmHistoryLog({
   ipAddress,
   userAgent,
   logDate,
+  createdAt,
 }) {
   const effectiveDate = logDate || new Date().toISOString().slice(0, 10);
+  const effectiveCreatedAt = createdAt ? new Date(createdAt) : new Date();
 
   const [result] = await pmsDb.query(
     `
@@ -51,9 +53,10 @@ export async function createWfmHistoryLog({
         user_email,
         ip_address,
         user_agent,
-        log_date
+        log_date,
+        created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       action || "action",
@@ -67,6 +70,7 @@ export async function createWfmHistoryLog({
       ipAddress || null,
       userAgent || null,
       effectiveDate,
+      effectiveCreatedAt,
     ],
   );
 
