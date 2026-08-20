@@ -10,7 +10,13 @@ export const WFM_CALL_KPI_TARGETS = Object.freeze({
   ahtSeconds: 420,
 });
 
-const PERIODS = new Set(["weekly", "monthly", "quarterly", "annually"]);
+const PERIODS = new Set([
+  "weekly",
+  "monthly",
+  "quarterly",
+  "annually",
+  "custom",
+]);
 
 function toFiniteNumber(value) {
   const number = Number(value);
@@ -32,8 +38,21 @@ function parseDateOnly(value) {
 
   if (!match) return null;
 
-  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
-  return Number.isNaN(date.getTime()) ? null : date;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  if (
+    Number.isNaN(date.getTime()) ||
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return date;
 }
 
 function formatDateOnly(date) {
@@ -56,6 +75,18 @@ function getIsoWeekInfo(date) {
 function getBucket(date, period) {
   const year = date.getUTCFullYear();
   const month = date.getUTCMonth();
+
+  if (period === "custom") {
+    return {
+      key: formatDateOnly(date),
+      label: new Intl.DateTimeFormat("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        timeZone: "UTC",
+      }).format(date),
+    };
+  }
 
   if (period === "monthly") {
     return {
@@ -102,6 +133,37 @@ function emptyAccumulator(bucket = {}) {
   };
 }
 
+function addPeriod(date, period, amount = 1) {
+  const next = new Date(date.getTime());
+
+  if (period === "monthly") {
+    next.setUTCMonth(next.getUTCMonth() + amount);
+  } else if (period === "quarterly") {
+    next.setUTCMonth(next.getUTCMonth() + (3 * amount));
+  } else if (period === "annually") {
+    next.setUTCFullYear(next.getUTCFullYear() + amount);
+  } else {
+    next.setUTCDate(next.getUTCDate() + (7 * amount));
+  }
+
+  return next;
+}
+
+function seedReferencePeriodBuckets(bucketMap, { period, dateFrom, referenceDate }) {
+  if (period === "custom" || !referenceDate) return;
+
+  const start = parseDateOnly(dateFrom);
+  if (!start) return;
+
+  let cursor = start;
+
+  for (let index = 0; index < 6; index += 1) {
+    const bucket = getBucket(cursor, period);
+    bucketMap.set(bucket.key, emptyAccumulator(bucket));
+    cursor = addPeriod(cursor, period);
+  }
+}
+
 function addRow(target, row = {}) {
   target.callsOffered += toFiniteNumber(row.callsOffered);
   target.callsHandled += toFiniteNumber(row.callsHandled);
@@ -145,36 +207,57 @@ export function normalizeCallKpiPeriod(value) {
   return PERIODS.has(period) ? period : "weekly";
 }
 
-export function resolveDefaultCallKpiDateRange({ minDate, maxDate, period = "weekly" } = {}) {
-  const availableMin = parseDateOnly(minDate);
+export function resolveCallKpiDateRange({
+  maxDate,
+  referenceDate,
+  period = "weekly",
+} = {}) {
   const availableMax = parseDateOnly(maxDate);
+  const selectedReference = parseDateOnly(referenceDate) || availableMax;
 
-  if (!availableMax) {
-    return { dateFrom: null, dateTo: null };
+  if (!selectedReference) {
+    return {
+      dateFrom: null,
+      dateTo: null,
+      referenceDate: null,
+    };
   }
 
   const normalizedPeriod = normalizeCallKpiPeriod(period);
-  const start = new Date(availableMax.getTime());
+  const start = new Date(selectedReference.getTime());
 
   if (normalizedPeriod === "monthly") {
     start.setUTCDate(1);
     start.setUTCMonth(start.getUTCMonth() - 5);
   } else if (normalizedPeriod === "quarterly") {
     start.setUTCMonth(Math.floor(start.getUTCMonth() / 3) * 3, 1);
-    start.setUTCMonth(start.getUTCMonth() - 9);
+    start.setUTCMonth(start.getUTCMonth() - 15);
   } else if (normalizedPeriod === "annually") {
     start.setUTCMonth(0, 1);
-    start.setUTCFullYear(start.getUTCFullYear() - 4);
+    start.setUTCFullYear(start.getUTCFullYear() - 5);
   } else {
     const isoDay = start.getUTCDay() || 7;
     start.setUTCDate(start.getUTCDate() - (isoDay - 1) - (5 * 7));
   }
 
-  const effectiveStart = availableMin && availableMin > start ? availableMin : start;
+  return {
+    dateFrom: formatDateOnly(start),
+    dateTo: formatDateOnly(selectedReference),
+    referenceDate: formatDateOnly(selectedReference),
+  };
+}
+
+export function resolveDefaultCallKpiDateRange({ minDate, maxDate, period = "weekly" } = {}) {
+  const resolved = resolveCallKpiDateRange({
+    minDate,
+    maxDate,
+    referenceDate: maxDate,
+    period,
+  });
 
   return {
-    dateFrom: formatDateOnly(effectiveStart),
-    dateTo: formatDateOnly(availableMax),
+    dateFrom: resolved.dateFrom,
+    dateTo: resolved.dateTo,
   };
 }
 
@@ -185,11 +268,18 @@ export function buildWfmCallKpiDashboard({
   sourceSystem = "FUSECOM",
   dateFrom = null,
   dateTo = null,
+  referenceDate = null,
   targets = WFM_CALL_KPI_TARGETS,
 } = {}) {
   const normalizedPeriod = normalizeCallKpiPeriod(period);
   const summaryAccumulator = emptyAccumulator();
   const bucketMap = new Map();
+
+  seedReferencePeriodBuckets(bucketMap, {
+    period: normalizedPeriod,
+    dateFrom,
+    referenceDate,
+  });
 
   for (const row of rows) {
     const date = parseDateOnly(row.productionDate);
@@ -222,6 +312,7 @@ export function buildWfmCallKpiDashboard({
       period: normalizedPeriod,
       dateFrom,
       dateTo,
+      referenceDate,
       sourceSystem,
       dataGrain,
     },

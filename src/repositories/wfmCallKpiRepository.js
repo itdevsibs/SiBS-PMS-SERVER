@@ -1,13 +1,14 @@
 import { pmsDb, pmsTables } from "../config/db.js";
 
-const COMPLETED_BATCH_STATUSES = ["COMPLETED", "COMPLETED_WITH_ERRORS"];
+const COMPLETED_BATCH_STATUS = "COMPLETED";
 
 function buildDateFilters({ dateFrom, dateTo } = {}) {
   const conditions = [
     "s.production_date IS NOT NULL",
-    "b.status IN (?, ?)",
+    "b.status = ?",
   ];
-  const values = [...COMPLETED_BATCH_STATUSES];
+
+  const values = [COMPLETED_BATCH_STATUS];
 
   if (dateFrom) {
     conditions.push("DATE(s.production_date) >= ?");
@@ -27,14 +28,20 @@ export async function listAvailableCallKpiDataGrains({
   dateFrom,
   dateTo,
 } = {}) {
-  const { conditions, values } = buildDateFilters({ dateFrom, dateTo });
+  const { conditions, values } = buildDateFilters({
+    dateFrom,
+    dateTo,
+  });
+
   conditions.push("s.source_system = ?");
   values.push(sourceSystem);
+
   conditions.push("s.calls_offered IS NOT NULL");
 
   const [rows] = await pmsDb.query(
     `
-      SELECT DISTINCT s.data_grain AS data_grain
+      SELECT DISTINCT
+        s.data_grain AS data_grain
       FROM ${pmsTables.usVisaRawSkillStatistics} s
       INNER JOIN ${pmsTables.usVisaImportBatches} b
         ON b.id = s.batch_id
@@ -44,7 +51,9 @@ export async function listAvailableCallKpiDataGrains({
     values,
   );
 
-  return rows.map((row) => row.data_grain).filter(Boolean);
+  return rows
+    .map((row) => row.data_grain)
+    .filter(Boolean);
 }
 
 export async function getCallKpiDateBounds({
@@ -54,9 +63,13 @@ export async function getCallKpiDateBounds({
   const conditions = [
     "s.production_date IS NOT NULL",
     "s.source_system = ?",
-    "b.status IN (?, ?)",
+    "b.status = ?",
   ];
-  const values = [sourceSystem, ...COMPLETED_BATCH_STATUSES];
+
+  const values = [
+    sourceSystem,
+    COMPLETED_BATCH_STATUS,
+  ];
 
   if (dataGrain) {
     conditions.push("s.data_grain = ?");
@@ -66,8 +79,14 @@ export async function getCallKpiDateBounds({
   const [rows] = await pmsDb.query(
     `
       SELECT
-        DATE_FORMAT(MIN(s.production_date), '%Y-%m-%d') AS min_date,
-        DATE_FORMAT(MAX(s.production_date), '%Y-%m-%d') AS max_date
+        DATE_FORMAT(
+          MIN(s.production_date),
+          '%Y-%m-%d'
+        ) AS min_date,
+        DATE_FORMAT(
+          MAX(s.production_date),
+          '%Y-%m-%d'
+        ) AS max_date
       FROM ${pmsTables.usVisaRawSkillStatistics} s
       INNER JOIN ${pmsTables.usVisaImportBatches} b
         ON b.id = s.batch_id
@@ -88,7 +107,11 @@ export async function getDailyCallKpiRows({
   dateFrom,
   dateTo,
 } = {}) {
-  const { conditions, values } = buildDateFilters({ dateFrom, dateTo });
+  const { conditions, values } = buildDateFilters({
+    dateFrom,
+    dateTo,
+  });
+
   conditions.push("s.source_system = ?");
   values.push(sourceSystem);
 
@@ -100,41 +123,96 @@ export async function getDailyCallKpiRows({
   const [rows] = await pmsDb.query(
     `
       SELECT
-        DATE_FORMAT(s.production_date, '%Y-%m-%d') AS production_date,
-        SUM(COALESCE(s.calls_offered, 0)) AS calls_offered,
-        SUM(COALESCE(s.calls_handled, 0)) AS calls_handled,
-        SUM(COALESCE(s.handled_within_slt, 0)) AS handled_within_slt,
+        DATE_FORMAT(
+          s.production_date,
+          '%Y-%m-%d'
+        ) AS production_date,
+
+        SUM(
+          COALESCE(s.calls_offered, 0)
+        ) AS calls_offered,
+
+        SUM(
+          COALESCE(s.calls_handled, 0)
+        ) AS calls_handled,
+
+        SUM(
+          COALESCE(s.handled_within_slt, 0)
+        ) AS handled_within_slt,
+
         SUM(
           CASE
-            WHEN s.total_call_seconds IS NOT NULL THEN s.total_call_seconds
-            WHEN s.avg_handle_seconds IS NOT NULL AND s.calls_handled IS NOT NULL
-              THEN s.avg_handle_seconds * s.calls_handled
+            WHEN s.total_call_seconds IS NOT NULL
+              THEN s.total_call_seconds
+
+            WHEN
+              s.avg_handle_seconds IS NOT NULL
+              AND s.calls_handled IS NOT NULL
+              THEN
+                s.avg_handle_seconds
+                * s.calls_handled
+
             ELSE 0
           END
         ) AS handle_seconds_numerator,
+
         SUM(
           CASE
-            WHEN s.total_call_seconds IS NOT NULL OR s.avg_handle_seconds IS NOT NULL
-              THEN COALESCE(s.calls_handled, 0)
+            WHEN
+              s.total_call_seconds IS NOT NULL
+              OR s.avg_handle_seconds IS NOT NULL
+              THEN COALESCE(
+                s.calls_handled,
+                0
+              )
+
             ELSE 0
           END
         ) AS handle_seconds_denominator
+
       FROM ${pmsTables.usVisaRawSkillStatistics} s
+
       INNER JOIN ${pmsTables.usVisaImportBatches} b
         ON b.id = s.batch_id
+
       WHERE ${conditions.join("\n        AND ")}
-      GROUP BY DATE_FORMAT(s.production_date, '%Y-%m-%d')
-      ORDER BY DATE_FORMAT(s.production_date, '%Y-%m-%d') ASC
+
+      GROUP BY
+        DATE_FORMAT(
+          s.production_date,
+          '%Y-%m-%d'
+        )
+
+      ORDER BY
+        DATE_FORMAT(
+          s.production_date,
+          '%Y-%m-%d'
+        ) ASC
     `,
     values,
   );
 
   return rows.map((row) => ({
     productionDate: row.production_date,
-    callsOffered: Number(row.calls_offered || 0),
-    callsHandled: Number(row.calls_handled || 0),
-    handledWithinSlt: Number(row.handled_within_slt || 0),
-    handleSecondsNumerator: Number(row.handle_seconds_numerator || 0),
-    handleSecondsDenominator: Number(row.handle_seconds_denominator || 0),
+
+    callsOffered: Number(
+      row.calls_offered || 0,
+    ),
+
+    callsHandled: Number(
+      row.calls_handled || 0,
+    ),
+
+    handledWithinSlt: Number(
+      row.handled_within_slt || 0,
+    ),
+
+    handleSecondsNumerator: Number(
+      row.handle_seconds_numerator || 0,
+    ),
+
+    handleSecondsDenominator: Number(
+      row.handle_seconds_denominator || 0,
+    ),
   }));
 }
