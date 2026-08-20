@@ -261,3 +261,18 @@ export async function getSkillStatisticsById(rowId) {
 export function getSkillStatisticsInsertColumns() {
   return [...INSERT_COLUMNS];
 }
+
+export async function getSkillStatisticsByBatchId(batchId) {
+  const [rows] = await pmsDb.query(
+    `
+      SELECT *
+      FROM ${pmsTables.usVisaRawSkillStatistics}
+      WHERE batch_id = ?
+      ORDER BY interval_start ASC, production_date ASC, id ASC
+    `,
+    [batchId],
+  );
+
+  return rows.map(mapSkillStatisticsRow);
+}
+
