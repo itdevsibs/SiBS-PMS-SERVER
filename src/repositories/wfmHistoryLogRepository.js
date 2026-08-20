@@ -1,8 +1,57 @@
 // Repository for WFM action history logs in pms_db.
 import { pmsDb, pmsTables } from "../config/db.js";
 
+const WFM_HISTORY_TIMEZONE = "+00:00";
+const WFM_HISTORY_LOCALE_TIMEZONE = "Asia/Singapore";
+
+const historyTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+  timeStyle: "short",
+  timeZone: WFM_HISTORY_LOCALE_TIMEZONE,
+});
+
+async function queryWfmHistory(sql, params = []) {
+  const connection = await pmsDb.getConnection();
+
+  try {
+    await connection.query("SET time_zone = ?", [WFM_HISTORY_TIMEZONE]);
+
+    return connection.query(sql, params);
+  } finally {
+    connection.release();
+  }
+}
+
+function getLocalDateString(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone: WFM_HISTORY_LOCALE_TIMEZONE,
+    year: "numeric",
+  }).formatToParts(date);
+  const values = Object.fromEntries(
+    parts.map((part) => [part.type, part.value]),
+  );
+  const year = values.year;
+  const month = values.month;
+  const day = values.day;
+
+  return `${year}-${month}-${day}`;
+}
+
+function toDate(value) {
+  if (!value) return null;
+
+  const date = value instanceof Date ? value : new Date(value);
+
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 function mapHistoryLogRow(row) {
   if (!row) return null;
+
+  const createdAt = toDate(row.created_at);
+  const updatedAt = toDate(row.updated_at);
 
   return {
     id: row.id,
@@ -16,10 +65,16 @@ function mapHistoryLogRow(row) {
     userEmail: row.user_email,
     ipAddress: row.ip_address,
     userAgent: row.user_agent,
-    date: row.log_date ? row.log_date.toISOString ? row.log_date.toISOString().slice(0, 10) : String(row.log_date).slice(0, 10) : null,
-    timestamp: row.created_at,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    date: row.log_date
+      ? row.log_date.toISOString
+        ? row.log_date.toISOString().slice(0, 10)
+        : String(row.log_date).slice(0, 10)
+      : null,
+    timestamp: createdAt ? createdAt.toISOString() : null,
+    formattedTime:
+      row.formatted_time || (createdAt ? historyTimeFormatter.format(createdAt) : null),
+    createdAt: createdAt ? createdAt.toISOString() : null,
+    updatedAt: updatedAt ? updatedAt.toISOString() : null,
   };
 }
 
@@ -35,10 +90,12 @@ export async function createWfmHistoryLog({
   ipAddress,
   userAgent,
   logDate,
+  createdAt,
 }) {
-  const effectiveDate = logDate || new Date().toISOString().slice(0, 10);
+  const effectiveCreatedAt = createdAt instanceof Date ? createdAt : new Date();
+  const effectiveDate = logDate || getLocalDateString(effectiveCreatedAt);
 
-  const [result] = await pmsDb.query(
+  const [result] = await queryWfmHistory(
     `
       INSERT INTO ${pmsTables.wfmHistoryLogs} (
         action,
@@ -51,22 +108,24 @@ export async function createWfmHistoryLog({
         user_email,
         ip_address,
         user_agent,
-        log_date
+        log_date,
+        created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       action || "action",
       account || null,
       rawDataTitle || null,
       fileName || null,
-      message || "",
+      message || "WFM action performed",
       userId || null,
       userName || null,
       userEmail || null,
       ipAddress || null,
       userAgent || null,
       effectiveDate,
+      effectiveCreatedAt,
     ],
   );
 
@@ -74,9 +133,9 @@ export async function createWfmHistoryLog({
 }
 
 export async function getWfmHistoryLogById(id) {
-  const [rows] = await pmsDb.query(
+  const [rows] = await queryWfmHistory(
     `
-      SELECT *
+      SELECT *, DATE_FORMAT(created_at, '%b %e, %Y, %l:%i %p') AS formatted_time
       FROM ${pmsTables.wfmHistoryLogs}
       WHERE id = ?
       LIMIT 1
@@ -91,38 +150,53 @@ export async function listWfmHistoryLogs({
   date = null,
   account = null,
   action = null,
+  search = null,
   limit = 50,
   offset = 0,
 } = {}) {
   let sql = `
-    SELECT *
+    SELECT *, DATE_FORMAT(created_at, '%b %e, %Y, %l:%i %p') AS formatted_time
     FROM ${pmsTables.wfmHistoryLogs}
     WHERE 1=1
   `;
   const params = [];
 
   if (date) {
-    sql += ` AND log_date = ? `;
+    sql += " AND log_date = ? ";
     params.push(date);
   }
 
   if (account && account !== "All Accounts") {
-    sql += ` AND account = ? `;
+    sql += " AND account = ? ";
     params.push(account);
   }
 
-  if (action) {
-    sql += ` AND action = ? `;
+  if (action && action !== "All Actions") {
+    sql += " AND action = ? ";
     params.push(action);
   }
 
+  if (search) {
+    sql += `
+      AND (
+        message LIKE ?
+        OR file_name LIKE ?
+        OR raw_data_title LIKE ?
+        OR user_name LIKE ?
+        OR user_id LIKE ?
+      )
+    `;
+    const pattern = `%${search}%`;
+    params.push(pattern, pattern, pattern, pattern, pattern);
+  }
+
   sql += `
-    ORDER BY created_at DESC, id DESC
+    ORDER BY id DESC, created_at DESC
     LIMIT ? OFFSET ?
   `;
   params.push(Number(limit) || 50, Number(offset) || 0);
 
-  const [rows] = await pmsDb.query(sql, params);
+  const [rows] = await queryWfmHistory(sql, params);
 
   return rows.map(mapHistoryLogRow);
 }
@@ -131,6 +205,7 @@ export async function countWfmHistoryLogs({
   date = null,
   account = null,
   action = null,
+  search = null,
 } = {}) {
   let sql = `
     SELECT COUNT(*) AS total
@@ -140,21 +215,43 @@ export async function countWfmHistoryLogs({
   const params = [];
 
   if (date) {
-    sql += ` AND log_date = ? `;
+    sql += " AND log_date = ? ";
     params.push(date);
   }
 
   if (account && account !== "All Accounts") {
-    sql += ` AND account = ? `;
+    sql += " AND account = ? ";
     params.push(account);
   }
 
-  if (action) {
-    sql += ` AND action = ? `;
+  if (action && action !== "All Actions") {
+    sql += " AND action = ? ";
     params.push(action);
   }
 
-  const [[row]] = await pmsDb.query(sql, params);
+  if (search) {
+    sql += `
+      AND (
+        message LIKE ?
+        OR file_name LIKE ?
+        OR raw_data_title LIKE ?
+        OR user_name LIKE ?
+        OR user_id LIKE ?
+      )
+    `;
+    const pattern = `%${search}%`;
+    params.push(pattern, pattern, pattern, pattern, pattern);
+  }
+
+  const [[row]] = await queryWfmHistory(sql, params);
 
   return Number(row?.total || 0);
+}
+
+export async function clearWfmHistoryLogs() {
+  const [result] = await queryWfmHistory(
+    `DELETE FROM ${pmsTables.wfmHistoryLogs}`,
+  );
+
+  return result.affectedRows || 0;
 }

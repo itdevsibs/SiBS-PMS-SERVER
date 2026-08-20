@@ -1,51 +1,61 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 
+import { pmsDb, pmsTables } from "../src/config/db.js";
 import {
   countWfmHistoryLogs,
   createWfmHistoryLog,
   listWfmHistoryLogs,
 } from "../src/repositories/wfmHistoryLogRepository.js";
 
+after(async () => {
+  await pmsDb.end();
+});
+
 test("creates and retrieves WFM history log with user information", async () => {
   const testFileName = `test-file-${Date.now()}.xlsx`;
-  const testUserName = "DWIGHT ANTHONY CAGANDE";
-  const testEmail = "dwightanthony.bumaat@thesibling.com";
+  const testUserName = "WFM HISTORY TEST USER";
+  const testUserId = "TEST-EMPLOYEE-ID";
 
   const createdLog = await createWfmHistoryLog({
-    action: "removed",
+    action: "imported",
     account: "US VISA",
     rawDataTitle: "Herodash",
     fileName: testFileName,
-    message: `Removed ${testFileName} from Herodash`,
+    message: `Imported ${testFileName} to US VISA - Herodash.`,
+    userId: testUserId,
     userName: testUserName,
-    userEmail: testEmail,
-    logDate: "2026-08-19",
+    userEmail: "wfm-history-test@example.com",
+    createdAt: new Date(),
   });
 
   assert.ok(createdLog);
   assert.ok(createdLog.id);
-  assert.equal(createdLog.action, "removed");
+  assert.equal(createdLog.action, "imported");
   assert.equal(createdLog.account, "US VISA");
   assert.equal(createdLog.rawDataTitle, "Herodash");
   assert.equal(createdLog.fileName, testFileName);
+  assert.equal(createdLog.userId, testUserId);
   assert.equal(createdLog.userName, testUserName);
-  assert.equal(createdLog.userEmail, testEmail);
+  assert.ok(createdLog.formattedTime);
 
   const logs = await listWfmHistoryLogs({
-    date: "2026-08-19",
     account: "US VISA",
+    search: testFileName,
     limit: 10,
   });
 
-  assert.ok(Array.isArray(logs));
-  const found = logs.find((l) => l.fileName === testFileName);
+  const found = logs.find((log) => log.id === createdLog.id);
   assert.ok(found);
   assert.equal(found.userName, testUserName);
 
   const total = await countWfmHistoryLogs({
-    date: "2026-08-19",
     account: "US VISA",
+    search: testFileName,
   });
-  assert.ok(total >= 1);
+  assert.equal(total, 1);
+
+  await pmsDb.query(`DELETE FROM ${pmsTables.wfmHistoryLogs} WHERE id = ?`, [
+    createdLog.id,
+  ]);
 });
