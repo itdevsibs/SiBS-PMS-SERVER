@@ -1,10 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {
+import * as callKpiService from "./wfmCallKpiService.js";
+
+const {
   buildWfmCallKpiDashboard,
   chooseCallKpiDataGrain,
-} from "./wfmCallKpiService.js";
+  normalizeCallKpiPeriod,
+  resolveDefaultCallKpiDateRange,
+} = callKpiService;
 
 test("chooses one canonical grain so overlapping uploads are not double counted", () => {
   assert.equal(
@@ -83,4 +87,162 @@ test("returns zero percentages instead of NaN when there are no calls", () => {
     ahtSeconds: 0,
   });
   assert.deepEqual(result.series, []);
+});
+
+
+test("supports custom as an explicit reporting period", () => {
+  assert.equal(normalizeCallKpiPeriod("custom"), "custom");
+});
+
+test("resolves six weekly periods from the selected reference date", () => {
+  assert.equal(typeof callKpiService.resolveCallKpiDateRange, "function");
+
+  const result = callKpiService.resolveCallKpiDateRange({
+    minDate: "2026-01-01",
+    maxDate: "2026-08-15",
+    referenceDate: "2026-07-31",
+    period: "weekly",
+  });
+
+  assert.deepEqual(result, {
+    dateFrom: "2026-06-22",
+    dateTo: "2026-07-31",
+    referenceDate: "2026-07-31",
+  });
+});
+
+test("resolves six monthly, quarterly, and annual periods", () => {
+  assert.deepEqual(
+    callKpiService.resolveCallKpiDateRange({
+      minDate: "2020-01-01",
+      maxDate: "2026-12-31",
+      referenceDate: "2026-07-31",
+      period: "monthly",
+    }),
+    {
+      dateFrom: "2026-02-01",
+      dateTo: "2026-07-31",
+      referenceDate: "2026-07-31",
+    },
+  );
+
+  assert.deepEqual(
+    callKpiService.resolveCallKpiDateRange({
+      minDate: "2020-01-01",
+      maxDate: "2026-12-31",
+      referenceDate: "2026-07-31",
+      period: "quarterly",
+    }),
+    {
+      dateFrom: "2025-04-01",
+      dateTo: "2026-07-31",
+      referenceDate: "2026-07-31",
+    },
+  );
+
+  assert.deepEqual(
+    callKpiService.resolveCallKpiDateRange({
+      minDate: "2020-01-01",
+      maxDate: "2026-12-31",
+      referenceDate: "2026-07-31",
+      period: "annually",
+    }),
+    {
+      dateFrom: "2021-01-01",
+      dateTo: "2026-07-31",
+      referenceDate: "2026-07-31",
+    },
+  );
+});
+
+test("latest/default range uses the latest available date as the reference date", () => {
+  assert.deepEqual(
+    resolveDefaultCallKpiDateRange({
+      minDate: "2026-01-01",
+      maxDate: "2026-07-31",
+      period: "weekly",
+    }),
+    {
+      dateFrom: "2026-06-22",
+      dateTo: "2026-07-31",
+    },
+  );
+});
+
+test("custom period groups KPI series by production date", () => {
+  const result = buildWfmCallKpiDashboard({
+    rows: [
+      {
+        productionDate: "2026-07-30",
+        callsOffered: 10,
+        callsHandled: 9,
+        handledWithinSlt: 8,
+      },
+      {
+        productionDate: "2026-07-31",
+        callsOffered: 20,
+        callsHandled: 18,
+        handledWithinSlt: 17,
+      },
+    ],
+    period: "custom",
+    dateFrom: "2026-07-30",
+    dateTo: "2026-07-31",
+  });
+
+  assert.equal(result.filters.period, "custom");
+  assert.deepEqual(
+    result.series.map((item) => ({ key: item.key, label: item.label })),
+    [
+      { key: "2026-07-30", label: "Jul 30, 2026" },
+      { key: "2026-07-31", label: "Jul 31, 2026" },
+    ],
+  );
+});
+
+
+test("keeps the full six-week comparison window even when stored data starts later", () => {
+  const result = callKpiService.resolveCallKpiDateRange({
+    minDate: "2026-07-26",
+    maxDate: "2026-08-01",
+    referenceDate: "2026-07-31",
+    period: "weekly",
+  });
+
+  assert.deepEqual(result, {
+    dateFrom: "2026-06-22",
+    dateTo: "2026-07-31",
+    referenceDate: "2026-07-31",
+  });
+});
+
+test("returns six weekly chart buckets and zero-fills weeks without rows", () => {
+  const result = buildWfmCallKpiDashboard({
+    rows: [
+      {
+        productionDate: "2026-07-27",
+        callsOffered: 100,
+        callsHandled: 90,
+        handledWithinSlt: 81,
+        handleSecondsNumerator: 37800,
+        handleSecondsDenominator: 90,
+      },
+    ],
+    period: "weekly",
+    dataGrain: "SKILL_DAY",
+    sourceSystem: "FUSECOM",
+    dateFrom: "2026-06-22",
+    dateTo: "2026-07-31",
+    referenceDate: "2026-07-31",
+  });
+
+  assert.equal(result.series.length, 6);
+  assert.deepEqual(
+    result.series.map((item) => item.label),
+    ["Week 26", "Week 27", "Week 28", "Week 29", "Week 30", "Week 31"],
+  );
+  assert.deepEqual(
+    result.series.map((item) => item.callsOffered),
+    [0, 0, 0, 0, 0, 100],
+  );
 });

@@ -7,6 +7,7 @@ import {
   buildWfmCallKpiDashboard,
   chooseCallKpiDataGrain,
   normalizeCallKpiPeriod,
+  resolveCallKpiDateRange,
   resolveDefaultCallKpiDateRange,
 } from "./wfmCallKpiService.js";
 
@@ -41,17 +42,66 @@ function normalizeSourceSystem(value) {
     : DEFAULT_SOURCE_SYSTEM;
 }
 
+function throwInvalidDateRange(message = "The start date cannot be later than the end date.") {
+  const error = new Error(message);
+  error.code = "INVALID_DATE_RANGE";
+  throw error;
+}
+
+function validateReferenceDate(value) {
+  const rawValue = String(value || "").trim();
+  if (!rawValue) return null;
+
+  const normalized = normalizeDate(rawValue);
+  if (normalized) return normalized;
+
+  const error = new Error("Reference date must use the YYYY-MM-DD format.");
+  error.code = "INVALID_REFERENCE_DATE";
+  throw error;
+}
+
+function isOutsideBounds(date, bounds = {}) {
+  if (!date) return false;
+  if (bounds.minDate && date < bounds.minDate) return true;
+  if (bounds.maxDate && date > bounds.maxDate) return true;
+  return false;
+}
+
 export async function getWfmCallKpiDashboard(query = {}) {
   const period = normalizeCallKpiPeriod(query.period);
   const sourceSystem = normalizeSourceSystem(query.sourceSystem || query.source);
+  const requestedReferenceDate = validateReferenceDate(
+    query.referenceDate || query.reference,
+  );
   const requestedDateFrom = normalizeDate(query.from || query.dateFrom);
   const requestedDateTo = normalizeDate(query.to || query.dateTo);
   const requestedGrain = normalizeRequestedGrain(query.dataGrain);
 
+  const isCustomRange = period === "custom";
+  const isLegacyManualRange = !isCustomRange
+    && !requestedReferenceDate
+    && Boolean(requestedDateFrom || requestedDateTo);
+
+  if (isCustomRange && (!requestedDateFrom || !requestedDateTo)) {
+    const error = new Error("Custom reporting requires both From and To dates.");
+    error.code = "INVALID_CUSTOM_DATE_RANGE";
+    throw error;
+  }
+
+  if (requestedDateFrom && requestedDateTo && requestedDateFrom > requestedDateTo) {
+    throwInvalidDateRange();
+  }
+
+  const grainLookupRange = isCustomRange || isLegacyManualRange
+    ? {
+        dateFrom: requestedDateFrom,
+        dateTo: requestedDateTo,
+      }
+    : {};
+
   const availableGrains = await listAvailableCallKpiDataGrains({
     sourceSystem,
-    dateFrom: requestedDateFrom,
-    dateTo: requestedDateTo,
+    ...grainLookupRange,
   });
 
   const dataGrain = requestedGrain && availableGrains.includes(requestedGrain)
@@ -67,6 +117,7 @@ export async function getWfmCallKpiDashboard(query = {}) {
         dataGrain: null,
         dateFrom: requestedDateFrom,
         dateTo: requestedDateTo,
+        referenceDate: requestedReferenceDate,
       }),
       availableGrains,
       availableDateRange: { minDate: null, maxDate: null },
@@ -74,18 +125,50 @@ export async function getWfmCallKpiDashboard(query = {}) {
   }
 
   const bounds = await getCallKpiDateBounds({ sourceSystem, dataGrain });
-  const defaults = resolveDefaultCallKpiDateRange({
-    minDate: bounds.minDate,
-    maxDate: bounds.maxDate,
-    period,
-  });
-  const dateFrom = requestedDateFrom || defaults.dateFrom;
-  const dateTo = requestedDateTo || defaults.dateTo;
+
+  let dateFrom = requestedDateFrom;
+  let dateTo = requestedDateTo;
+  let referenceDate = null;
+  let rangeMode = "legacy";
+
+  if (isCustomRange) {
+    rangeMode = "custom";
+  } else if (isLegacyManualRange) {
+    rangeMode = "legacy";
+
+    const legacyDefaults = resolveDefaultCallKpiDateRange({
+      minDate: bounds.minDate,
+      maxDate: bounds.maxDate,
+      period,
+    });
+
+    dateFrom = requestedDateFrom || legacyDefaults.dateFrom;
+    dateTo = requestedDateTo || legacyDefaults.dateTo;
+  } else {
+    rangeMode = "reference";
+
+    if (requestedReferenceDate && isOutsideBounds(requestedReferenceDate, bounds)) {
+      const error = new Error(
+        `Reference date must be between ${bounds.minDate || "the first available date"} and ${bounds.maxDate || "the latest available date"}.`,
+      );
+      error.code = "INVALID_REFERENCE_DATE";
+      throw error;
+    }
+
+    const resolvedRange = resolveCallKpiDateRange({
+      minDate: bounds.minDate,
+      maxDate: bounds.maxDate,
+      referenceDate: requestedReferenceDate || bounds.maxDate,
+      period,
+    });
+
+    dateFrom = resolvedRange.dateFrom;
+    dateTo = resolvedRange.dateTo;
+    referenceDate = resolvedRange.referenceDate;
+  }
 
   if (dateFrom && dateTo && dateFrom > dateTo) {
-    const error = new Error("The start date cannot be later than the end date.");
-    error.code = "INVALID_DATE_RANGE";
-    throw error;
+    throwInvalidDateRange();
   }
 
   const rows = await getDailyCallKpiRows({
@@ -95,15 +178,22 @@ export async function getWfmCallKpiDashboard(query = {}) {
     dateTo,
   });
 
+  const dashboard = buildWfmCallKpiDashboard({
+    rows,
+    period,
+    sourceSystem,
+    dataGrain,
+    dateFrom,
+    dateTo,
+    referenceDate,
+  });
+
   return {
-    ...buildWfmCallKpiDashboard({
-      rows,
-      period,
-      sourceSystem,
-      dataGrain,
-      dateFrom,
-      dateTo,
-    }),
+    ...dashboard,
+    filters: {
+      ...dashboard.filters,
+      rangeMode,
+    },
     availableGrains,
     availableDateRange: bounds,
   };

@@ -1,5 +1,11 @@
 import { getWfmCallKpiDashboard } from "../services/kpi/wfmCallKpiQueryService.js";
 
+const BAD_REQUEST_CODES = new Set([
+  "INVALID_CUSTOM_DATE_RANGE",
+  "INVALID_DATE_RANGE",
+  "INVALID_REFERENCE_DATE",
+]);
+
 export async function getWfmCallsKpi(req, res) {
   try {
     const dashboard = await getWfmCallKpiDashboard(req.query);
@@ -9,7 +15,7 @@ export async function getWfmCallsKpi(req, res) {
       data: dashboard,
     });
   } catch (error) {
-    if (error?.code === "INVALID_DATE_RANGE") {
+    if (BAD_REQUEST_CODES.has(error?.code)) {
       return res.status(400).json({
         success: false,
         code: error.code,
