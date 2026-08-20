@@ -204,16 +204,30 @@ export async function deleteBatchById(batchId) {
 export async function listImportBatches(options = {}) {
   const limit = Math.min(Math.max(Number(options.limit) || 50, 1), 200);
   const offset = Math.max(Number(options.offset) || 0, 0);
-  const [rows] = await queryUsVisa(
-    `
-      SELECT *
-      FROM ${pmsTables.usVisaImportBatches}
-      WHERE status IN (?, ?)
-      ORDER BY created_at DESC, id DESC
-      LIMIT ? OFFSET ?
-    `,
-    [...SUCCESSFUL_IMPORT_STATUSES, limit, offset],
-  );
+  const statusFilter = options.status
+    ? [options.status]
+    : options.includeFailed
+    ? null
+    : SUCCESSFUL_IMPORT_STATUSES;
+
+  let sql = `
+    SELECT *
+    FROM ${pmsTables.usVisaImportBatches}
+  `;
+  const params = [];
+
+  if (statusFilter && statusFilter.length) {
+    sql += ` WHERE status IN (${statusFilter.map(() => "?").join(", ")}) `;
+    params.push(...statusFilter);
+  }
+
+  sql += `
+    ORDER BY created_at DESC, id DESC
+    LIMIT ? OFFSET ?
+  `;
+  params.push(limit, offset);
+
+  const [rows] = await queryUsVisa(sql, params);
 
   return rows.map(mapBatchRow);
 }
