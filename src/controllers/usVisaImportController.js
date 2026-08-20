@@ -20,6 +20,7 @@ function pickBatchResponse(batch = {}) {
   return {
     id: batch.id,
     batchCode: batch.batchCode,
+    importProfileId: batch.importProfileId,
     sourceFilename: batch.sourceFilename,
     sourceSystem: batch.sourceSystem,
     status: batch.status,
@@ -28,6 +29,8 @@ function pickBatchResponse(batch = {}) {
     invalidRows: batch.invalidRows,
     duplicateRows: batch.duplicateRows,
     warningRows: batch.warningRows,
+    uploadedBy: batch.uploadedBy,
+    errorMessage: batch.errorMessage,
     createdAt: batch.createdAt,
     completedAt: batch.completedAt,
   };
