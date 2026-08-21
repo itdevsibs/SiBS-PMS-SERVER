@@ -64,7 +64,7 @@ const authMiddleware = (req, res, next) => {
           token,
           process.env.JWT_SECRET,
         );
-      } catch (employeeTokenError) {
+      } catch {
         decoded = jwt.verify(
           token,
           process.env.JWT_ADMIN_SECRET,
