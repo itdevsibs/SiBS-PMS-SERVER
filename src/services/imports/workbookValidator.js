@@ -78,11 +78,6 @@ const FUSECOM_DAILY_SKILL_STATISTICS_HEADERS = [
   "Calls on Hold",
 ];
 
-const FUSECOM_SUMMARY_SKILL_STATISTICS_HEADERS =
-  FUSECOM_DAILY_SKILL_STATISTICS_HEADERS.filter(
-    (header) => header !== "Date",
-  );
-
 const FUSECOM_INTRADAY_SKILL_STATISTICS_HEADERS = [
   "Date/Time",
   ...FUSECOM_DAILY_SKILL_STATISTICS_HEADERS.filter(
@@ -108,27 +103,6 @@ export const WORKBOOK_PROFILE_DEFINITIONS = {
     profileCode: IMPORT_PROFILE_CODES.FUSECOM_SKILL_STATISTICS_INBOUND,
     sourceSystem: "FUSECOM",
     requiredSheets: [
-      {
-        sheetName: "Per Day",
-        dataGrain: "SKILL_DAY",
-        headerRowNumber: 1,
-        headerRowCandidates: [9],
-        requiredHeaders: FUSECOM_DAILY_SKILL_STATISTICS_HEADERS,
-      },
-      {
-        sheetName: "Summary",
-        dataGrain: "SKILL_REPORT_SUMMARY",
-        headerRowNumber: 1,
-        headerRowCandidates: [9],
-        requiredHeaders: FUSECOM_SUMMARY_SKILL_STATISTICS_HEADERS,
-      },
-      {
-        sheetName: "Half Hourly Statistics",
-        dataGrain: "SKILL_30_MINUTE",
-        headerRowNumber: 1,
-        headerRowCandidates: [9],
-        requiredHeaders: FUSECOM_INTRADAY_SKILL_STATISTICS_HEADERS,
-      },
       {
         sheetName: "15 Minutes Statistics",
         dataGrain: "SKILL_15_MINUTE",

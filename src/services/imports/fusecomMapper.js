@@ -9,17 +9,16 @@ import {
 } from "./valueConversionService.js";
 
 export const FUSECOM_SOURCE_SYSTEM = "FUSECOM";
+export const FUSECOM_15_MINUTE_SHEET_NAME = "15 Minutes Statistics";
+export const FUSECOM_DATA_GRAIN = "SKILL_15_MINUTE";
+export const FUSECOM_INTERVAL_MINUTES = 15;
 
 export const FUSECOM_SHEET_GRAINS = {
-  "Per Day": "SKILL_DAY",
-  Summary: "SKILL_REPORT_SUMMARY",
-  "Half Hourly Statistics": "SKILL_30_MINUTE",
-  "15 Minutes Statistics": "SKILL_15_MINUTE",
+  [FUSECOM_15_MINUTE_SHEET_NAME]: FUSECOM_DATA_GRAIN,
 };
 
 const INTRADAY_INTERVAL_MINUTES = {
-  SKILL_30_MINUTE: 30,
-  SKILL_15_MINUTE: 15,
+  [FUSECOM_DATA_GRAIN]: FUSECOM_INTERVAL_MINUTES,
 };
 
 const FIELD_MAPPINGS = [
@@ -332,6 +331,13 @@ export function getFusecomDataGrain(sheetName) {
   return FUSECOM_SHEET_GRAINS[sheetName] || null;
 }
 
+export function isFusecom15MinuteSheet(sheet = {}) {
+  return (
+    sheet.sheetName === FUSECOM_15_MINUTE_SHEET_NAME &&
+    sheet.dataGrain === FUSECOM_DATA_GRAIN
+  );
+}
+
 export function getFusecomFieldMappings() {
   return FIELD_MAPPINGS.map((mapping) => ({
     sourceHeaders: mapping.sourceHeaders,
@@ -340,10 +346,10 @@ export function getFusecomFieldMappings() {
 }
 
 export function mapFusecomSkillStatisticsRow(sourceRow = {}, options = {}) {
-  const dataGrain = options.dataGrain || getFusecomDataGrain(options.sheetName);
+  const dataGrain = FUSECOM_DATA_GRAIN;
   const mappedRow = {
     source_system: FUSECOM_SOURCE_SYSTEM,
-    source_sheet: options.sheetName || null,
+    source_sheet: options.sheetName || FUSECOM_15_MINUTE_SHEET_NAME,
     data_grain: dataGrain,
   };
   const conversionErrors = [];
