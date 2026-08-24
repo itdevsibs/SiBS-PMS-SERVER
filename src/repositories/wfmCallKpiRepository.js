@@ -25,6 +25,7 @@ function buildDateFilters({ dateFrom, dateTo } = {}) {
 
 export async function listAvailableCallKpiDataGrains({
   sourceSystem = "FUSECOM",
+  dataGrain,
   dateFrom,
   dateTo,
 } = {}) {
@@ -35,6 +36,11 @@ export async function listAvailableCallKpiDataGrains({
 
   conditions.push("s.source_system = ?");
   values.push(sourceSystem);
+
+  if (dataGrain) {
+    conditions.push("s.data_grain = ?");
+    values.push(dataGrain);
+  }
 
   conditions.push("s.calls_offered IS NOT NULL");
 

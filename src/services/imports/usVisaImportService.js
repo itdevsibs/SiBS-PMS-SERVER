@@ -29,6 +29,7 @@ import {
 import { calculateFileSha256 } from "./fileHashService.js";
 import {
   FUSECOM_SOURCE_SYSTEM,
+  isFusecom15MinuteSheet,
   mapFusecomSkillStatisticsRow,
 } from "./fusecomMapper.js";
 import {
@@ -606,6 +607,13 @@ export async function importUsVisaRawWorkbook(options = {}) {
     await updateBatchStatus(batch.id, US_VISA_BATCH_STATUSES.IMPORTING);
 
     for (const sheet of workbookValidation.sheets) {
+      if (
+        profileCode === IMPORT_PROFILE_CODES.FUSECOM_SKILL_STATISTICS_INBOUND &&
+        !isFusecom15MinuteSheet(sheet)
+      ) {
+        continue;
+      }
+
       await processSheet({
         workbook,
         batch,

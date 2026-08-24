@@ -101,19 +101,14 @@ export async function getWfmBatchReport(req, res) {
       });
     }
 
-    // Find the primary grain available in the batch to avoid double counting
-    const grains = [...new Set(rows.map((r) => r.dataGrain))];
-    let primaryGrain = null;
-
-    if (grains.includes("SKILL_30_MINUTE")) {
-      primaryGrain = "SKILL_30_MINUTE";
-    } else if (grains.includes("SKILL_15_MINUTE")) {
-      primaryGrain = "SKILL_15_MINUTE";
-    } else if (grains.includes("SKILL_DAY")) {
-      primaryGrain = "SKILL_DAY";
-    } else if (grains.length > 0) {
-      primaryGrain = grains[0];
-    }
+    // Use the canonical source grain so historical multi-grain batches are not double counted.
+    const sourceSystem = String(batch.sourceSystem || "").trim().toUpperCase();
+    const primaryGrain =
+      sourceSystem === "FUSECOM"
+        ? "SKILL_15_MINUTE"
+        : sourceSystem === "HERODASH"
+          ? "SKILL_DAY"
+          : null;
 
     const primaryRows = primaryGrain
       ? rows.filter((r) => r.dataGrain === primaryGrain)
