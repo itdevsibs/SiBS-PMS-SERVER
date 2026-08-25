@@ -7,10 +7,10 @@ import {
   listUsVisaImportBatchErrors,
   listUsVisaImportHistory,
   uploadUsVisaImport,
-} from "../controllers/usVisaImportController.js";
-import authMiddleware from "../middleware/authMiddleware.js";
-import { requireRole } from "../middleware/roleMiddleware.js";
-import { usVisaUploadMiddleware } from "../middleware/usVisaUploadMiddleware.js";
+} from "../../controllers/usVisa/usVisaImportController.js";
+import authMiddleware from "../../middleware/authMiddleware.js";
+import { requireRole } from "../../middleware/roleMiddleware.js";
+import { usVisaUploadMiddleware } from "../../middleware/usVisa/usVisaUploadMiddleware.js";
 
 const router = express.Router();
 

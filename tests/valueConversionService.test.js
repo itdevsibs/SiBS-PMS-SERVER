@@ -9,7 +9,7 @@ import {
   toDurationSecondsValue,
   toIntegerValue,
   toPercentageValue,
-} from "../src/services/imports/valueConversionService.js";
+} from "../src/services/imports/shared/valueConversionService.js";
 
 test("converts integer and decimal values safely", () => {
   assert.deepEqual(toIntegerValue("1,234"), {

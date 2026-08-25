@@ -1,13 +1,13 @@
 // Classifies canonical row duplicates/conflicts without overwriting domain data.
 import {
   findSkillStatisticsByRowHash,
-} from "../../repositories/usVisaSkillStatisticsRepository.js";
+} from "../../../repositories/usVisa/usVisaSkillStatisticsRepository.js";
 import {
   updateRawImportValidationStatus,
-} from "../../repositories/usVisaRawImportRepository.js";
+} from "../../../repositories/usVisa/usVisaRawImportRepository.js";
 import {
   insertImportError,
-} from "../../repositories/usVisaImportErrorRepository.js";
+} from "../../../repositories/usVisa/usVisaImportErrorRepository.js";
 
 export const DUPLICATE_CHECK_RESULTS = {
   NEW: "NEW",

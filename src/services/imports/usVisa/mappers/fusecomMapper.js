@@ -6,7 +6,7 @@ import {
   toDurationSecondsValue,
   toIntegerValue,
   toPercentageValue,
-} from "./valueConversionService.js";
+} from "../../shared/valueConversionService.js";
 
 export const FUSECOM_SOURCE_SYSTEM = "FUSECOM";
 export const FUSECOM_15_MINUTE_SHEET_NAME = "15 Minutes Statistics";
@@ -206,15 +206,35 @@ function toStringResult(value) {
   };
 }
 
-function getSourceEntry(sourceRow, sourceHeaders) {
-  const normalizedHeaders = sourceHeaders.map(normalizeHeader);
-  const matchingKey = Object.keys(sourceRow || {}).find((key) =>
-    normalizedHeaders.includes(normalizeHeader(key)),
-  );
+function createSourceLookup(sourceRow = {}) {
+  const lookup = new Map();
+
+  for (const sourceHeader of Object.keys(sourceRow)) {
+    const normalizedHeader = normalizeHeader(sourceHeader);
+
+    if (!lookup.has(normalizedHeader)) {
+      lookup.set(normalizedHeader, {
+        sourceHeader,
+        value: sourceRow[sourceHeader],
+      });
+    }
+  }
+
+  return lookup;
+}
+
+function getSourceEntry(sourceLookup, sourceHeaders) {
+  for (const sourceHeader of sourceHeaders) {
+    const matchingEntry = sourceLookup.get(normalizeHeader(sourceHeader));
+
+    if (matchingEntry) {
+      return matchingEntry;
+    }
+  }
 
   return {
-    sourceHeader: matchingKey || sourceHeaders[0],
-    value: matchingKey ? sourceRow[matchingKey] : null,
+    sourceHeader: sourceHeaders[0],
+    value: null,
   };
 }
 
@@ -278,10 +298,10 @@ function addConversionError(errors, sourceHeader, targetField, rawValue, result)
   });
 }
 
-function mapDateFields(sourceRow, dataGrain, mappedRow, conversionErrors) {
+function mapDateFields(sourceLookup, dataGrain, mappedRow, conversionErrors) {
   const isIntraday = Boolean(INTRADAY_INTERVAL_MINUTES[dataGrain]);
   const dateEntry = getSourceEntry(
-    sourceRow,
+    sourceLookup,
     isIntraday ? ["Date-Time", "Date/Time"] : ["Date"],
   );
   const dateResult = isIntraday
@@ -353,11 +373,12 @@ export function mapFusecomSkillStatisticsRow(sourceRow = {}, options = {}) {
     data_grain: dataGrain,
   };
   const conversionErrors = [];
+  const sourceLookup = createSourceLookup(sourceRow);
 
-  mapDateFields(sourceRow, dataGrain, mappedRow, conversionErrors);
+  mapDateFields(sourceLookup, dataGrain, mappedRow, conversionErrors);
 
   for (const mapping of FIELD_MAPPINGS) {
-    const sourceEntry = getSourceEntry(sourceRow, mapping.sourceHeaders);
+    const sourceEntry = getSourceEntry(sourceLookup, mapping.sourceHeaders);
     const result = convertValue(mapping, sourceEntry.value);
 
     mappedRow[mapping.targetField] = result.value;

@@ -189,3 +189,69 @@ export function readWorksheetRows(
 
   return rows;
 }
+
+export async function iterateWorksheetRowChunks(
+  workbook,
+  worksheetNameOrId,
+  options = {},
+  onChunk,
+) {
+  const worksheet = getWorksheet(workbook, worksheetNameOrId);
+
+  if (!worksheet || typeof onChunk !== "function") {
+    return {
+      processedRows: 0,
+      processedChunks: 0,
+    };
+  }
+
+  const headerRowNumber = options.headerRowNumber || 1;
+  const headers = options.headers || readHeaderRow(
+    workbook,
+    worksheetNameOrId,
+    headerRowNumber,
+  );
+  const configuredChunkSize = Number(options.chunkSize);
+  const chunkSize =
+    Number.isInteger(configuredChunkSize) && configuredChunkSize > 0
+      ? configuredChunkSize
+      : 1000;
+  let chunk = [];
+  let processedRows = 0;
+  let processedChunks = 0;
+
+  for (
+    let rowNumber = headerRowNumber + 1;
+    rowNumber <= worksheet.rowCount;
+    rowNumber += 1
+  ) {
+    const sourceRow = excelRowToSourceObject(
+      worksheet.getRow(rowNumber),
+      headers,
+    );
+
+    if (!sourceRow) {
+      continue;
+    }
+
+    chunk.push(sourceRow);
+
+    if (chunk.length >= chunkSize) {
+      await onChunk(chunk);
+      processedRows += chunk.length;
+      processedChunks += 1;
+      chunk = [];
+    }
+  }
+
+  if (chunk.length) {
+    await onChunk(chunk);
+    processedRows += chunk.length;
+    processedChunks += 1;
+  }
+
+  return {
+    processedRows,
+    processedChunks,
+  };
+}

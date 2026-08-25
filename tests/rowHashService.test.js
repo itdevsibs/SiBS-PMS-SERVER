@@ -6,7 +6,7 @@ import {
   buildRowHashInput,
   createContentHash,
   createRowHash,
-} from "../src/services/imports/rowHashService.js";
+} from "../src/services/imports/shared/rowHashService.js";
 
 test("equivalent normalized identity creates stable HeroDash row_hash", () => {
   const first = createRowHash({

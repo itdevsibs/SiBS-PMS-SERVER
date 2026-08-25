@@ -4,17 +4,21 @@ import fs from "fs/promises";
 import {
   importUsVisaRawWorkbook,
   UsVisaImportError,
-} from "../services/imports/usVisaImportService.js";
+} from "../../services/imports/usVisa/usVisaImportService.js";
+import {
+  WorkbookReaderError,
+  WORKBOOK_READER_ERROR_CODES,
+} from "../../services/imports/shared/workbookReaderService.js";
 import {
   deleteBatchById,
   findBatchByIdOrCode,
   getBatchById,
   listImportBatches,
-} from "../repositories/usVisaImportBatchRepository.js";
+} from "../../repositories/usVisa/usVisaImportBatchRepository.js";
 import {
   countImportErrorsByBatchId,
   listImportErrorsByBatchId,
-} from "../repositories/usVisaImportErrorRepository.js";
+} from "../../repositories/usVisa/usVisaImportErrorRepository.js";
 
 function pickBatchResponse(batch = {}) {
   return {
@@ -86,6 +90,18 @@ function getFatalCode(result = {}) {
   );
 }
 
+function getWorkbookReaderPublicMessage(code) {
+  if (code === WORKBOOK_READER_ERROR_CODES.CORRUPTED_WORKBOOK) {
+    return "The uploaded XLSX file could not be opened as a valid Excel workbook. Please re-export the report from the source system and try again.";
+  }
+
+  if (code === WORKBOOK_READER_ERROR_CODES.INVALID_EXCEL_FILE) {
+    return "The selected file could not be read as an Excel workbook. Please select a valid .xlsx file and try again.";
+  }
+
+  return "The uploaded Excel workbook could not be read.";
+}
+
 function getFatalMessage(result = {}) {
   const profileCode =
     result.profile?.profileCode ||
@@ -118,6 +134,10 @@ function getFatalMessage(result = {}) {
       firstError.message ||
       "The uploaded workbook does not match the expected report format."
     );
+  }
+
+  if (result.error instanceof WorkbookReaderError) {
+    return getWorkbookReaderPublicMessage(result.error.code);
   }
 
   if (result.error instanceof UsVisaImportError) {
@@ -182,7 +202,17 @@ export async function uploadUsVisaImport(req, res) {
     console.error("POST /api/us-visa/imports error:", {
       message: error.message,
       code: error.code,
+      cause: error.cause?.message,
+      stack: error.cause?.stack || error.stack,
     });
+
+    if (error instanceof WorkbookReaderError) {
+      return res.status(400).json({
+        success: false,
+        code: error.code,
+        message: getWorkbookReaderPublicMessage(error.code),
+      });
+    }
 
     if (error instanceof UsVisaImportError) {
       return res.status(400).json({

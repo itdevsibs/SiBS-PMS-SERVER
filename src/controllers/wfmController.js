@@ -2,10 +2,10 @@ import {
   listImportBatches,
   getBatchById,
   deleteBatchById,
-} from "../repositories/usVisaImportBatchRepository.js";
+} from "../repositories/usVisa/usVisaImportBatchRepository.js";
 import {
   getSkillStatisticsByBatchId,
-} from "../repositories/usVisaSkillStatisticsRepository.js";
+} from "../repositories/usVisa/usVisaSkillStatisticsRepository.js";
 
 function pickBatchResponse(batch = {}) {
   return {
