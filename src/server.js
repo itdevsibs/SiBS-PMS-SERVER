@@ -13,7 +13,7 @@ import { testDbConnections } from "./config/db.js";
 
 import employeeRoutes from "./routes/employees.js";
 import sampleRoutes from "./routes/sample.js";
-import usVisaImportRoutes from "./routes/usVisaImports.js";
+import usVisaImportRoutes from "./routes/usVisa/usVisaImports.js";
 import userRoutes from "./routes/users.js";
 import wfmRoutes from "./routes/wfm.js";
 

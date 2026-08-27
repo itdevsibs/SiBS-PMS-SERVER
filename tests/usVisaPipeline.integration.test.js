@@ -6,27 +6,27 @@ import test from "node:test";
 
 import ExcelJS from "exceljs";
 
-import { calculateFileSha256 } from "../src/services/imports/fileHashService.js";
-import { mapFusecomSkillStatisticsRow } from "../src/services/imports/fusecomMapper.js";
-import { mapHeroDashSkillStatisticsRow } from "../src/services/imports/heroDashMapper.js";
+import { calculateFileSha256 } from "../src/services/imports/shared/fileHashService.js";
+import { mapFusecomSkillStatisticsRow } from "../src/services/imports/usVisa/mappers/fusecomMapper.js";
+import { mapHeroDashSkillStatisticsRow } from "../src/services/imports/usVisa/mappers/heroDashMapper.js";
 import {
   createContentHash,
   createRowHash,
-} from "../src/services/imports/rowHashService.js";
+} from "../src/services/imports/shared/rowHashService.js";
 import {
   ROW_VALIDATION_ERROR_CODES,
   validateCanonicalSkillStatisticsRow,
-} from "../src/services/imports/rowValidator.js";
+} from "../src/services/imports/shared/rowValidator.js";
 import {
   openWorkbook,
   readHeaderRow,
   readWorksheetRows,
-} from "../src/services/imports/workbookReaderService.js";
+} from "../src/services/imports/shared/workbookReaderService.js";
 import {
   IMPORT_PROFILE_CODES,
   WORKBOOK_VALIDATION_ERROR_CODES,
   validateWorkbookProfile,
-} from "../src/services/imports/workbookValidator.js";
+} from "../src/services/imports/usVisa/workbookValidator.js";
 
 const heroHeaders = [
   "Date",
@@ -466,7 +466,7 @@ test("database unique constraint and repository insert-only behavior guard canon
     "utf8",
   );
   const repository = await fs.readFile(
-    path.resolve("src/repositories/usVisaSkillStatisticsRepository.js"),
+    path.resolve("src/repositories/usVisa/usVisaSkillStatisticsRepository.js"),
     "utf8",
   );
 

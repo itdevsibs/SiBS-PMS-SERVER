@@ -1,5 +1,5 @@
 // Validates workbook sheet/header structure for supported US VISA profiles.
-import { getWorksheetNames, readHeaderRow } from "./workbookReaderService.js";
+import { getWorksheetNames, readHeaderRow } from "../shared/workbookReaderService.js";
 
 export const IMPORT_PROFILE_CODES = {
   HERO_SKILL_STATISTICS_INBOUND: "HERO_SKILL_STATISTICS_INBOUND",

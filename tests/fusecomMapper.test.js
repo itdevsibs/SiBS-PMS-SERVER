@@ -7,7 +7,7 @@ import {
   getFusecomDataGrain,
   isFusecom15MinuteSheet,
   mapFusecomSkillStatisticsRow,
-} from "./fusecomMapper.js";
+} from "../src/services/imports/usVisa/mappers/fusecomMapper.js";
 
 test("Fusecom only recognizes the 15-minute statistics worksheet", () => {
   assert.equal(FUSECOM_15_MINUTE_SHEET_NAME, "15 Minutes Statistics");

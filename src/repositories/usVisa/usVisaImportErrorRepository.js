@@ -1,5 +1,5 @@
 // Persists structured import errors and warnings for US VISA batches.
-import { pmsDb, pmsTables } from "../config/db.js";
+import { pmsDb, pmsTables } from "../../config/db.js";
 
 function serializeRawValue(value) {
   if (value === undefined || value === null) {
@@ -70,7 +70,10 @@ export async function insertImportError(error = {}) {
     toInsertValues(error),
   );
 
-  return getImportErrorById(result.insertId);
+  return {
+    id: result.insertId,
+    ...error,
+  };
 }
 
 export async function insertImportErrors(errors = []) {

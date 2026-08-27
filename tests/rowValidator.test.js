@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   ROW_VALIDATION_ERROR_CODES,
   validateCanonicalSkillStatisticsRow,
-} from "../src/services/imports/rowValidator.js";
+} from "../src/services/imports/shared/rowValidator.js";
 
 test("validates required daily fields", () => {
   const result = validateCanonicalSkillStatisticsRow({

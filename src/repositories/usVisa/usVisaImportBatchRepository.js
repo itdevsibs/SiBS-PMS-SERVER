@@ -1,7 +1,7 @@
 // Persists US VISA import batch lifecycle records in the PMS database.
 import crypto from "crypto";
 
-import { pmsDb, pmsTables } from "../config/db.js";
+import { pmsDb, pmsTables } from "../../config/db.js";
 
 export const US_VISA_BATCH_STATUSES = {
   UPLOADED: "UPLOADED",
@@ -318,6 +318,17 @@ export function updateBatchStatus(
     error_message: options.errorMessage,
     processing_started_at: options.processingStartedAt,
     completed_at: options.completedAt,
+  });
+}
+
+export function updateBatchReportDates(
+  batchId,
+  reportDateFrom,
+  reportDateTo,
+) {
+  return updateBatchFields(batchId, {
+    report_date_from: toNullableValue(reportDateFrom),
+    report_date_to: toNullableValue(reportDateTo),
   });
 }
 

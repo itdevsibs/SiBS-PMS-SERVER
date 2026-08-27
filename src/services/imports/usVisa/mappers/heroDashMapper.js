@@ -4,7 +4,7 @@ import {
   toDurationSecondsValue,
   toIntegerValue,
   toPercentageValue,
-} from "./valueConversionService.js";
+} from "../../shared/valueConversionService.js";
 
 export const HERODASH_SOURCE_SYSTEM = "HERODASH";
 export const HERODASH_DATA_GRAIN = "SKILL_DAY";
@@ -181,13 +181,22 @@ function toStringResult(value) {
   };
 }
 
-function getSourceValue(sourceRow, sourceHeader) {
-  const sourceHeaderKey = normalizeHeader(sourceHeader);
-  const matchingKey = Object.keys(sourceRow || {}).find(
-    (key) => normalizeHeader(key) === sourceHeaderKey,
-  );
+function createSourceLookup(sourceRow = {}) {
+  const lookup = new Map();
 
-  return matchingKey ? sourceRow[matchingKey] : null;
+  for (const sourceHeader of Object.keys(sourceRow)) {
+    const normalizedHeader = normalizeHeader(sourceHeader);
+
+    if (!lookup.has(normalizedHeader)) {
+      lookup.set(normalizedHeader, sourceRow[sourceHeader]);
+    }
+  }
+
+  return lookup;
+}
+
+function getSourceValue(sourceLookup, sourceHeader) {
+  return sourceLookup.get(normalizeHeader(sourceHeader)) ?? null;
 }
 
 function convertValue(mapping, value) {
@@ -211,9 +220,10 @@ export function mapHeroDashSkillStatisticsRow(sourceRow = {}) {
     data_grain: HERODASH_DATA_GRAIN,
   };
   const conversionErrors = [];
+  const sourceLookup = createSourceLookup(sourceRow);
 
   for (const mapping of FIELD_MAPPINGS) {
-    const rawValue = getSourceValue(sourceRow, mapping.sourceHeader);
+    const rawValue = getSourceValue(sourceLookup, mapping.sourceHeader);
     const result = convertValue(mapping, rawValue);
 
     mappedRow[mapping.targetField] = result.value;

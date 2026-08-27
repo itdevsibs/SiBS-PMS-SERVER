@@ -5,7 +5,7 @@ import {
   HERODASH_DATA_GRAIN,
   HERODASH_SOURCE_SYSTEM,
   mapHeroDashSkillStatisticsRow,
-} from "../src/services/imports/heroDashMapper.js";
+} from "../src/services/imports/usVisa/mappers/heroDashMapper.js";
 
 test("maps HeroDash skill statistics fields to canonical columns", () => {
   const sourceRow = {

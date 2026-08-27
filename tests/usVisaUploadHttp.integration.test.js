@@ -20,7 +20,7 @@ const [
 ] = await Promise.all([
   import("../src/middleware/authMiddleware.js"),
   import("../src/middleware/roleMiddleware.js"),
-  import("../src/middleware/usVisaUploadMiddleware.js"),
+  import("../src/middleware/usVisa/usVisaUploadMiddleware.js"),
 ]);
 
 function createToken(adminAccess) {

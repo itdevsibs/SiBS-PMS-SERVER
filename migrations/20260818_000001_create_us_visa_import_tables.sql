@@ -215,7 +215,6 @@ CREATE TABLE IF NOT EXISTS us_visa_raw_skill_statistics (
   abandonment_pct DECIMAL(9,4) NULL,
   reachability_pct DECIMAL(9,4) NULL,
   calls_on_hold INT UNSIGNED NULL,
-  row_json LONGTEXT NOT NULL,
   row_hash CHAR(64) NOT NULL,
   content_hash CHAR(64) NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,

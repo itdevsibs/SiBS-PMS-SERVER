@@ -1,5 +1,5 @@
 // Inserts and looks up canonical US VISA skill-statistics rows.
-import { pmsDb, pmsTables } from "../config/db.js";
+import { pmsDb, pmsTables } from "../../config/db.js";
 
 const INSERT_COLUMNS = [
   "batch_id",
@@ -46,7 +46,6 @@ const INSERT_COLUMNS = [
   "abandonment_pct",
   "reachability_pct",
   "calls_on_hold",
-  "row_json",
   "row_hash",
   "content_hash",
 ];
@@ -55,12 +54,12 @@ function quoteIdentifier(identifier) {
   return `\`${String(identifier).replace(/`/g, "``")}\``;
 }
 
-function serializeJson(value) {
-  return JSON.stringify(value ?? {});
-}
-
 function toNullableValue(value) {
   return value === undefined || value === "" ? null : value;
+}
+
+function buildInPlaceholders(values = []) {
+  return values.map(() => "?").join(", ");
 }
 
 function mapSkillStatisticsRow(row) {
@@ -112,7 +111,6 @@ function mapSkillStatisticsRow(row) {
     abandonmentPct: row.abandonment_pct,
     reachabilityPct: row.reachability_pct,
     callsOnHold: row.calls_on_hold,
-    rowJson: row.row_json ? JSON.parse(row.row_json) : null,
     rowHash: row.row_hash,
     contentHash: row.content_hash,
     createdAt: row.created_at,
@@ -165,7 +163,6 @@ function getInsertValues(row = {}) {
     toNullableValue(row.abandonment_pct),
     toNullableValue(row.reachability_pct),
     toNullableValue(row.calls_on_hold),
-    serializeJson(row.rowJson || row.row_json),
     row.rowHash || row.row_hash,
     row.contentHash || row.content_hash,
   ];
@@ -183,6 +180,33 @@ export async function findSkillStatisticsByRowHash(rowHash) {
   );
 
   return mapSkillStatisticsRow(rows[0]);
+}
+
+export async function findSkillStatisticsByRowHashes(rowHashes = []) {
+  const uniqueHashes = [
+    ...new Set(rowHashes.filter((rowHash) => Boolean(rowHash))),
+  ];
+
+  if (!uniqueHashes.length) {
+    return [];
+  }
+
+  const [rows] = await pmsDb.query(
+    `
+      SELECT
+        id,
+        batch_id,
+        raw_import_row_id,
+        row_hash,
+        content_hash,
+        created_at
+      FROM ${pmsTables.usVisaRawSkillStatistics}
+      WHERE row_hash IN (${buildInPlaceholders(uniqueHashes)})
+    `,
+    uniqueHashes,
+  );
+
+  return rows.map(mapSkillStatisticsRow);
 }
 
 export async function getContentHashByRowHash(rowHash) {
@@ -218,7 +242,10 @@ export async function insertSkillStatisticsRow(row = {}) {
     getInsertValues(row),
   );
 
-  return getSkillStatisticsById(result.insertId);
+  return {
+    id: result.insertId,
+    ...row,
+  };
 }
 
 export async function insertSkillStatisticsRows(rows = []) {
@@ -240,6 +267,30 @@ export async function insertSkillStatisticsRows(rows = []) {
 
   return {
     insertedCount: result.affectedRows || 0,
+    firstInsertId: result.insertId || null,
+  };
+}
+
+export async function insertSkillStatisticsRowsWithDuplicateProtection(rows = []) {
+  if (!rows.length) {
+    return {
+      affectedCount: 0,
+    };
+  }
+
+  const columnSql = INSERT_COLUMNS.map(quoteIdentifier).join(", ");
+  const [result] = await pmsDb.query(
+    `
+      INSERT INTO ${pmsTables.usVisaRawSkillStatistics}
+        (${columnSql})
+      VALUES ?
+      ON DUPLICATE KEY UPDATE id = id
+    `,
+    [rows.map(getInsertValues)],
+  );
+
+  return {
+    affectedCount: result.affectedRows || 0,
     firstInsertId: result.insertId || null,
   };
 }
