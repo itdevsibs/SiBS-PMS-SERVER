@@ -24,6 +24,11 @@ const requireWfm = [
   requireRole([9]),
 ];
 
+const requireWfmGraphViewer = [
+  authMiddleware,
+  requireRole([7, 6, 9, 10]),
+];
+
 router.get(
   "/history-logs",
   ...requireWfm,
@@ -44,7 +49,7 @@ router.delete(
 
 router.get(
   "/kpis/calls",
-  ...requireWfm,
+  ...requireWfmGraphViewer,
   getWfmCallsKpi,
 );
 
