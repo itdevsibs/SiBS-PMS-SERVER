@@ -4,6 +4,7 @@ import express from "express";
 import {
   deleteUsVisaImportBatch,
   getUsVisaImportBatchDetails,
+  getUsVisaImportSummary,
   listUsVisaImportBatchErrors,
   listUsVisaImportHistory,
   uploadUsVisaImport,
@@ -23,6 +24,12 @@ router.get(
   "/imports",
   ...requireWfm,
   listUsVisaImportHistory,
+);
+
+router.get(
+  "/imports/summary",
+  ...requireWfm,
+  getUsVisaImportSummary,
 );
 
 router.get(

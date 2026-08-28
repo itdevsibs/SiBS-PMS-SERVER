@@ -1,5 +1,8 @@
 // Validates workbook sheet/header structure for supported US VISA profiles.
-import { getWorksheetNames, readHeaderRow } from "../shared/workbookReaderService.js";
+import {
+  getWorksheetNames,
+  readHeaderRow,
+} from "../shared/workbookReaderService.js";
 
 export const IMPORT_PROFILE_CODES = {
   HERO_SKILL_STATISTICS_INBOUND: "HERO_SKILL_STATISTICS_INBOUND",
@@ -85,9 +88,16 @@ const FUSECOM_INTRADAY_SKILL_STATISTICS_HEADERS = [
   ),
 ];
 
+const FUSECOM_IGNORED_HEADERS = [
+  "Record Number",
+  "Hold on Held Calls",
+  "VCH AVG time (sec)",
+];
+
 export const WORKBOOK_PROFILE_DEFINITIONS = {
   [IMPORT_PROFILE_CODES.HERO_SKILL_STATISTICS_INBOUND]: {
-    profileCode: IMPORT_PROFILE_CODES.HERO_SKILL_STATISTICS_INBOUND,
+    profileCode:
+      IMPORT_PROFILE_CODES.HERO_SKILL_STATISTICS_INBOUND,
     sourceSystem: "HERODASH",
     requiredSheets: [
       {
@@ -100,7 +110,8 @@ export const WORKBOOK_PROFILE_DEFINITIONS = {
   },
 
   [IMPORT_PROFILE_CODES.FUSECOM_SKILL_STATISTICS_INBOUND]: {
-    profileCode: IMPORT_PROFILE_CODES.FUSECOM_SKILL_STATISTICS_INBOUND,
+    profileCode:
+      IMPORT_PROFILE_CODES.FUSECOM_SKILL_STATISTICS_INBOUND,
     sourceSystem: "FUSECOM",
     requiredSheets: [
       {
@@ -109,6 +120,13 @@ export const WORKBOOK_PROFILE_DEFINITIONS = {
         headerRowNumber: 1,
         headerRowCandidates: [9],
         requiredHeaders: FUSECOM_INTRADAY_SKILL_STATISTICS_HEADERS,
+
+        // These columns exist in the official Fusecom workbook but are
+        // intentionally not used by PMS KPI calculations.
+        //
+        // They remain available in the original raw row_json, but they
+        // must not create UNKNOWN_COLUMN warnings/import-error records.
+        ignoredHeaders: FUSECOM_IGNORED_HEADERS,
       },
     ],
   },
@@ -165,7 +183,8 @@ function validateSheetHeaders(workbook, rule) {
       errors: [
         createValidationIssue({
           severity: "FATAL",
-          code: WORKBOOK_VALIDATION_ERROR_CODES.MISSING_REQUIRED_SHEET,
+          code:
+            WORKBOOK_VALIDATION_ERROR_CODES.MISSING_REQUIRED_SHEET,
           message: rule.sheetName
             ? `Required worksheet "${rule.sheetName}" is missing.`
             : "A required worksheet is missing.",
@@ -178,25 +197,57 @@ function validateSheetHeaders(workbook, rule) {
     };
   }
 
-  const headerRowNumber = findBestHeaderRowNumber(workbook, sheetName, rule);
-  const headers = readHeaderRow(workbook, sheetName, headerRowNumber);
-  const sourceHeaders = headers.map((header) => header.sourceHeader);
-  const sourceHeaderMap = new Map(
-    sourceHeaders.map((header) => [normalizeHeader(header), header]),
+  const headerRowNumber = findBestHeaderRowNumber(
+    workbook,
+    sheetName,
+    rule,
   );
+
+  const headers = readHeaderRow(
+    workbook,
+    sheetName,
+    headerRowNumber,
+  );
+
+  const sourceHeaders = headers.map(
+    (header) => header.sourceHeader,
+  );
+
+  const sourceHeaderMap = new Map(
+    sourceHeaders.map((header) => [
+      normalizeHeader(header),
+      header,
+    ]),
+  );
+
   const requiredHeaderMap = new Map(
-    rule.requiredHeaders.map((header) => [normalizeHeader(header), header]),
+    rule.requiredHeaders.map((header) => [
+      normalizeHeader(header),
+      header,
+    ]),
+  );
+
+  const ignoredHeaderMap = new Map(
+    (rule.ignoredHeaders || []).map((header) => [
+      normalizeHeader(header),
+      header,
+    ]),
   );
 
   const errors = [];
   const warnings = [];
 
   for (const requiredHeader of rule.requiredHeaders) {
-    if (!sourceHeaderMap.has(normalizeHeader(requiredHeader))) {
+    if (
+      !sourceHeaderMap.has(
+        normalizeHeader(requiredHeader),
+      )
+    ) {
       errors.push(
         createValidationIssue({
           severity: "FATAL",
-          code: WORKBOOK_VALIDATION_ERROR_CODES.MISSING_REQUIRED_COLUMN,
+          code:
+            WORKBOOK_VALIDATION_ERROR_CODES.MISSING_REQUIRED_COLUMN,
           message: `Required column "${requiredHeader}" is missing.`,
           sheetName,
           columnName: requiredHeader,
@@ -207,12 +258,24 @@ function validateSheetHeaders(workbook, rule) {
   }
 
   for (const sourceHeader of sourceHeaders) {
-    if (!requiredHeaderMap.has(normalizeHeader(sourceHeader))) {
+    const normalizedSourceHeader =
+      normalizeHeader(sourceHeader);
+
+    const isRequiredHeader =
+      requiredHeaderMap.has(normalizedSourceHeader);
+
+    const isIgnoredHeader =
+      ignoredHeaderMap.has(normalizedSourceHeader);
+
+    if (!isRequiredHeader && !isIgnoredHeader) {
       warnings.push(
         createValidationIssue({
           severity: "WARNING",
-          code: WORKBOOK_VALIDATION_ERROR_CODES.UNKNOWN_COLUMN,
-          message: `Unknown column "${sourceHeader}" will be preserved as raw data only.`,
+          code:
+            WORKBOOK_VALIDATION_ERROR_CODES.UNKNOWN_COLUMN,
+          message:
+            `Unknown column "${sourceHeader}" ` +
+            "will be preserved as raw data only.",
           sheetName,
           columnName: sourceHeader,
           dataGrain: rule.dataGrain,
@@ -233,10 +296,22 @@ function validateSheetHeaders(workbook, rule) {
   };
 }
 
-function getHeaderMatchCount(workbook, sheetName, headerRowNumber, rule) {
-  const headers = readHeaderRow(workbook, sheetName, headerRowNumber);
+function getHeaderMatchCount(
+  workbook,
+  sheetName,
+  headerRowNumber,
+  rule,
+) {
+  const headers = readHeaderRow(
+    workbook,
+    sheetName,
+    headerRowNumber,
+  );
+
   const sourceHeaderSet = new Set(
-    headers.map((header) => normalizeHeader(header.sourceHeader)),
+    headers.map((header) =>
+      normalizeHeader(header.sourceHeader),
+    ),
   );
 
   return rule.requiredHeaders.filter((header) =>
@@ -244,34 +319,56 @@ function getHeaderMatchCount(workbook, sheetName, headerRowNumber, rule) {
   ).length;
 }
 
-function findBestHeaderRowNumber(workbook, sheetName, rule) {
+function findBestHeaderRowNumber(
+  workbook,
+  sheetName,
+  rule,
+) {
   const candidates = [
     rule.headerRowNumber,
     ...(rule.headerRowCandidates || []),
   ].filter(Boolean);
+
   const uniqueCandidates = [...new Set(candidates)];
 
-  return uniqueCandidates.reduce((best, candidate) => {
-    const bestCount = getHeaderMatchCount(workbook, sheetName, best, rule);
-    const candidateCount = getHeaderMatchCount(
-      workbook,
-      sheetName,
-      candidate,
-      rule,
-    );
+  return uniqueCandidates.reduce(
+    (best, candidate) => {
+      const bestCount = getHeaderMatchCount(
+        workbook,
+        sheetName,
+        best,
+        rule,
+      );
 
-    return candidateCount > bestCount ? candidate : best;
-  }, uniqueCandidates[0] || 1);
+      const candidateCount = getHeaderMatchCount(
+        workbook,
+        sheetName,
+        candidate,
+        rule,
+      );
+
+      return candidateCount > bestCount
+        ? candidate
+        : best;
+    },
+    uniqueCandidates[0] || 1,
+  );
 }
 
-export function validateWorkbookProfile(workbook, profileCode) {
-  const profileDefinition = WORKBOOK_PROFILE_DEFINITIONS[profileCode];
+export function validateWorkbookProfile(
+  workbook,
+  profileCode,
+) {
+  const profileDefinition =
+    WORKBOOK_PROFILE_DEFINITIONS[profileCode];
 
   if (!profileDefinition) {
     const error = createValidationIssue({
       severity: "FATAL",
-      code: WORKBOOK_VALIDATION_ERROR_CODES.WRONG_IMPORT_PROFILE,
-      message: `Unsupported import profile "${profileCode || ""}".`,
+      code:
+        WORKBOOK_VALIDATION_ERROR_CODES.WRONG_IMPORT_PROFILE,
+      message:
+        `Unsupported import profile "${profileCode || ""}".`,
     });
 
     return {
@@ -284,11 +381,18 @@ export function validateWorkbookProfile(workbook, profileCode) {
     };
   }
 
-  const sheets = profileDefinition.requiredSheets.map((rule) =>
-    validateSheetHeaders(workbook, rule),
+  const sheets =
+    profileDefinition.requiredSheets.map((rule) =>
+      validateSheetHeaders(workbook, rule),
+    );
+
+  const errors = sheets.flatMap(
+    (sheet) => sheet.errors,
   );
-  const errors = sheets.flatMap((sheet) => sheet.errors);
-  const warnings = sheets.flatMap((sheet) => sheet.warnings);
+
+  const warnings = sheets.flatMap(
+    (sheet) => sheet.warnings,
+  );
 
   return {
     isValid: errors.length === 0,
@@ -301,17 +405,23 @@ export function validateWorkbookProfile(workbook, profileCode) {
   };
 }
 
-export function getRequiredHeadersForProfile(profileCode) {
-  const profileDefinition = WORKBOOK_PROFILE_DEFINITIONS[profileCode];
+export function getRequiredHeadersForProfile(
+  profileCode,
+) {
+  const profileDefinition =
+    WORKBOOK_PROFILE_DEFINITIONS[profileCode];
 
   if (!profileDefinition) {
     return [];
   }
 
-  return profileDefinition.requiredSheets.map((sheet) => ({
-    sheetName: sheet.sheetName || "First worksheet",
-    dataGrain: sheet.dataGrain,
-    headerRowNumber: sheet.headerRowNumber,
-    requiredHeaders: sheet.requiredHeaders,
-  }));
+  return profileDefinition.requiredSheets.map(
+    (sheet) => ({
+      sheetName:
+        sheet.sheetName || "First worksheet",
+      dataGrain: sheet.dataGrain,
+      headerRowNumber: sheet.headerRowNumber,
+      requiredHeaders: sheet.requiredHeaders,
+    }),
+  );
 }

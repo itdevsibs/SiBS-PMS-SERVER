@@ -18,6 +18,31 @@ const SUCCESSFUL_IMPORT_STATUSES = [
   US_VISA_BATCH_STATUSES.COMPLETED_WITH_ERRORS,
 ];
 
+const US_VISA_ACCOUNT_NAME = "US VISA";
+
+const EMPTY_IMPORT_SUMMARY = Object.freeze({
+  totalUploads: 0,
+  uploadsWithIssues: 0,
+  totalRows: 0,
+  validRows: 0,
+  invalidRows: 0,
+  duplicateRows: 0,
+  warningRows: 0,
+});
+
+function normalizeAccountFilter(value) {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toUpperCase();
+
+  if (!normalized || normalized === "ALL ACCOUNTS") {
+    return null;
+  }
+
+  return normalized;
+}
+
 const BATCH_CODE_RETRY_LIMIT = 10;
 
 function toNullableValue(value) {
@@ -199,6 +224,51 @@ export async function deleteBatchById(batchId) {
   );
 
   return result.affectedRows > 0;
+}
+
+export async function getImportSummary(options = {}) {
+  const account = normalizeAccountFilter(options.account);
+
+  if (account && account !== US_VISA_ACCOUNT_NAME) {
+    return { ...EMPTY_IMPORT_SUMMARY };
+  }
+
+  const [rows] = await queryUsVisa(
+    `
+      SELECT
+        COUNT(
+          CASE
+            WHEN status IN (?, ?) AND total_rows > 0 THEN 1
+          END
+        ) AS total_uploads,
+        COUNT(
+          CASE
+            WHEN status = ? AND total_rows > 0 THEN 1
+          END
+        ) AS uploads_with_issues,
+        COALESCE(SUM(total_rows), 0) AS total_rows,
+        COALESCE(SUM(valid_rows), 0) AS valid_rows,
+        COALESCE(SUM(invalid_rows), 0) AS invalid_rows,
+        COALESCE(SUM(duplicate_rows), 0) AS duplicate_rows,
+        COALESCE(SUM(warning_rows), 0) AS warning_rows
+      FROM ${pmsTables.usVisaImportBatches}
+    `,
+    [
+      ...SUCCESSFUL_IMPORT_STATUSES,
+      US_VISA_BATCH_STATUSES.COMPLETED_WITH_ERRORS,
+    ],
+  );
+  const summary = rows[0] || {};
+
+  return {
+    totalUploads: toInteger(summary.total_uploads),
+    uploadsWithIssues: toInteger(summary.uploads_with_issues),
+    totalRows: toInteger(summary.total_rows),
+    validRows: toInteger(summary.valid_rows),
+    invalidRows: toInteger(summary.invalid_rows),
+    duplicateRows: toInteger(summary.duplicate_rows),
+    warningRows: toInteger(summary.warning_rows),
+  };
 }
 
 export async function listImportBatches(options = {}) {

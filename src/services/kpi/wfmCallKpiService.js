@@ -269,6 +269,7 @@ export function buildWfmCallKpiDashboard({
   dateFrom = null,
   dateTo = null,
   referenceDate = null,
+  taskOrder = null,
   targets = WFM_CALL_KPI_TARGETS,
 } = {}) {
   const normalizedPeriod = normalizeCallKpiPeriod(period);
@@ -315,6 +316,7 @@ export function buildWfmCallKpiDashboard({
       referenceDate,
       sourceSystem,
       dataGrain,
+      taskOrder,
     },
   };
 }

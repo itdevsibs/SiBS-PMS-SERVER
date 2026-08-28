@@ -246,3 +246,17 @@ test("returns six weekly chart buckets and zero-fills weeks without rows", () =>
     [0, 0, 0, 0, 0, 100],
   );
 });
+
+test("returns the selected Task Order in dashboard filters", () => {
+  const result = buildWfmCallKpiDashboard({
+    rows: [],
+    period: "weekly",
+    sourceSystem: "FUSECOM",
+    dataGrain: "SKILL_15_MINUTE",
+    dateFrom: "2026-07-01",
+    dateTo: "2026-07-31",
+    taskOrder: "TO12",
+  });
+
+  assert.equal(result.filters.taskOrder, "TO12");
+});
