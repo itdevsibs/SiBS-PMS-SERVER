@@ -10,6 +10,10 @@ import {
   resolveCallKpiDateRange,
   resolveDefaultCallKpiDateRange,
 } from "./wfmCallKpiService.js";
+import {
+  getUsVisaTaskOrderCountries,
+  normalizeUsVisaTaskOrder,
+} from "./usVisa/usVisaTaskOrderFilter.js";
 
 const DEFAULT_SOURCE_SYSTEM = "FUSECOM";
 const SUPPORTED_SOURCE_SYSTEMS = new Set([
@@ -76,6 +80,14 @@ export async function getWfmCallKpiDashboard(query = {}) {
   const requestedDateFrom = normalizeDate(query.from || query.dateFrom);
   const requestedDateTo = normalizeDate(query.to || query.dateTo);
   const requestedGrain = normalizeRequestedGrain(query.dataGrain);
+  const taskOrder = normalizeUsVisaTaskOrder(
+    sourceSystem,
+    query.taskOrder,
+  );
+  const taskOrderCountries = getUsVisaTaskOrderCountries(
+    sourceSystem,
+    taskOrder,
+  );
 
   const isCustomRange = period === "custom";
   const isLegacyManualRange = !isCustomRange
@@ -101,6 +113,7 @@ export async function getWfmCallKpiDashboard(query = {}) {
 
   const availableGrains = await listAvailableCallKpiDataGrains({
     sourceSystem,
+    taskOrderCountries,
     ...grainLookupRange,
   });
 
@@ -118,13 +131,18 @@ export async function getWfmCallKpiDashboard(query = {}) {
         dateFrom: requestedDateFrom,
         dateTo: requestedDateTo,
         referenceDate: requestedReferenceDate,
+        taskOrder,
       }),
       availableGrains,
       availableDateRange: { minDate: null, maxDate: null },
     };
   }
 
-  const bounds = await getCallKpiDateBounds({ sourceSystem, dataGrain });
+  const bounds = await getCallKpiDateBounds({
+    sourceSystem,
+    dataGrain,
+    taskOrderCountries,
+  });
 
   let dateFrom = requestedDateFrom;
   let dateTo = requestedDateTo;
@@ -176,6 +194,7 @@ export async function getWfmCallKpiDashboard(query = {}) {
     dataGrain,
     dateFrom,
     dateTo,
+    taskOrderCountries,
   });
 
   const dashboard = buildWfmCallKpiDashboard({
@@ -186,6 +205,7 @@ export async function getWfmCallKpiDashboard(query = {}) {
     dateFrom,
     dateTo,
     referenceDate,
+    taskOrder,
   });
 
   return {

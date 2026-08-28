@@ -1,6 +1,26 @@
 import { pmsDb, pmsTables } from "../config/db.js";
+import {
+  buildUsVisaTaskOrderCountrySqlFilter,
+} from "../services/kpi/usVisa/usVisaTaskOrderFilter.js";
 
 const COMPLETED_BATCH_STATUS = "COMPLETED";
+
+function appendTaskOrderCountryFilter({
+  conditions,
+  values,
+  sourceSystem,
+  taskOrderCountries = [],
+}) {
+  const filter = buildUsVisaTaskOrderCountrySqlFilter(
+    sourceSystem,
+    taskOrderCountries,
+  );
+
+  if (!filter.condition) return;
+
+  conditions.push(filter.condition);
+  values.push(...filter.values);
+}
 
 function buildDateFilters({ dateFrom, dateTo } = {}) {
   const conditions = [
@@ -28,6 +48,7 @@ export async function listAvailableCallKpiDataGrains({
   dataGrain,
   dateFrom,
   dateTo,
+  taskOrderCountries = [],
 } = {}) {
   const { conditions, values } = buildDateFilters({
     dateFrom,
@@ -36,6 +57,13 @@ export async function listAvailableCallKpiDataGrains({
 
   conditions.push("s.source_system = ?");
   values.push(sourceSystem);
+
+  appendTaskOrderCountryFilter({
+    conditions,
+    values,
+    sourceSystem,
+    taskOrderCountries,
+  });
 
   if (dataGrain) {
     conditions.push("s.data_grain = ?");
@@ -65,6 +93,7 @@ export async function listAvailableCallKpiDataGrains({
 export async function getCallKpiDateBounds({
   sourceSystem = "FUSECOM",
   dataGrain,
+  taskOrderCountries = [],
 } = {}) {
   const conditions = [
     "s.production_date IS NOT NULL",
@@ -76,6 +105,13 @@ export async function getCallKpiDateBounds({
     sourceSystem,
     COMPLETED_BATCH_STATUS,
   ];
+
+  appendTaskOrderCountryFilter({
+    conditions,
+    values,
+    sourceSystem,
+    taskOrderCountries,
+  });
 
   if (dataGrain) {
     conditions.push("s.data_grain = ?");
@@ -112,6 +148,7 @@ export async function getDailyCallKpiRows({
   dataGrain,
   dateFrom,
   dateTo,
+  taskOrderCountries = [],
 } = {}) {
   const { conditions, values } = buildDateFilters({
     dateFrom,
@@ -120,6 +157,13 @@ export async function getDailyCallKpiRows({
 
   conditions.push("s.source_system = ?");
   values.push(sourceSystem);
+
+  appendTaskOrderCountryFilter({
+    conditions,
+    values,
+    sourceSystem,
+    taskOrderCountries,
+  });
 
   if (dataGrain) {
     conditions.push("s.data_grain = ?");

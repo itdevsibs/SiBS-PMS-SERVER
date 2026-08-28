@@ -4,6 +4,7 @@ const BAD_REQUEST_CODES = new Set([
   "INVALID_CUSTOM_DATE_RANGE",
   "INVALID_DATE_RANGE",
   "INVALID_REFERENCE_DATE",
+  "INVALID_TASK_ORDER",
 ]);
 
 export async function getWfmCallsKpi(req, res) {

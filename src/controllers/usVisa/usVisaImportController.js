@@ -13,6 +13,7 @@ import {
   deleteBatchById,
   findBatchByIdOrCode,
   getBatchById,
+  getImportSummary,
   listImportBatches,
 } from "../../repositories/usVisa/usVisaImportBatchRepository.js";
 import {
@@ -255,6 +256,30 @@ export async function listUsVisaImportHistory(req, res) {
       success: false,
       code: "IMPORT_HISTORY_ERROR",
       message: "Unable to fetch import history.",
+    });
+  }
+}
+
+export async function getUsVisaImportSummary(req, res) {
+  try {
+    const summary = await getImportSummary({
+      account: req.query?.account,
+    });
+
+    return res.json({
+      success: true,
+      summary,
+    });
+  } catch (error) {
+    console.error("GET /api/us-visa/imports/summary error:", {
+      message: error.message,
+      code: error.code,
+    });
+
+    return res.status(500).json({
+      success: false,
+      code: "IMPORT_SUMMARY_ERROR",
+      message: "Unable to fetch import summary.",
     });
   }
 }
