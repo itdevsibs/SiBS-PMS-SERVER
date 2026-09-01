@@ -128,6 +128,15 @@ export const pmsTables = {
     PMS_DB_NAME,
     "us_visa_raw_skill_statistics",
   ),
+  usVisaRawAgentInteractions: dbTable(
+    PMS_DB_NAME,
+    "us_visa_raw_agent_interactions",
+  ),
+  usVisaEmployeeAliases: dbTable(PMS_DB_NAME, "us_visa_employee_aliases"),
+  usVisaEmployeeScopeAssignments: dbTable(
+    PMS_DB_NAME,
+    "us_visa_employee_scope_assignments",
+  ),
   wfmHistoryLogs: dbTable(PMS_DB_NAME, "wfm_history_logs"),
 };
 

@@ -26,6 +26,8 @@ function pickBatchResponse(batch = {}) {
     id: batch.id,
     batchCode: batch.batchCode,
     importProfileId: batch.importProfileId,
+    importProfileCode: batch.importProfileCode,
+    importProfileName: batch.importProfileName,
     sourceFilename: batch.sourceFilename,
     sourceSystem: batch.sourceSystem,
     status: batch.status,
@@ -111,6 +113,9 @@ function getFatalMessage(result = {}) {
     "";
   const isHerodash = /hero/i.test(profileCode);
   const isFusecom = /fuse/i.test(profileCode);
+  const isFusenet = /fusenet/i.test(profileCode);
+  const isAgentLevel = /agent/i.test(profileCode);
+  const profileLabel = result.profile?.profileName || profileCode || "selected";
 
   if (result.workbookValidation?.errors?.length) {
     const firstError = result.workbookValidation.errors[0];
@@ -121,6 +126,18 @@ function getFatalMessage(result = {}) {
       firstError.errorCode === "MISSING_REQUIRED_COLUMN" ||
       firstError.errorCode === "MISSING_REQUIRED_HEADER"
     ) {
+      if (isAgentLevel) {
+        if (isHerodash) {
+          return "Only HeroDash Agent Level (.xlsx) files are allowed for this card. The selected file is missing required HeroDash Agent Level sheets or column headers.";
+        }
+        if (isFusenet) {
+          return "Only FuseNet Agent Level (.xlsx) files are allowed for this card. The selected file is missing required FuseNet Agent Level sheets or column headers.";
+        }
+        if (isFusecom) {
+          return "Only Fusecom Agent Level (.xlsx) files are allowed for this card. The selected file is missing required Fusecom Agent Level sheets or column headers.";
+        }
+        return `Only ${profileLabel} (.xlsx) files are allowed for this card. The selected file is missing required Agent Level sheets or column headers.`;
+      }
       if (isHerodash) {
         return "Only HeroDash Skill Statistics (.xlsx) files are allowed for this card. The selected file is missing required HeroDash sheets or column headers.";
       }

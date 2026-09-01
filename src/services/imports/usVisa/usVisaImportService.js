@@ -57,6 +57,7 @@ import {
   IMPORT_PROFILE_CODES,
   validateWorkbookProfile,
 } from "./workbookValidator.js";
+import { getUsVisaImportProcessor } from "./importProfileDispatcher.js";
 
 const DEFAULT_ROW_CHUNK_SIZE = 1000;
 
@@ -779,27 +780,41 @@ export async function importUsVisaRawWorkbook(options = {}) {
 
     await updateBatchStatus(batch.id, US_VISA_BATCH_STATUSES.IMPORTING);
 
-    const seenRows = new Map();
+    const processor = getUsVisaImportProcessor(profile);
 
-    for (const sheet of workbookValidation.sheets) {
-      if (
-        profileCode === IMPORT_PROFILE_CODES.FUSECOM_SKILL_STATISTICS_INBOUND &&
-        !isFusecom15MinuteSheet(sheet)
-      ) {
-        continue;
-      }
-
-      await processSheet({
+    if (processor.processWorkbook) {
+      await processor.processWorkbook({
         workbook,
         batch,
         profile,
         profileCode,
-        sheet,
-        reportDateFrom,
-        reportDateTo,
+        workbookValidation,
         counters,
-        seenRows,
+        chunkSize: getChunkSize(),
       });
+    } else {
+      const seenRows = new Map();
+
+      for (const sheet of workbookValidation.sheets) {
+        if (
+          profileCode === IMPORT_PROFILE_CODES.FUSECOM_SKILL_STATISTICS_INBOUND &&
+          !isFusecom15MinuteSheet(sheet)
+        ) {
+          continue;
+        }
+
+        await processSheet({
+          workbook,
+          batch,
+          profile,
+          profileCode,
+          sheet,
+          reportDateFrom,
+          reportDateTo,
+          counters,
+          seenRows,
+        });
+      }
     }
 
     const finalBatch = hasCompletedWithErrors(counters)
