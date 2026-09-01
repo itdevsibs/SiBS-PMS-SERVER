@@ -247,16 +247,30 @@ test("returns six weekly chart buckets and zero-fills weeks without rows", () =>
   );
 });
 
-test("returns the selected Task Order in dashboard filters", () => {
-  const result = buildWfmCallKpiDashboard({
-    rows: [],
-    period: "weekly",
-    sourceSystem: "FUSECOM",
-    dataGrain: "SKILL_15_MINUTE",
-    dateFrom: "2026-07-01",
-    dateTo: "2026-07-31",
-    taskOrder: "TO12",
-  });
+test("returns the selected Task Order, Skill, and Country in dashboard filters", () => {
+  const skillCategories = [
+    "English All",
+    "English NIV",
+    "English IV",
+    "English ACS",
+    "Non English",
+  ];
 
-  assert.equal(result.filters.taskOrder, "TO12");
+  for (const skill of skillCategories) {
+    const result = buildWfmCallKpiDashboard({
+      rows: [],
+      period: "weekly",
+      sourceSystem: "HERODASH",
+      dataGrain: "SKILL_DAY",
+      dateFrom: "2026-07-01",
+      dateTo: "2026-07-31",
+      taskOrder: "TO4",
+      skill,
+      country: "australia",
+    });
+
+    assert.equal(result.filters.taskOrder, "TO4");
+    assert.equal(result.filters.skill, skill);
+    assert.equal(result.filters.country, "australia");
+  }
 });

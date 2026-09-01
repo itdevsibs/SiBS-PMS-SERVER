@@ -75,7 +75,15 @@ export function normalizeUsVisaTaskOrder(sourceSystem, value) {
   const normalizedSourceSystem = normalizeSourceSystem(sourceSystem);
   const config = TASK_ORDER_CONFIG[taskOrder];
 
-  if (!config || config.sourceSystem !== normalizedSourceSystem) {
+  if (!config) {
+    throw createInvalidTaskOrderError(normalizedSourceSystem, taskOrder);
+  }
+
+  if (
+    normalizedSourceSystem !== "US_VISA" &&
+    normalizedSourceSystem !== "US VISA" &&
+    config.sourceSystem !== normalizedSourceSystem
+  ) {
     throw createInvalidTaskOrderError(normalizedSourceSystem, taskOrder);
   }
 
@@ -124,6 +132,13 @@ export function buildUsVisaTaskOrderCountrySqlFilter(
     return {
       condition: `LOWER(TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX(${tableAlias}.source_skill_name, ' - ', 1), '::', -1))) IN (${placeholders})`,
       values: normalizedCountries,
+    };
+  }
+
+  if (normalizedSourceSystem === "US_VISA" || normalizedSourceSystem === "US VISA") {
+    return {
+      condition: `(LOWER(TRIM(${tableAlias}.country_region)) IN (${placeholders}) OR LOWER(TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX(${tableAlias}.source_skill_name, ' - ', 1), '::', -1))) IN (${placeholders}))`,
+      values: [...normalizedCountries, ...normalizedCountries],
     };
   }
 

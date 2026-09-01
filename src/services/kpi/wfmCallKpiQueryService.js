@@ -15,8 +15,10 @@ import {
   normalizeUsVisaTaskOrder,
 } from "./usVisa/usVisaTaskOrderFilter.js";
 
-const DEFAULT_SOURCE_SYSTEM = "FUSECOM";
+const DEFAULT_SOURCE_SYSTEM = "US_VISA";
 const SUPPORTED_SOURCE_SYSTEMS = new Set([
+  "US_VISA",
+  "US VISA",
   "FUSECOM",
   "HERODASH",
 ]);
@@ -88,6 +90,8 @@ export async function getWfmCallKpiDashboard(query = {}) {
     sourceSystem,
     taskOrder,
   );
+  const country = String(query.country || "").trim() || null;
+  const skill = String(query.skill || "").trim() || null;
 
   const isCustomRange = period === "custom";
   const isLegacyManualRange = !isCustomRange
@@ -111,17 +115,52 @@ export async function getWfmCallKpiDashboard(query = {}) {
       }
     : {};
 
-  const availableGrains = await listAvailableCallKpiDataGrains({
+  const rawGrains = await listAvailableCallKpiDataGrains({
     sourceSystem,
     taskOrderCountries,
+    country,
+    skill,
     ...grainLookupRange,
   });
 
-  const dataGrain = requestedGrain && availableGrains.includes(requestedGrain)
+  const availableGrainsBySource = {};
+  const allAvailableGrains = new Set();
+
+  for (const item of rawGrains) {
+    if (typeof item === "string") {
+      allAvailableGrains.add(item);
+      const src = sourceSystem;
+      if (!availableGrainsBySource[src]) availableGrainsBySource[src] = [];
+      availableGrainsBySource[src].push(item);
+    } else if (item && typeof item === "object") {
+      const src = item.source_system || sourceSystem;
+      const grain = item.data_grain;
+      if (grain) {
+        allAvailableGrains.add(grain);
+        if (!availableGrainsBySource[src]) availableGrainsBySource[src] = [];
+        availableGrainsBySource[src].push(grain);
+      }
+    }
+  }
+
+  const availableGrains = [...allAvailableGrains];
+
+  const sourceGrainMap = {};
+  for (const [src, grains] of Object.entries(availableGrainsBySource)) {
+    const chosen = requestedGrain && grains.includes(requestedGrain)
+      ? requestedGrain
+      : chooseCallKpiDataGrain(grains);
+    if (chosen) {
+      sourceGrainMap[src] = chosen;
+    }
+  }
+
+  const hasAnyGrain = Object.keys(sourceGrainMap).length > 0;
+  const primaryDataGrain = requestedGrain && availableGrains.includes(requestedGrain)
     ? requestedGrain
     : chooseCallKpiDataGrain(availableGrains);
 
-  if (!dataGrain) {
+  if (!hasAnyGrain || !primaryDataGrain) {
     return {
       ...buildWfmCallKpiDashboard({
         rows: [],
@@ -132,6 +171,8 @@ export async function getWfmCallKpiDashboard(query = {}) {
         dateTo: requestedDateTo,
         referenceDate: requestedReferenceDate,
         taskOrder,
+        country,
+        skill,
       }),
       availableGrains,
       availableDateRange: { minDate: null, maxDate: null },
@@ -140,8 +181,11 @@ export async function getWfmCallKpiDashboard(query = {}) {
 
   const bounds = await getCallKpiDateBounds({
     sourceSystem,
-    dataGrain,
+    sourceGrainMap,
+    dataGrain: primaryDataGrain,
     taskOrderCountries,
+    country,
+    skill,
   });
 
   let dateFrom = requestedDateFrom;
@@ -191,21 +235,26 @@ export async function getWfmCallKpiDashboard(query = {}) {
 
   const rows = await getDailyCallKpiRows({
     sourceSystem,
-    dataGrain,
+    sourceGrainMap,
+    dataGrain: primaryDataGrain,
     dateFrom,
     dateTo,
     taskOrderCountries,
+    country,
+    skill,
   });
 
   const dashboard = buildWfmCallKpiDashboard({
     rows,
     period,
     sourceSystem,
-    dataGrain,
+    dataGrain: primaryDataGrain,
     dateFrom,
     dateTo,
     referenceDate,
     taskOrder,
+    country,
+    skill,
   });
 
   return {

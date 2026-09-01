@@ -22,6 +22,121 @@ function appendTaskOrderCountryFilter({
   values.push(...filter.values);
 }
 
+function appendCountryFilter({
+  conditions,
+  values,
+  sourceSystem,
+  country,
+}) {
+  const normalizedCountry = String(country || "").trim().toLowerCase();
+  if (!normalizedCountry || normalizedCountry === "all") return;
+
+  const normalizedSourceSystem = String(sourceSystem || "").trim().toUpperCase();
+
+  if (normalizedSourceSystem === "HERODASH") {
+    conditions.push("LOWER(TRIM(s.country_region)) = ?");
+    values.push(normalizedCountry);
+  } else if (normalizedSourceSystem === "FUSECOM") {
+    conditions.push("(LOWER(TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX(s.source_skill_name, ' - ', 1), '::', -1))) = ? OR LOWER(TRIM(s.country_region)) = ?)");
+    values.push(normalizedCountry, normalizedCountry);
+  } else {
+    conditions.push("(LOWER(TRIM(s.country_region)) = ? OR LOWER(TRIM(s.source_skill_name)) LIKE ?)");
+    values.push(normalizedCountry, `%${normalizedCountry}%`);
+  }
+}
+
+function appendSourceSystemFilter({
+  conditions,
+  values,
+  sourceSystem,
+}) {
+  const normalized = String(sourceSystem || "").trim().toUpperCase();
+  if (!normalized || normalized === "US_VISA" || normalized === "US VISA" || normalized === "ALL") {
+    return;
+  }
+  conditions.push("s.source_system = ?");
+  values.push(normalized);
+}
+
+function appendSourceGrainFilter({
+  conditions,
+  values,
+  sourceGrainMap,
+  sourceSystem,
+  dataGrain,
+}) {
+  if (sourceGrainMap && Object.keys(sourceGrainMap).length > 0) {
+    const clauses = [];
+    for (const [src, grain] of Object.entries(sourceGrainMap)) {
+      if (grain) {
+        clauses.push("(s.source_system = ? AND s.data_grain = ?)");
+        values.push(src, grain);
+      } else {
+        clauses.push("s.source_system = ?");
+        values.push(src);
+      }
+    }
+    if (clauses.length > 0) {
+      conditions.push(`(${clauses.join(" OR ")})`);
+      return;
+    }
+  }
+
+  appendSourceSystemFilter({
+    conditions,
+    values,
+    sourceSystem,
+  });
+
+  if (dataGrain) {
+    conditions.push("s.data_grain = ?");
+    values.push(dataGrain);
+  }
+}
+
+function appendSkillFilter({
+  conditions,
+  values,
+  skill,
+}) {
+  const normalizedSkill = String(skill || "").trim();
+  if (!normalizedSkill || normalizedSkill.toUpperCase() === "ALL") return;
+
+  const key = normalizedSkill.toLowerCase().replace(/[\s_-]+/g, "");
+
+  if (key === "englishall" || key === "english") {
+    conditions.push(
+      "(s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?)",
+    );
+    values.push("%English%", "%English%");
+  } else if (key === "englishniv") {
+    conditions.push(
+      "((s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?) AND (s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?))",
+    );
+    values.push("%English%", "%English%", "%NIV%", "%NIV%");
+  } else if (key === "englishiv") {
+    conditions.push(
+      "((s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?) AND (s.source_skill_name REGEXP '(^|[^A-Za-z])IV($|[^A-Za-z])' OR s.skill_group_name REGEXP '(^|[^A-Za-z])IV($|[^A-Za-z])') AND s.source_skill_name NOT LIKE ? AND (s.skill_group_name IS NULL OR s.skill_group_name NOT LIKE ?))",
+    );
+    values.push("%English%", "%English%", "%NIV%", "%NIV%");
+  } else if (key === "englishacs") {
+    conditions.push(
+      "((s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?) AND (s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?))",
+    );
+    values.push("%English%", "%English%", "%ACS%", "%ACS%");
+  } else if (key === "nonenglish") {
+    conditions.push(
+      "(s.source_skill_name NOT LIKE ? AND (s.skill_group_name IS NULL OR s.skill_group_name NOT LIKE ?))",
+    );
+    values.push("%English%", "%English%");
+  } else {
+    conditions.push(
+      "(s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?)",
+    );
+    values.push(`%${normalizedSkill}%`, `%${normalizedSkill}%`);
+  }
+}
+
 function buildDateFilters({ dateFrom, dateTo } = {}) {
   const conditions = [
     "s.production_date IS NOT NULL",
@@ -44,25 +159,43 @@ function buildDateFilters({ dateFrom, dateTo } = {}) {
 }
 
 export async function listAvailableCallKpiDataGrains({
-  sourceSystem = "FUSECOM",
+  sourceSystem = "US_VISA",
   dataGrain,
   dateFrom,
   dateTo,
   taskOrderCountries = [],
+  country = null,
+  skill = null,
 } = {}) {
   const { conditions, values } = buildDateFilters({
     dateFrom,
     dateTo,
   });
 
-  conditions.push("s.source_system = ?");
-  values.push(sourceSystem);
+  appendSourceSystemFilter({
+    conditions,
+    values,
+    sourceSystem,
+  });
 
   appendTaskOrderCountryFilter({
     conditions,
     values,
     sourceSystem,
     taskOrderCountries,
+  });
+
+  appendCountryFilter({
+    conditions,
+    values,
+    sourceSystem,
+    country,
+  });
+
+  appendSkillFilter({
+    conditions,
+    values,
+    skill,
   });
 
   if (dataGrain) {
@@ -75,36 +208,44 @@ export async function listAvailableCallKpiDataGrains({
   const [rows] = await pmsDb.query(
     `
       SELECT DISTINCT
-        s.data_grain AS data_grain
+        s.source_system,
+        s.data_grain
       FROM ${pmsTables.usVisaRawSkillStatistics} s
       INNER JOIN ${pmsTables.usVisaImportBatches} b
         ON b.id = s.batch_id
       WHERE ${conditions.join("\n        AND ")}
-      ORDER BY s.data_grain
+      ORDER BY s.source_system, s.data_grain
     `,
     values,
   );
 
-  return rows
-    .map((row) => row.data_grain)
-    .filter(Boolean);
+  return rows;
 }
 
 export async function getCallKpiDateBounds({
-  sourceSystem = "FUSECOM",
+  sourceSystem = "US_VISA",
+  sourceGrainMap,
   dataGrain,
   taskOrderCountries = [],
+  country = null,
+  skill = null,
 } = {}) {
   const conditions = [
     "s.production_date IS NOT NULL",
-    "s.source_system = ?",
     "b.status = ?",
   ];
 
   const values = [
-    sourceSystem,
     COMPLETED_BATCH_STATUS,
   ];
+
+  appendSourceGrainFilter({
+    conditions,
+    values,
+    sourceGrainMap,
+    sourceSystem,
+    dataGrain,
+  });
 
   appendTaskOrderCountryFilter({
     conditions,
@@ -113,10 +254,18 @@ export async function getCallKpiDateBounds({
     taskOrderCountries,
   });
 
-  if (dataGrain) {
-    conditions.push("s.data_grain = ?");
-    values.push(dataGrain);
-  }
+  appendCountryFilter({
+    conditions,
+    values,
+    sourceSystem,
+    country,
+  });
+
+  appendSkillFilter({
+    conditions,
+    values,
+    skill,
+  });
 
   const [rows] = await pmsDb.query(
     `
@@ -144,19 +293,27 @@ export async function getCallKpiDateBounds({
 }
 
 export async function getDailyCallKpiRows({
-  sourceSystem = "FUSECOM",
+  sourceSystem = "US_VISA",
+  sourceGrainMap,
   dataGrain,
   dateFrom,
   dateTo,
   taskOrderCountries = [],
+  country = null,
+  skill = null,
 } = {}) {
   const { conditions, values } = buildDateFilters({
     dateFrom,
     dateTo,
   });
 
-  conditions.push("s.source_system = ?");
-  values.push(sourceSystem);
+  appendSourceGrainFilter({
+    conditions,
+    values,
+    sourceGrainMap,
+    sourceSystem,
+    dataGrain,
+  });
 
   appendTaskOrderCountryFilter({
     conditions,
@@ -165,10 +322,18 @@ export async function getDailyCallKpiRows({
     taskOrderCountries,
   });
 
-  if (dataGrain) {
-    conditions.push("s.data_grain = ?");
-    values.push(dataGrain);
-  }
+  appendCountryFilter({
+    conditions,
+    values,
+    sourceSystem,
+    country,
+  });
+
+  appendSkillFilter({
+    conditions,
+    values,
+    skill,
+  });
 
   const [rows] = await pmsDb.query(
     `
