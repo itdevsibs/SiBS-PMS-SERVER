@@ -16,12 +16,12 @@ pipeline {
 
         stage('Build and Deploy') {
             steps {
-                sh 'docker compose down'
-                sh 'docker compose up --build -d'
+                sh 'docker compose -p sibs-pms-server down || true'
+                sh 'docker compose -p sibs-pms-server up --build -d'
             }
         }
-
     }
+
     post {
         always {
             sh 'rm -f "$WORKSPACE/sibs-pms-server.env"'
