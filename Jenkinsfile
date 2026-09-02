@@ -17,6 +17,7 @@ pipeline {
         stage('Build and Deploy') {
             steps {
                 sh 'docker compose -p sibs-pms-server down || true'
+                sh 'docker rm -f SiBS-PMS-Server || true'
                 sh 'docker compose -p sibs-pms-server up --build -d'
             }
         }
