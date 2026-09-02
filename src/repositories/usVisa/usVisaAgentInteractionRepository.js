@@ -97,6 +97,13 @@ function mapAgentInteractionRow(row) {
   };
 }
 
+function toSafeSeconds(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const num = Number(value);
+  if (!Number.isFinite(num)) return null;
+  return num >= 86400 ? Math.round((num / 86400) * 10000) / 10000 : num;
+}
+
 function getInsertValues(row = {}) {
   return [
     row.batchId,
@@ -123,11 +130,11 @@ function getInsertValues(row = {}) {
     toNullableValue(row.queueAt ?? row.queue_at),
     toNullableValue(row.answerAt ?? row.answer_at),
     toNullableValue(row.endAt ?? row.end_at),
-    toNullableValue(row.queueSeconds ?? row.queue_seconds),
-    toNullableValue(row.talkSeconds ?? row.talk_seconds),
-    toNullableValue(row.holdSeconds ?? row.hold_seconds),
-    toNullableValue(row.afterCallSeconds ?? row.after_call_seconds),
-    toNullableValue(row.handleSeconds ?? row.handle_seconds),
+    toSafeSeconds(row.queueSeconds ?? row.queue_seconds),
+    toSafeSeconds(row.talkSeconds ?? row.talk_seconds),
+    toSafeSeconds(row.holdSeconds ?? row.hold_seconds),
+    toSafeSeconds(row.afterCallSeconds ?? row.after_call_seconds),
+    toSafeSeconds(row.handleSeconds ?? row.handle_seconds),
     toNullableValue(row.holdCount ?? row.hold_count),
     toNullableValue(row.disconnectIndicator ?? row.disconnect_indicator),
     serializeJson(row.rowJson ?? row.row_json),
