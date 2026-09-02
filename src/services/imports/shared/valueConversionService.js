@@ -12,7 +12,6 @@ export const VALUE_CONVERSION_ERROR_CODES = {
 
 const EXCEL_EPOCH_UTC_MS = Date.UTC(1899, 11, 30);
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-const SECONDS_PER_DAY = 24 * 60 * 60;
 
 function isBlank(value) {
   return value === null || value === undefined || String(value).trim() === "";
@@ -266,7 +265,11 @@ export function toDurationSecondsValue(value) {
       );
     }
 
-    return success(Math.round(value * SECONDS_PER_DAY));
+    if (value > 0 && value < 1) {
+      return success(Math.round(value * 86400));
+    }
+
+    return success(value);
   }
 
   if (value instanceof Date && !Number.isNaN(value.getTime())) {

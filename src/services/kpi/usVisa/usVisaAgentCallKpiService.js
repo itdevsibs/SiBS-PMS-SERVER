@@ -126,29 +126,30 @@ function average(total, denominator) {
 }
 
 function finalizeAccumulator(accumulator = emptyAccumulator()) {
+  const handledCalls = round(accumulator.answeredCalls, 0);
   return {
     interactionCount: round(accumulator.interactionCount, 0),
-    handledCalls: round(accumulator.answeredCalls, 0),
-    answeredCalls: round(accumulator.answeredCalls, 0),
+    handledCalls,
+    answeredCalls: handledCalls,
     totalHandleSeconds: round(accumulator.handleSecondsTotal),
     averageHandleSeconds: average(
       accumulator.handleSecondsTotal,
-      accumulator.handleSecondsCount,
+      accumulator.answeredCalls,
     ),
     totalTalkSeconds: round(accumulator.talkSecondsTotal),
     averageTalkSeconds: average(
       accumulator.talkSecondsTotal,
-      accumulator.talkSecondsCount,
+      accumulator.answeredCalls,
     ),
     totalHoldSeconds: round(accumulator.holdSecondsTotal),
     averageHoldSeconds: average(
       accumulator.holdSecondsTotal,
-      accumulator.holdSecondsCount,
+      accumulator.answeredCalls,
     ),
     totalAfterCallSeconds: round(accumulator.afterCallSecondsTotal),
     averageAfterCallSeconds: average(
       accumulator.afterCallSecondsTotal,
-      accumulator.afterCallSecondsCount,
+      accumulator.answeredCalls,
     ),
     holdCount: round(accumulator.holdCountTotal, 0),
     abandonedCalls: null,
