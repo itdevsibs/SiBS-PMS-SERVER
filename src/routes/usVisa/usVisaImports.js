@@ -9,6 +9,12 @@ import {
   listUsVisaImportHistory,
   uploadUsVisaImport,
 } from "../../controllers/usVisa/usVisaImportController.js";
+import {
+  getMyPerformance,
+  getOperationsPerformance,
+  getPerformanceComparison,
+  getTeamPerformance,
+} from "../../controllers/usVisa/usVisaPerformanceController.js";
 import authMiddleware from "../../middleware/authMiddleware.js";
 import { requireRole } from "../../middleware/roleMiddleware.js";
 import { usVisaUploadMiddleware } from "../../middleware/usVisa/usVisaUploadMiddleware.js";
@@ -19,6 +25,49 @@ const requireWfm = [
   authMiddleware,
   requireRole([9]),
 ];
+
+const requireAgent = [
+  authMiddleware,
+];
+
+const requireTeamLeader = [
+  authMiddleware,
+  requireRole([8]),
+];
+
+const requireOperationsManager = [
+  authMiddleware,
+  requireRole([5]),
+];
+
+const requireComparisonViewer = [
+  authMiddleware,
+  requireRole([7, 6, 9, 10]),
+];
+
+router.get(
+  "/performance/me",
+  ...requireAgent,
+  getMyPerformance,
+);
+
+router.get(
+  "/performance/team",
+  ...requireTeamLeader,
+  getTeamPerformance,
+);
+
+router.get(
+  "/performance/operations",
+  ...requireOperationsManager,
+  getOperationsPerformance,
+);
+
+router.get(
+  "/performance/comparison",
+  ...requireComparisonViewer,
+  getPerformanceComparison,
+);
 
 router.get(
   "/imports",

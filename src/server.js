@@ -365,6 +365,17 @@ const startServer =
       */
       await testDbConnections();
 
+      server.on("error", (error) => {
+        if (error.code === "EADDRINUSE") {
+          console.error(
+            `\n⚠️  Port ${PORT} is already in use by another running process.\nTo free it on Windows, run:\nStop-Process -Id (Get-NetTCPConnection -LocalPort ${PORT}).OwningProcess -Force\n`
+          );
+        } else {
+          console.error("Server error:", error.message);
+        }
+        process.exit(1);
+      });
+
       server.listen(
         PORT,
         () => {
@@ -373,6 +384,20 @@ const startServer =
           );
         }
       );
+
+      const gracefulShutdown = () => {
+        server.close(() => {
+          process.exit(0);
+        });
+      };
+
+      process.once("SIGUSR2", () => {
+        server.close(() => {
+          process.kill(process.pid, "SIGUSR2");
+        });
+      });
+      process.on("SIGINT", gracefulShutdown);
+      process.on("SIGTERM", gracefulShutdown);
     } catch (error) {
       console.error(
         "Failed to start server:",

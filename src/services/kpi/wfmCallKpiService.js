@@ -28,7 +28,7 @@ function round(value, digits = 2) {
   return Math.round((toFiniteNumber(value) + Number.EPSILON) * factor) / factor;
 }
 
-function parseDateOnly(value) {
+export function parseCallKpiDateOnly(value) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
   }
@@ -55,7 +55,7 @@ function parseDateOnly(value) {
   return date;
 }
 
-function formatDateOnly(date) {
+export function formatCallKpiDateOnly(date) {
   return date.toISOString().slice(0, 10);
 }
 
@@ -72,13 +72,13 @@ function getIsoWeekInfo(date) {
   return { year: isoYear, week };
 }
 
-function getBucket(date, period) {
+export function getCallKpiPeriodBucket(date, period) {
   const year = date.getUTCFullYear();
   const month = date.getUTCMonth();
 
   if (period === "custom") {
     return {
-      key: formatDateOnly(date),
+      key: formatCallKpiDateOnly(date),
       label: new Intl.DateTimeFormat("en-US", {
         month: "short",
         day: "numeric",
@@ -133,7 +133,7 @@ function emptyAccumulator(bucket = {}) {
   };
 }
 
-function addPeriod(date, period, amount = 1) {
+export function addCallKpiPeriod(date, period, amount = 1) {
   const next = new Date(date.getTime());
 
   if (period === "monthly") {
@@ -149,18 +149,21 @@ function addPeriod(date, period, amount = 1) {
   return next;
 }
 
-function seedReferencePeriodBuckets(bucketMap, { period, dateFrom, referenceDate }) {
+export function seedCallKpiReferencePeriodBuckets(
+  bucketMap,
+  { period, dateFrom, referenceDate, createAccumulator = emptyAccumulator },
+) {
   if (period === "custom" || !referenceDate) return;
 
-  const start = parseDateOnly(dateFrom);
+  const start = parseCallKpiDateOnly(dateFrom);
   if (!start) return;
 
   let cursor = start;
 
   for (let index = 0; index < 6; index += 1) {
-    const bucket = getBucket(cursor, period);
-    bucketMap.set(bucket.key, emptyAccumulator(bucket));
-    cursor = addPeriod(cursor, period);
+    const bucket = getCallKpiPeriodBucket(cursor, period);
+    bucketMap.set(bucket.key, createAccumulator(bucket));
+    cursor = addCallKpiPeriod(cursor, period);
   }
 }
 
@@ -212,8 +215,8 @@ export function resolveCallKpiDateRange({
   referenceDate,
   period = "weekly",
 } = {}) {
-  const availableMax = parseDateOnly(maxDate);
-  const selectedReference = parseDateOnly(referenceDate) || availableMax;
+  const availableMax = parseCallKpiDateOnly(maxDate);
+  const selectedReference = parseCallKpiDateOnly(referenceDate) || availableMax;
 
   if (!selectedReference) {
     return {
@@ -241,9 +244,9 @@ export function resolveCallKpiDateRange({
   }
 
   return {
-    dateFrom: formatDateOnly(start),
-    dateTo: formatDateOnly(selectedReference),
-    referenceDate: formatDateOnly(selectedReference),
+    dateFrom: formatCallKpiDateOnly(start),
+    dateTo: formatCallKpiDateOnly(selectedReference),
+    referenceDate: formatCallKpiDateOnly(selectedReference),
   };
 }
 
@@ -278,19 +281,19 @@ export function buildWfmCallKpiDashboard({
   const summaryAccumulator = emptyAccumulator();
   const bucketMap = new Map();
 
-  seedReferencePeriodBuckets(bucketMap, {
+  seedCallKpiReferencePeriodBuckets(bucketMap, {
     period: normalizedPeriod,
     dateFrom,
     referenceDate,
   });
 
   for (const row of rows) {
-    const date = parseDateOnly(row.productionDate);
+    const date = parseCallKpiDateOnly(row.productionDate);
     if (!date) continue;
 
     addRow(summaryAccumulator, row);
 
-    const bucket = getBucket(date, normalizedPeriod);
+    const bucket = getCallKpiPeriodBucket(date, normalizedPeriod);
     const accumulator = bucketMap.get(bucket.key) || emptyAccumulator(bucket);
     addRow(accumulator, row);
     bucketMap.set(bucket.key, accumulator);

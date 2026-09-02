@@ -127,6 +127,8 @@ function mapBatchRow(row) {
     id: row.id,
     batchCode: row.batch_code,
     importProfileId: row.import_profile_id,
+    importProfileCode: row.import_profile_code,
+    importProfileName: row.import_profile_name,
     sourceSystem: row.source_system,
     sourceFilename: row.source_filename,
     storedFilename: row.stored_filename,
@@ -189,9 +191,14 @@ async function updateBatchFields(batchId, fields) {
 export async function getBatchById(batchId) {
   const [rows] = await queryUsVisa(
     `
-      SELECT *
-      FROM ${pmsTables.usVisaImportBatches}
-      WHERE id = ?
+      SELECT
+        b.*,
+        p.profile_code AS import_profile_code,
+        p.profile_name AS import_profile_name
+      FROM ${pmsTables.usVisaImportBatches} b
+      LEFT JOIN ${pmsTables.usVisaImportProfiles} p
+        ON p.id = b.import_profile_id
+      WHERE b.id = ?
       LIMIT 1
     `,
     [batchId],
@@ -203,9 +210,14 @@ export async function getBatchById(batchId) {
 export async function findBatchByIdOrCode(identifier) {
   const [rows] = await queryUsVisa(
     `
-      SELECT *
-      FROM ${pmsTables.usVisaImportBatches}
-      WHERE id = ? OR batch_code = ?
+      SELECT
+        b.*,
+        p.profile_code AS import_profile_code,
+        p.profile_name AS import_profile_name
+      FROM ${pmsTables.usVisaImportBatches} b
+      LEFT JOIN ${pmsTables.usVisaImportProfiles} p
+        ON p.id = b.import_profile_id
+      WHERE b.id = ? OR b.batch_code = ?
       LIMIT 1
     `,
     [identifier, identifier],
@@ -281,18 +293,23 @@ export async function listImportBatches(options = {}) {
     : SUCCESSFUL_IMPORT_STATUSES;
 
   let sql = `
-    SELECT *
-    FROM ${pmsTables.usVisaImportBatches}
+    SELECT
+      b.*,
+      p.profile_code AS import_profile_code,
+      p.profile_name AS import_profile_name
+    FROM ${pmsTables.usVisaImportBatches} b
+    LEFT JOIN ${pmsTables.usVisaImportProfiles} p
+      ON p.id = b.import_profile_id
   `;
   const params = [];
 
   if (statusFilter && statusFilter.length) {
-    sql += ` WHERE status IN (${statusFilter.map(() => "?").join(", ")}) `;
+    sql += ` WHERE b.status IN (${statusFilter.map(() => "?").join(", ")}) `;
     params.push(...statusFilter);
   }
 
   sql += `
-    ORDER BY created_at DESC, id DESC
+    ORDER BY b.created_at DESC, b.id DESC
     LIMIT ? OFFSET ?
   `;
   params.push(limit, offset);
@@ -356,20 +373,25 @@ export async function createBatch(batch = {}) {
 
 export async function findCompletedBatchByFileHash(fileHash, importProfileId = null) {
   let sql = `
-    SELECT *
-    FROM ${pmsTables.usVisaImportBatches}
-    WHERE file_hash = ?
-      AND status IN (?, ?)
+    SELECT
+      b.*,
+      p.profile_code AS import_profile_code,
+      p.profile_name AS import_profile_name
+    FROM ${pmsTables.usVisaImportBatches} b
+    LEFT JOIN ${pmsTables.usVisaImportProfiles} p
+      ON p.id = b.import_profile_id
+    WHERE b.file_hash = ?
+      AND b.status IN (?, ?)
   `;
   const params = [fileHash, ...SUCCESSFUL_IMPORT_STATUSES];
 
   if (importProfileId) {
-    sql += ` AND import_profile_id = ? `;
+    sql += ` AND b.import_profile_id = ? `;
     params.push(importProfileId);
   }
 
   sql += `
-    ORDER BY completed_at DESC, id DESC
+    ORDER BY b.completed_at DESC, b.id DESC
     LIMIT 1
   `;
 

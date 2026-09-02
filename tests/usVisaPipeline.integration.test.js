@@ -474,5 +474,8 @@ test("database unique constraint and repository insert-only behavior guard canon
     migration,
     /UNIQUE KEY uq_us_visa_raw_skill_statistics_row_hash \(row_hash\)/,
   );
-  assert.equal(/ON DUPLICATE KEY UPDATE/i.test(repository), false);
+  assert.equal(
+    /ON DUPLICATE KEY UPDATE\s+(?!id\s*=\s*id)/i.test(repository),
+    false,
+  );
 });

@@ -7,6 +7,9 @@ import {
 export const IMPORT_PROFILE_CODES = {
   HERO_SKILL_STATISTICS_INBOUND: "HERO_SKILL_STATISTICS_INBOUND",
   FUSECOM_SKILL_STATISTICS_INBOUND: "FUSECOM_SKILL_STATISTICS_INBOUND",
+  FUSECOM_AGENT_LEVEL: "FUSECOM_AGENT_LEVEL",
+  FUSENET_AGENT_LEVEL: "FUSENET_AGENT_LEVEL",
+  HERODASH_AGENT_LEVEL: "HERODASH_AGENT_LEVEL",
 };
 
 export const WORKBOOK_VALIDATION_ERROR_CODES = {
@@ -94,6 +97,94 @@ const FUSECOM_IGNORED_HEADERS = [
   "VCH AVG time (sec)",
 ];
 
+const COMMON_AGENT_LEVEL_IGNORED_HEADERS = [
+  "Record Number",
+  "Indice",
+  "Client",
+  "CLID",
+  "Skill",
+  "Skill Name",
+  "Queue",
+  "Queue Name",
+  "VCH",
+  "Duration (sec)",
+  "Disconnect Initiator",
+  "Disconnect Reason",
+  "Disconnect Indicator",
+  "Total Hold Time (sec)",
+  "Total Hold Count",
+  "Total hold time (sec)",
+  "Total hold count",
+  "Media",
+  "Recording",
+  "Queue Time",
+  "Queued At",
+  "Queue At",
+  "Arrival time in IVR",
+  "Arrival time in queue",
+  "Queue DateTime",
+  "Status",
+  "Call Status",
+  "Disposition",
+  "Outcome",
+  "Talk Time",
+  "Talk Time (sec)",
+  "Talk Seconds",
+  "Hold Time",
+  "Hold Time (sec)",
+  "Hold Seconds",
+  "Holds",
+  "After Call Time",
+  "After Call Seconds",
+  "ACW Time",
+  "ACW Seconds",
+  "Wrap-up Time (sec)",
+  "Handle Time",
+  "Handle Time (sec)",
+  "Handle Seconds",
+  "Hold Count",
+  "Calls on hold",
+  "Queue Time (sec)",
+  "Queue Seconds",
+  "Agent ID",
+  "Agent Email",
+  "HeroDash Only",
+];
+
+const FUSECOM_AGENT_LEVEL_HEADERS = [
+  ["Call ID", "Interaction ID"],
+  "Date",
+  ["Agent Name", "Agent", "Agent name"],
+  ["Agent Login", "Login"],
+  ["Personal ID", "Employee ID", "Agent ID"],
+  ["Direction", "Call Direction"],
+  ["Arrival Time", "Offered At", "Arrival time in IVR", "Start Time"],
+  ["Answer Time", "Connected At", "Answer time", "Answer DateTime"],
+  ["End Time", "Disconnected At", "End time", "End DateTime"],
+];
+
+const FUSENET_AGENT_LEVEL_HEADERS = [
+  ["Interaction ID", "Call ID"],
+  "Date",
+  ["Agent", "Agent Name", "Agent name"],
+  ["Login", "Agent Login"],
+  ["Direction", "Call Direction"],
+  ["Offered At", "Arrival Time", "Arrival time in IVR", "Start Time"],
+  ["Connected At", "Answer Time", "Answer time", "Answer DateTime"],
+  ["Disconnected At", "End Time", "End time", "End DateTime"],
+];
+
+const HERODASH_AGENT_LEVEL_HEADERS = [
+  "Date",
+  ["Call ID", "Interaction ID"],
+  ["Direction", "Call Direction"],
+  ["Answer time", "Answer DateTime", "Answer Time", "Connected At"],
+  ["End time", "End DateTime", "End Time", "Disconnected At"],
+  ["Agent name", "Agent Name", "Agent"],
+  ["Skill", "Skill Name"],
+  ["Duration (sec)", "Talk Time (sec)", "Talk Time", "Talk Seconds"],
+];
+
 export const WORKBOOK_PROFILE_DEFINITIONS = {
   [IMPORT_PROFILE_CODES.HERO_SKILL_STATISTICS_INBOUND]: {
     profileCode:
@@ -130,6 +221,54 @@ export const WORKBOOK_PROFILE_DEFINITIONS = {
       },
     ],
   },
+
+  [IMPORT_PROFILE_CODES.FUSECOM_AGENT_LEVEL]: {
+    profileCode: IMPORT_PROFILE_CODES.FUSECOM_AGENT_LEVEL,
+    sourceSystem: "FUSECOM",
+    requiredSheets: [
+      {
+        sheetName: "Answered Calls",
+        sheetNameCandidates: ["Answered Calls", "Agent Level", "agent level", "Sheet1"],
+        dataGrain: null,
+        headerRowNumber: 9,
+        headerRowCandidates: [9, 1],
+        requiredHeaders: FUSECOM_AGENT_LEVEL_HEADERS,
+        ignoredHeaders: COMMON_AGENT_LEVEL_IGNORED_HEADERS,
+      },
+    ],
+  },
+
+  [IMPORT_PROFILE_CODES.FUSENET_AGENT_LEVEL]: {
+    profileCode: IMPORT_PROFILE_CODES.FUSENET_AGENT_LEVEL,
+    sourceSystem: "FUSENET",
+    requiredSheets: [
+      {
+        sheetName: "Answered Calls",
+        sheetNameCandidates: ["Answered Calls", "Agent Level", "agent level", "Sheet1"],
+        dataGrain: null,
+        headerRowNumber: 9,
+        headerRowCandidates: [9, 1],
+        requiredHeaders: FUSENET_AGENT_LEVEL_HEADERS,
+        ignoredHeaders: COMMON_AGENT_LEVEL_IGNORED_HEADERS,
+      },
+    ],
+  },
+
+  [IMPORT_PROFILE_CODES.HERODASH_AGENT_LEVEL]: {
+    profileCode: IMPORT_PROFILE_CODES.HERODASH_AGENT_LEVEL,
+    sourceSystem: "HERODASH",
+    requiredSheets: [
+      {
+        sheetName: null,
+        sheetNameCandidates: ["Sheet1", "Agent Level", "agent level"],
+        dataGrain: null,
+        headerRowNumber: 1,
+        headerRowCandidates: [1],
+        requiredHeaders: HERODASH_AGENT_LEVEL_HEADERS,
+        ignoredHeaders: COMMON_AGENT_LEVEL_IGNORED_HEADERS,
+      },
+    ],
+  },
 };
 
 export function normalizeHeader(header) {
@@ -160,139 +299,6 @@ function createValidationIssue({
     sheetName,
     columnName,
     dataGrain,
-  };
-}
-
-function getSheetNameForRule(workbook, rule) {
-  if (rule.sheetName) {
-    return rule.sheetName;
-  }
-
-  return workbook.worksheets[0]?.name || null;
-}
-
-function validateSheetHeaders(workbook, rule) {
-  const sheetName = getSheetNameForRule(workbook, rule);
-
-  if (!sheetName || !workbook.getWorksheet(sheetName)) {
-    return {
-      sheetName,
-      dataGrain: rule.dataGrain,
-      headerRowNumber: rule.headerRowNumber,
-      headers: [],
-      errors: [
-        createValidationIssue({
-          severity: "FATAL",
-          code:
-            WORKBOOK_VALIDATION_ERROR_CODES.MISSING_REQUIRED_SHEET,
-          message: rule.sheetName
-            ? `Required worksheet "${rule.sheetName}" is missing.`
-            : "A required worksheet is missing.",
-          sheetName: rule.sheetName,
-          dataGrain: rule.dataGrain,
-        }),
-      ],
-      warnings: [],
-      isValid: false,
-    };
-  }
-
-  const headerRowNumber = findBestHeaderRowNumber(
-    workbook,
-    sheetName,
-    rule,
-  );
-
-  const headers = readHeaderRow(
-    workbook,
-    sheetName,
-    headerRowNumber,
-  );
-
-  const sourceHeaders = headers.map(
-    (header) => header.sourceHeader,
-  );
-
-  const sourceHeaderMap = new Map(
-    sourceHeaders.map((header) => [
-      normalizeHeader(header),
-      header,
-    ]),
-  );
-
-  const requiredHeaderMap = new Map(
-    rule.requiredHeaders.map((header) => [
-      normalizeHeader(header),
-      header,
-    ]),
-  );
-
-  const ignoredHeaderMap = new Map(
-    (rule.ignoredHeaders || []).map((header) => [
-      normalizeHeader(header),
-      header,
-    ]),
-  );
-
-  const errors = [];
-  const warnings = [];
-
-  for (const requiredHeader of rule.requiredHeaders) {
-    if (
-      !sourceHeaderMap.has(
-        normalizeHeader(requiredHeader),
-      )
-    ) {
-      errors.push(
-        createValidationIssue({
-          severity: "FATAL",
-          code:
-            WORKBOOK_VALIDATION_ERROR_CODES.MISSING_REQUIRED_COLUMN,
-          message: `Required column "${requiredHeader}" is missing.`,
-          sheetName,
-          columnName: requiredHeader,
-          dataGrain: rule.dataGrain,
-        }),
-      );
-    }
-  }
-
-  for (const sourceHeader of sourceHeaders) {
-    const normalizedSourceHeader =
-      normalizeHeader(sourceHeader);
-
-    const isRequiredHeader =
-      requiredHeaderMap.has(normalizedSourceHeader);
-
-    const isIgnoredHeader =
-      ignoredHeaderMap.has(normalizedSourceHeader);
-
-    if (!isRequiredHeader && !isIgnoredHeader) {
-      warnings.push(
-        createValidationIssue({
-          severity: "WARNING",
-          code:
-            WORKBOOK_VALIDATION_ERROR_CODES.UNKNOWN_COLUMN,
-          message:
-            `Unknown column "${sourceHeader}" ` +
-            "will be preserved as raw data only.",
-          sheetName,
-          columnName: sourceHeader,
-          dataGrain: rule.dataGrain,
-        }),
-      );
-    }
-  }
-
-  return {
-    sheetName,
-    dataGrain: rule.dataGrain,
-    headerRowNumber,
-    headers: sourceHeaders,
-    requiredHeaders: rule.requiredHeaders,
-    errors,
-    warnings,
-    isValid: errors.length === 0,
   };
 }
 
@@ -353,6 +359,204 @@ function findBestHeaderRowNumber(
     },
     uniqueCandidates[0] || 1,
   );
+}
+
+function getSheetNameForRule(workbook, rule) {
+  if (rule.sheetName) {
+    const direct = workbook.getWorksheet(rule.sheetName);
+    if (direct) return direct.name;
+
+    const normalizedTarget = normalizeHeader(rule.sheetName);
+    for (const ws of workbook.worksheets) {
+      if (normalizeHeader(ws.name) === normalizedTarget) {
+        return ws.name;
+      }
+    }
+  }
+
+  if (Array.isArray(rule.sheetNameCandidates)) {
+    for (const candidate of rule.sheetNameCandidates) {
+      const direct = workbook.getWorksheet(candidate);
+      if (direct) return direct.name;
+
+      const normalizedCandidate = normalizeHeader(candidate);
+      for (const ws of workbook.worksheets) {
+        if (normalizeHeader(ws.name) === normalizedCandidate) {
+          return ws.name;
+        }
+      }
+    }
+  }
+
+  if (rule.sheetName && !rule.sheetNameCandidates) {
+    return null;
+  }
+
+  // Header-based fallback: look for the worksheet with the most matching required headers
+  let bestSheetName = null;
+  let maxMatched = 0;
+
+  for (const ws of workbook.worksheets) {
+    const candidateBestHeaderRow = findBestHeaderRowNumber(
+      workbook,
+      ws.name,
+      rule,
+    );
+    const count = getHeaderMatchCount(
+      workbook,
+      ws.name,
+      candidateBestHeaderRow,
+      rule,
+    );
+    if (count > maxMatched) {
+      maxMatched = count;
+      bestSheetName = ws.name;
+    }
+  }
+
+  if (maxMatched > 0 && maxMatched >= Math.min(rule.requiredHeaders.length, 3)) {
+    return bestSheetName;
+  }
+
+  if (rule.sheetName) {
+    return null;
+  }
+
+  return workbook.worksheets[0]?.name || null;
+}
+
+function validateSheetHeaders(workbook, rule) {
+  const sheetName = getSheetNameForRule(workbook, rule);
+
+  if (!sheetName || !workbook.getWorksheet(sheetName)) {
+    return {
+      sheetName,
+      dataGrain: rule.dataGrain,
+      headerRowNumber: rule.headerRowNumber,
+      headers: [],
+      errors: [
+        createValidationIssue({
+          severity: "FATAL",
+          code:
+            WORKBOOK_VALIDATION_ERROR_CODES.MISSING_REQUIRED_SHEET,
+          message: rule.sheetName
+            ? `Required worksheet "${rule.sheetName}" is missing.`
+            : "A required worksheet is missing.",
+          sheetName: rule.sheetName,
+          dataGrain: rule.dataGrain,
+        }),
+      ],
+      warnings: [],
+      isValid: false,
+    };
+  }
+
+  const headerRowNumber = findBestHeaderRowNumber(
+    workbook,
+    sheetName,
+    rule,
+  );
+
+  const headers = readHeaderRow(
+    workbook,
+    sheetName,
+    headerRowNumber,
+  );
+
+  const sourceHeaders = headers.map(
+    (header) => header.sourceHeader,
+  );
+
+  const sourceHeaderMap = new Map(
+    sourceHeaders.map((header) => [
+      normalizeHeader(header),
+      header,
+    ]),
+  );
+
+  const allRequiredHeadersFlat = rule.requiredHeaders.flatMap((h) =>
+    Array.isArray(h) ? h : [h],
+  );
+  const requiredHeaderMap = new Map(
+    allRequiredHeadersFlat.map((header) => [
+      normalizeHeader(header),
+      header,
+    ]),
+  );
+
+  const ignoredHeaderMap = new Map(
+    (rule.ignoredHeaders || []).map((header) => [
+      normalizeHeader(header),
+      header,
+    ]),
+  );
+
+  const errors = [];
+  const warnings = [];
+
+  for (const requiredHeader of rule.requiredHeaders) {
+    const alternatives = Array.isArray(requiredHeader)
+      ? requiredHeader
+      : [requiredHeader];
+    const isMatched = alternatives.some((alt) =>
+      sourceHeaderMap.has(normalizeHeader(alt)),
+    );
+
+    if (!isMatched) {
+      const displayHeader = Array.isArray(requiredHeader)
+        ? requiredHeader[0]
+        : requiredHeader;
+      errors.push(
+        createValidationIssue({
+          severity: "FATAL",
+          code:
+            WORKBOOK_VALIDATION_ERROR_CODES.MISSING_REQUIRED_COLUMN,
+          message: `Required column "${displayHeader}" is missing.`,
+          sheetName,
+          columnName: displayHeader,
+          dataGrain: rule.dataGrain,
+        }),
+      );
+    }
+  }
+
+  for (const sourceHeader of sourceHeaders) {
+    const normalizedSourceHeader =
+      normalizeHeader(sourceHeader);
+
+    const isRequiredHeader =
+      requiredHeaderMap.has(normalizedSourceHeader);
+
+    const isIgnoredHeader =
+      ignoredHeaderMap.has(normalizedSourceHeader);
+
+    if (!isRequiredHeader && !isIgnoredHeader) {
+      warnings.push(
+        createValidationIssue({
+          severity: "WARNING",
+          code:
+            WORKBOOK_VALIDATION_ERROR_CODES.UNKNOWN_COLUMN,
+          message:
+            `Unknown column "${sourceHeader}" ` +
+            "will be preserved as raw data only.",
+          sheetName,
+          columnName: sourceHeader,
+          dataGrain: rule.dataGrain,
+        }),
+      );
+    }
+  }
+
+  return {
+    sheetName,
+    dataGrain: rule.dataGrain,
+    headerRowNumber,
+    headers: sourceHeaders,
+    requiredHeaders: rule.requiredHeaders,
+    errors,
+    warnings,
+    isValid: errors.length === 0,
+  };
 }
 
 export function validateWorkbookProfile(
