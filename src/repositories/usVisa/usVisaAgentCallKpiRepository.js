@@ -5,7 +5,7 @@ import {
   buildAgentHandleSecondsSql,
 } from "../../services/kpi/ahtCalculationService.js";
 
-const COMPLETED_BATCH_STATUS = "COMPLETED";
+const SUCCESSFUL_BATCH_STATUSES = ["COMPLETED", "COMPLETED_WITH_ERRORS"];
 
 function buildInPlaceholders(values = []) {
   return values.map(() => "?").join(", ");
@@ -17,8 +17,8 @@ function normalizeText(value) {
 
 function appendDateFilters({ conditions, values, dateFrom, dateTo }) {
   conditions.push("a.production_date IS NOT NULL");
-  conditions.push("b.status = ?");
-  values.push(COMPLETED_BATCH_STATUS);
+  conditions.push(`b.status IN (${buildInPlaceholders(SUCCESSFUL_BATCH_STATUSES)})`);
+  values.push(...SUCCESSFUL_BATCH_STATUSES);
 
   if (dateFrom) {
     conditions.push("DATE(a.production_date) >= ?");
@@ -51,6 +51,26 @@ function appendExactFilter({ conditions, values, column, value }) {
 
   conditions.push(`${column} = ?`);
   values.push(normalized);
+}
+
+function appendSkillFilter({ conditions, values, skill, skillNames }) {
+  appendExactFilter({
+    conditions,
+    values,
+    column: "a.skill_name_raw",
+    value: skill,
+  });
+
+  const uniqueSkillNames = [...new Set(
+    (Array.isArray(skillNames) ? skillNames : [])
+      .map((value) => normalizeText(value))
+      .filter(Boolean),
+  )];
+
+  if (!uniqueSkillNames.length) return;
+
+  conditions.push(`a.skill_name_raw IN (${buildInPlaceholders(uniqueSkillNames)})`);
+  values.push(...uniqueSkillNames);
 }
 
 function appendEmployeeFilter({ conditions, values, employeeUid, employeeUids }) {
@@ -92,11 +112,11 @@ function buildWhereFilters(options = {}) {
     employeeUid: options.employeeUid,
     employeeUids: options.employeeUids,
   });
-  appendExactFilter({
+  appendSkillFilter({
     conditions,
     values,
-    column: "a.skill_name_raw",
-    value: options.skill,
+    skill: options.skill,
+    skillNames: options.skillNames,
   });
   appendExactFilter({
     conditions,
@@ -130,6 +150,37 @@ function mapAgentKpiRow(row = {}) {
     holdCountTotal: Number(row.hold_count_total || 0),
     holdCountRows: Number(row.hold_count_rows || 0),
   };
+}
+
+export async function getAgentCallKpiFilterOptions(options = {}) {
+  const { whereSql, values } = buildWhereFilters({
+    ...options,
+    dateFrom: null,
+    dateTo: null,
+    skill: null,
+    skillNames: null,
+  });
+
+  const [rows] = await pmsDb.query(
+    `
+      SELECT DISTINCT
+        a.source_system,
+        a.skill_name_raw
+      FROM ${pmsTables.usVisaRawAgentInteractions} a
+      INNER JOIN ${pmsTables.usVisaImportBatches} b
+        ON b.id = a.batch_id
+      WHERE ${whereSql}
+        AND a.skill_name_raw IS NOT NULL
+        AND TRIM(a.skill_name_raw) <> ''
+      ORDER BY a.skill_name_raw ASC
+    `,
+    values,
+  );
+
+  return rows.map((row) => ({
+    sourceSystem: row.source_system,
+    skillName: row.skill_name_raw,
+  }));
 }
 
 export async function getAgentCallKpiDateBounds(options = {}) {
