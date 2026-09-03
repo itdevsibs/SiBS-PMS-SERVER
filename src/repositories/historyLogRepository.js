@@ -1,8 +1,9 @@
 // Repository for action history logs in pms_db.
 import { pmsDb, pmsTables } from "../config/db.js";
 
-const WFM_HISTORY_TIMEZONE = "+00:00";
-const WFM_HISTORY_LOCALE_TIMEZONE = "Asia/Singapore";
+
+const WFM_HISTORY_TIMEZONE = "+08:00";
+const WFM_HISTORY_LOCALE_TIMEZONE = "Asia/Manila";
 
 const historyTimeFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
@@ -16,10 +17,27 @@ async function queryWfmHistory(sql, params = []) {
   try {
     await connection.query("SET time_zone = ?", [WFM_HISTORY_TIMEZONE]);
 
-    return connection.query(sql, params);
+    return await connection.query(sql, params);
   } finally {
     connection.release();
   }
+}
+
+function formatMySqlDateTime(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: WFM_HISTORY_LOCALE_TIMEZONE,
+  }).formatToParts(date);
+
+  const v = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  const hour = v.hour === "24" ? "00" : v.hour;
+  return `${v.year}-${v.month}-${v.day} ${hour}:${v.minute}:${v.second}`;
 }
 
 function getLocalDateString(date = new Date()) {
@@ -92,8 +110,26 @@ export async function createWfmHistoryLog({
   logDate,
   createdAt,
 }) {
-  const effectiveCreatedAt = createdAt instanceof Date ? createdAt : new Date();
-  const effectiveDate = logDate || getLocalDateString(effectiveCreatedAt);
+  const normalizedAction = String(action || "").toLowerCase().trim();
+  const normalizedMessage = String(message || "").toLowerCase().trim();
+
+  // Login and logout actions are strictly excluded from WFM history logs
+  if (
+    normalizedAction === "login" ||
+    normalizedAction === "logout" ||
+    normalizedMessage === "login" ||
+    normalizedMessage === "logout" ||
+    normalizedMessage === "logged-in" ||
+    normalizedMessage === "logged-out" ||
+    normalizedMessage.includes("logged in") ||
+    normalizedMessage.includes("logged out")
+  ) {
+    return null;
+  }
+
+  const dateObj = createdAt instanceof Date ? createdAt : (createdAt ? new Date(createdAt) : new Date());
+  const effectiveCreatedAtStr = formatMySqlDateTime(dateObj);
+  const effectiveDate = logDate || getLocalDateString(dateObj);
 
   const [result] = await queryWfmHistory(
     `
@@ -125,7 +161,7 @@ export async function createWfmHistoryLog({
       ipAddress || null,
       userAgent || null,
       effectiveDate,
-      effectiveCreatedAt,
+      effectiveCreatedAtStr,
     ],
   );
 
@@ -158,6 +194,12 @@ export async function listWfmHistoryLogs({
     SELECT *, DATE_FORMAT(created_at, '%b %e, %Y, %l:%i %p') AS formatted_time
     FROM ${pmsTables.wfmHistoryLogs}
     WHERE 1=1
+      AND action NOT IN ('login', 'logout')
+      AND (message IS NULL OR (
+        LOWER(message) NOT IN ('login', 'logout', 'logged-in', 'logged-out', 'logged in', 'logged out')
+        AND LOWER(message) NOT LIKE '%logged in%'
+        AND LOWER(message) NOT LIKE '%logged out%'
+      ))
   `;
   const params = [];
 
@@ -211,6 +253,12 @@ export async function countWfmHistoryLogs({
     SELECT COUNT(*) AS total
     FROM ${pmsTables.wfmHistoryLogs}
     WHERE 1=1
+      AND action NOT IN ('login', 'logout')
+      AND (message IS NULL OR (
+        LOWER(message) NOT IN ('login', 'logout', 'logged-in', 'logged-out', 'logged in', 'logged out')
+        AND LOWER(message) NOT LIKE '%logged in%'
+        AND LOWER(message) NOT LIKE '%logged out%'
+      ))
   `;
   const params = [];
 
@@ -246,6 +294,25 @@ export async function countWfmHistoryLogs({
   const [[row]] = await queryWfmHistory(sql, params);
 
   return Number(row?.total || 0);
+}
+
+export async function purgeAuthHistoryLogs() {
+  try {
+    const [result] = await queryWfmHistory(
+      `
+        DELETE FROM ${pmsTables.wfmHistoryLogs}
+        WHERE action IN ('login', 'logout')
+           OR message IN ('login', 'logout', 'logged-in', 'logged-out', 'logged in', 'logged out')
+           OR message LIKE '%logged in%'
+           OR message LIKE '%logged out%'
+      `,
+    );
+
+    return result.affectedRows || 0;
+  } catch (error) {
+    console.warn("Could not purge auth history logs:", error?.message);
+    return 0;
+  }
 }
 
 export async function clearWfmHistoryLogs() {
