@@ -5,8 +5,8 @@ import {
   addHistoryLog,
   clearHistoryLogs,
   getHistoryLogs,
-} from "../controllers/wfmHistoryLogController.js";
-import { getWfmCallsKpi } from "../controllers/wfmKpiController.js";
+} from "../controllers/historyLogController.js";
+import { getWfmCallsKpi } from "../controllers/callKpiController.js";
 import authMiddleware from "../middleware/authMiddleware.js";
 import { requireRole } from "../middleware/roleMiddleware.js";
 

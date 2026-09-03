@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import * as callKpiService from "./wfmCallKpiService.js";
+import * as callKpiService from "./callKpiService.js";
 
 const {
   buildWfmCallKpiDashboard,
@@ -85,6 +85,8 @@ test("returns zero percentages instead of NaN when there are no calls", () => {
     answerRatePct: 0,
     serviceLevelPct: 0,
     ahtSeconds: 0,
+    ahtCalls: 0,
+    ahtCoveragePct: null,
   });
   assert.deepEqual(result.series, []);
 });

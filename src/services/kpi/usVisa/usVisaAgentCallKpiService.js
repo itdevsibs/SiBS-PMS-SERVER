@@ -9,7 +9,7 @@ import {
   resolveCallKpiDateRange,
   resolveDefaultCallKpiDateRange,
   seedCallKpiReferencePeriodBuckets,
-} from "../wfmCallKpiService.js";
+} from "../callKpiService.js";
 
 const DEFAULT_SOURCE_SYSTEM = "US_VISA";
 const SUPPORTED_SOURCE_SYSTEMS = new Set([
@@ -134,8 +134,12 @@ function finalizeAccumulator(accumulator = emptyAccumulator()) {
     totalHandleSeconds: round(accumulator.handleSecondsTotal),
     averageHandleSeconds: average(
       accumulator.handleSecondsTotal,
-      accumulator.answeredCalls,
+      accumulator.handleSecondsCount,
     ),
+    handleTimeCalls: round(accumulator.handleSecondsCount, 0),
+    handleTimeCoveragePct: handledCalls > 0
+      ? round((accumulator.handleSecondsCount / handledCalls) * 100)
+      : null,
     totalTalkSeconds: round(accumulator.talkSecondsTotal),
     averageTalkSeconds: average(
       accumulator.talkSecondsTotal,

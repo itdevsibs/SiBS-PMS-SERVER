@@ -6,7 +6,7 @@ import {
   countWfmHistoryLogs,
   createWfmHistoryLog,
   listWfmHistoryLogs,
-} from "../src/repositories/wfmHistoryLogRepository.js";
+} from "../src/repositories/historyLogRepository.js";
 
 after(async () => {
   await pmsDb.end();

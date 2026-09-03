@@ -1,10 +1,10 @@
-// Controller for Workforce Management history logs.
+// Controller for action history logs.
 import {
   clearWfmHistoryLogs,
   countWfmHistoryLogs,
   createWfmHistoryLog,
   listWfmHistoryLogs,
-} from "../repositories/wfmHistoryLogRepository.js";
+} from "../repositories/historyLogRepository.js";
 
 function getRequestIp(req) {
   return (
