@@ -37,7 +37,9 @@ function pickKpiQuery(query = {}) {
     dateTo: query.dateTo || query.to,
     sourceSystem: query.sourceSystem || query.source,
     skill: query.skill,
+    country: query.country,
     taskOrder: query.taskOrder,
+    includeFilterOptions: query.includeFilterOptions,
     groupBy: query.groupBy,
   };
 }
@@ -146,6 +148,7 @@ export async function getMyUsVisaPerformance({
   const dashboard = await services.getUsVisaAgentCallKpiDashboard({
     ...pickKpiQuery(query),
     employeeUid,
+    includeFilterOptions: query.includeFilterOptions !== "false",
   });
 
   return {

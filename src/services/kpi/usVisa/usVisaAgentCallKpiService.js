@@ -1,7 +1,12 @@
 import {
   getAgentCallKpiDateBounds,
+  getAgentCallKpiFilterOptions,
   getAgentCallKpiRows,
 } from "../../../repositories/usVisa/usVisaAgentCallKpiRepository.js";
+import {
+  buildUsVisaAgentFilterOptions,
+  getUsVisaAgentSkillsForCountry,
+} from "./usVisaAgentSkillFilter.js";
 import {
   getCallKpiPeriodBucket,
   normalizeCallKpiPeriod,
@@ -202,6 +207,7 @@ export function buildAgentCallKpiDashboard({
   employeeUid = null,
   skill = null,
   taskOrder = null,
+  country = null,
   groupBy = ["period"],
 } = {}) {
   const normalizedPeriod = normalizeCallKpiPeriod(period);
@@ -269,6 +275,7 @@ export function buildAgentCallKpiDashboard({
       employeeUid,
       skill,
       taskOrder,
+      country,
       groupBy: normalizedGroupBy,
     },
   };
@@ -277,6 +284,7 @@ export function buildAgentCallKpiDashboard({
 export async function getUsVisaAgentCallKpiDashboard(query = {}, options = {}) {
   const repository = {
     getAgentCallKpiDateBounds,
+    getAgentCallKpiFilterOptions,
     getAgentCallKpiRows,
     ...options.repository,
   };
@@ -289,7 +297,11 @@ export async function getUsVisaAgentCallKpiDashboard(query = {}, options = {}) {
   const requestedDateTo = normalizeDate(query.to || query.dateTo);
   const employeeUid = String(query.employeeUid || query.employee || "").trim() || null;
   const skill = String(query.skill || "").trim() || null;
+  const country = String(query.country || "").trim() || null;
   const taskOrder = String(query.taskOrder || "").trim() || null;
+  const includeFilterOptions =
+    query.includeFilterOptions === true ||
+    String(query.includeFilterOptions || "").trim().toLowerCase() === "true";
   const groupBy = normalizeGroupBy(query.groupBy);
   const employeeUids = Array.isArray(query.employeeUids)
     ? query.employeeUids
@@ -308,11 +320,29 @@ export async function getUsVisaAgentCallKpiDashboard(query = {}, options = {}) {
     throwInvalidDateRange();
   }
 
+  const shouldLoadFilterOptions = includeFilterOptions || Boolean(country);
+  const rawFilterOptions = shouldLoadFilterOptions
+    ? await repository.getAgentCallKpiFilterOptions({
+      sourceSystem,
+      employeeUid,
+      employeeUids,
+      taskOrder,
+    })
+    : [];
+  const availableFilters = buildUsVisaAgentFilterOptions(rawFilterOptions);
+  const countrySkillNames = country
+    ? getUsVisaAgentSkillsForCountry(availableFilters, country)
+    : undefined;
+  const effectiveSkillNames = country
+    ? (countrySkillNames.length ? countrySkillNames : ["__NO_AGENT_SKILLS_FOR_COUNTRY__"])
+    : undefined;
+
   const bounds = await repository.getAgentCallKpiDateBounds({
     sourceSystem,
     employeeUid,
     employeeUids,
     skill,
+    skillNames: effectiveSkillNames,
     taskOrder,
   });
 
@@ -365,6 +395,7 @@ export async function getUsVisaAgentCallKpiDashboard(query = {}, options = {}) {
       employeeUid,
       employeeUids,
       skill,
+      skillNames: effectiveSkillNames,
       taskOrder,
       dateFrom,
       dateTo,
@@ -382,6 +413,7 @@ export async function getUsVisaAgentCallKpiDashboard(query = {}, options = {}) {
     employeeUid,
     skill,
     taskOrder,
+    country,
     groupBy,
   });
 
@@ -392,5 +424,6 @@ export async function getUsVisaAgentCallKpiDashboard(query = {}, options = {}) {
       rangeMode,
     },
     availableDateRange: bounds,
+    availableFilters: includeFilterOptions ? availableFilters : undefined,
   };
 }
