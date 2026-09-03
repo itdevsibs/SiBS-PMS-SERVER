@@ -140,28 +140,84 @@ export async function getImportErrorsByBatchId(batchId) {
 export async function listImportErrorsByBatchId(batchId, options = {}) {
   const limit = Math.min(Math.max(Number(options.limit) || 100, 1), 500);
   const offset = Math.max(Number(options.offset) || 0, 0);
+  const search = typeof options.search === "string" ? options.search.trim() : "";
+  const severity = typeof options.severity === "string" ? options.severity.trim() : "";
+
+  const whereClauses = ["batch_id = ?"];
+  const params = [batchId];
+
+  if (severity) {
+    whereClauses.push("severity = ?");
+    params.push(severity);
+  }
+
+  if (search) {
+    whereClauses.push(
+      "(sheet_name LIKE ? OR error_code LIKE ? OR column_name LIKE ? OR error_message LIKE ? OR raw_value LIKE ? OR CAST(excel_row_number AS CHAR) LIKE ? OR severity LIKE ?)",
+    );
+    const searchPattern = `%${search}%`;
+    params.push(
+      searchPattern,
+      searchPattern,
+      searchPattern,
+      searchPattern,
+      searchPattern,
+      searchPattern,
+      searchPattern,
+    );
+  }
+
+  params.push(limit, offset);
+
   const [rows] = await pmsDb.query(
     `
       SELECT *
       FROM ${pmsTables.usVisaImportErrors}
-      WHERE batch_id = ?
+      WHERE ${whereClauses.join(" AND ")}
       ORDER BY id ASC
       LIMIT ? OFFSET ?
     `,
-    [batchId, limit, offset],
+    params,
   );
 
   return rows.map(mapImportError);
 }
 
-export async function countImportErrorsByBatchId(batchId) {
+export async function countImportErrorsByBatchId(batchId, options = {}) {
+  const search = typeof options.search === "string" ? options.search.trim() : "";
+  const severity = typeof options.severity === "string" ? options.severity.trim() : "";
+
+  const whereClauses = ["batch_id = ?"];
+  const params = [batchId];
+
+  if (severity) {
+    whereClauses.push("severity = ?");
+    params.push(severity);
+  }
+
+  if (search) {
+    whereClauses.push(
+      "(sheet_name LIKE ? OR error_code LIKE ? OR column_name LIKE ? OR error_message LIKE ? OR raw_value LIKE ? OR CAST(excel_row_number AS CHAR) LIKE ? OR severity LIKE ?)",
+    );
+    const searchPattern = `%${search}%`;
+    params.push(
+      searchPattern,
+      searchPattern,
+      searchPattern,
+      searchPattern,
+      searchPattern,
+      searchPattern,
+      searchPattern,
+    );
+  }
+
   const [[row]] = await pmsDb.query(
     `
       SELECT COUNT(*) AS errorCount
       FROM ${pmsTables.usVisaImportErrors}
-      WHERE batch_id = ?
+      WHERE ${whereClauses.join(" AND ")}
     `,
-    [batchId],
+    params,
   );
 
   return Number(row?.errorCount || 0);
