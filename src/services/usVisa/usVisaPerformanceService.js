@@ -96,6 +96,8 @@ function mapAgentList(agentDashboard = {}) {
       answeredCalls: row.answeredCalls,
       totalHandleSeconds: row.totalHandleSeconds,
       averageHandleSeconds: row.averageHandleSeconds,
+      handleTimeCalls: row.handleTimeCalls,
+      handleTimeCoveragePct: row.handleTimeCoveragePct,
       totalTalkSeconds: row.totalTalkSeconds,
       averageTalkSeconds: row.averageTalkSeconds,
       totalHoldSeconds: row.totalHoldSeconds,

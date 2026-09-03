@@ -1,3 +1,5 @@
+import { calculateAverageHandleSeconds } from "./ahtCalculationService.js";
+
 const GRAIN_PREFERENCE = [
   "SKILL_DAY",
   "SKILL_15_MINUTE",
@@ -183,9 +185,10 @@ function finalizeAccumulator(accumulator) {
   const serviceLevelPct = accumulator.callsHandled > 0
     ? (accumulator.handledWithinSla / accumulator.callsHandled) * 100
     : 0;
-  const ahtSeconds = accumulator.handleSecondsDenominator > 0
-    ? accumulator.handleSecondsNumerator / accumulator.handleSecondsDenominator
-    : 0;
+  const ahtSeconds = calculateAverageHandleSeconds({
+    totalHandleSeconds: accumulator.handleSecondsNumerator,
+    handledCalls: accumulator.handleSecondsDenominator,
+  }) ?? 0;
 
   return {
     callsOffered: round(accumulator.callsOffered, 0),
@@ -194,6 +197,10 @@ function finalizeAccumulator(accumulator) {
     answerRatePct: round(answerRatePct),
     serviceLevelPct: round(serviceLevelPct),
     ahtSeconds: round(ahtSeconds),
+    ahtCalls: round(accumulator.handleSecondsDenominator, 0),
+    ahtCoveragePct: accumulator.callsHandled > 0
+      ? round((accumulator.handleSecondsDenominator / accumulator.callsHandled) * 100)
+      : null,
   };
 }
 

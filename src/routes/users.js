@@ -4,7 +4,7 @@ import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { kronosDb, hrisDb, kronosTables, hrisTables } from "../config/db.js";
 import authMiddleware from "../middleware/authMiddleware.js";
-import { createWfmHistoryLog } from "../repositories/wfmHistoryLogRepository.js";
+import { createWfmHistoryLog } from "../repositories/historyLogRepository.js";
 
 const router = express.Router();
 

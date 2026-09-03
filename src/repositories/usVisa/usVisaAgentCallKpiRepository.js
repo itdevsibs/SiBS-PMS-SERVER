@@ -1,5 +1,9 @@
 // Aggregates Agent Level call KPI inputs from canonical US Visa interactions.
 import { pmsDb, pmsTables } from "../../config/db.js";
+import {
+  buildAgentHandleAvailableSql,
+  buildAgentHandleSecondsSql,
+} from "../../services/kpi/ahtCalculationService.js";
 
 const COMPLETED_BATCH_STATUS = "COMPLETED";
 
@@ -198,8 +202,8 @@ export async function getAgentCallKpiRows(options = {}) {
         ${selectColumns.join(",\n        ")},
         COUNT(*) AS interaction_count,
         SUM(CASE WHEN ${answeredExpression} THEN 1 ELSE 0 END) AS answered_calls,
-        SUM(CASE WHEN ${answeredExpression} AND (a.handle_seconds IS NOT NULL OR a.talk_seconds IS NOT NULL) THEN COALESCE(a.handle_seconds, a.talk_seconds + COALESCE(a.hold_seconds, 0) + COALESCE(a.after_call_seconds, 0), a.talk_seconds) ELSE 0 END) AS handle_seconds_total,
-        SUM(CASE WHEN ${answeredExpression} AND (a.handle_seconds IS NOT NULL OR a.talk_seconds IS NOT NULL) THEN 1 ELSE 0 END) AS handle_seconds_count,
+        SUM(CASE WHEN ${answeredExpression} AND ${buildAgentHandleAvailableSql("a")} THEN ${buildAgentHandleSecondsSql("a")} ELSE 0 END) AS handle_seconds_total,
+        SUM(CASE WHEN ${answeredExpression} AND ${buildAgentHandleAvailableSql("a")} THEN 1 ELSE 0 END) AS handle_seconds_count,
         SUM(CASE WHEN ${answeredExpression} AND a.talk_seconds IS NOT NULL THEN a.talk_seconds ELSE 0 END) AS talk_seconds_total,
         SUM(CASE WHEN ${answeredExpression} AND a.talk_seconds IS NOT NULL THEN 1 ELSE 0 END) AS talk_seconds_count,
         SUM(CASE WHEN ${answeredExpression} AND a.hold_seconds IS NOT NULL THEN a.hold_seconds ELSE 0 END) AS hold_seconds_total,

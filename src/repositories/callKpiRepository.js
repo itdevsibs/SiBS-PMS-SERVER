@@ -2,6 +2,10 @@ import { pmsDb, pmsTables } from "../config/db.js";
 import {
   buildUsVisaTaskOrderCountrySqlFilter,
 } from "../services/kpi/usVisa/usVisaTaskOrderFilter.js";
+import {
+  buildSkillHandleDenominatorSql,
+  buildSkillHandleSecondsSql,
+} from "../services/kpi/ahtCalculationService.js";
 
 const COMPLETED_BATCH_STATUS = "COMPLETED";
 
@@ -356,33 +360,11 @@ export async function getDailyCallKpiRows({
         ) AS handled_within_slt,
 
         SUM(
-          CASE
-            WHEN s.total_call_seconds IS NOT NULL
-              THEN s.total_call_seconds
-
-            WHEN
-              s.avg_handle_seconds IS NOT NULL
-              AND s.calls_handled IS NOT NULL
-              THEN
-                s.avg_handle_seconds
-                * s.calls_handled
-
-            ELSE 0
-          END
+          ${buildSkillHandleSecondsSql("s")}
         ) AS handle_seconds_numerator,
 
         SUM(
-          CASE
-            WHEN
-              s.total_call_seconds IS NOT NULL
-              OR s.avg_handle_seconds IS NOT NULL
-              THEN COALESCE(
-                s.calls_handled,
-                0
-              )
-
-            ELSE 0
-          END
+          ${buildSkillHandleDenominatorSql("s")}
         ) AS handle_seconds_denominator
 
       FROM ${pmsTables.usVisaRawSkillStatistics} s

@@ -1,4 +1,4 @@
-// Repository for WFM action history logs in pms_db.
+// Repository for action history logs in pms_db.
 import { pmsDb, pmsTables } from "../config/db.js";
 
 const WFM_HISTORY_TIMEZONE = "+00:00";
