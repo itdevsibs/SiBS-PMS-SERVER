@@ -17,10 +17,27 @@ async function queryWfmHistory(sql, params = []) {
   try {
     await connection.query("SET time_zone = ?", [WFM_HISTORY_TIMEZONE]);
 
-    return connection.query(sql, params);
+    return await connection.query(sql, params);
   } finally {
     connection.release();
   }
+}
+
+function formatMySqlDateTime(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: WFM_HISTORY_LOCALE_TIMEZONE,
+  }).formatToParts(date);
+
+  const v = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  const hour = v.hour === "24" ? "00" : v.hour;
+  return `${v.year}-${v.month}-${v.day} ${hour}:${v.minute}:${v.second}`;
 }
 
 function getLocalDateString(date = new Date()) {
@@ -110,8 +127,9 @@ export async function createWfmHistoryLog({
     return null;
   }
 
-  const effectiveCreatedAt = createdAt instanceof Date ? createdAt : new Date();
-  const effectiveDate = logDate || getLocalDateString(effectiveCreatedAt);
+  const dateObj = createdAt instanceof Date ? createdAt : (createdAt ? new Date(createdAt) : new Date());
+  const effectiveCreatedAtStr = formatMySqlDateTime(dateObj);
+  const effectiveDate = logDate || getLocalDateString(dateObj);
 
   const [result] = await queryWfmHistory(
     `
@@ -143,7 +161,7 @@ export async function createWfmHistoryLog({
       ipAddress || null,
       userAgent || null,
       effectiveDate,
-      effectiveCreatedAt,
+      effectiveCreatedAtStr,
     ],
   );
 
