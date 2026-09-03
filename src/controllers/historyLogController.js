@@ -4,6 +4,7 @@ import {
   countWfmHistoryLogs,
   createWfmHistoryLog,
   listWfmHistoryLogs,
+  purgeAuthHistoryLogs,
 } from "../repositories/historyLogRepository.js";
 
 function getRequestIp(req) {
@@ -54,6 +55,27 @@ export async function addHistoryLog(req, res) {
       userEmail,
     } = req.body || {};
 
+    const normalizedAction = String(action || "").toLowerCase().trim();
+    const normalizedMessage = String(message || "").toLowerCase().trim();
+
+    // User login/logout events are totally excluded from WFM history logs
+    if (
+      normalizedAction === "login" ||
+      normalizedAction === "logout" ||
+      normalizedMessage === "login" ||
+      normalizedMessage === "logout" ||
+      normalizedMessage === "logged-in" ||
+      normalizedMessage === "logged-out" ||
+      normalizedMessage.includes("logged in") ||
+      normalizedMessage.includes("logged out")
+    ) {
+      return res.status(200).json({
+        success: true,
+        message: "Auth logs are excluded from WFM history logs.",
+        data: null,
+      });
+    }
+
     const log = await createWfmHistoryLog({
       action: action || "action",
       account: account || null,
@@ -103,6 +125,9 @@ export async function getHistoryLogs(req, res) {
       action: action || null,
       search: search || null,
     };
+
+    // Purge any legacy auth logs automatically
+    await purgeAuthHistoryLogs();
 
     const [logs, total] = await Promise.all([
       listWfmHistoryLogs({

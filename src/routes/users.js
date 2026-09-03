@@ -4,7 +4,6 @@ import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { kronosDb, hrisDb, kronosTables, hrisTables } from "../config/db.js";
 import authMiddleware from "../middleware/authMiddleware.js";
-import { createWfmHistoryLog } from "../repositories/historyLogRepository.js";
 
 const router = express.Router();
 
@@ -184,31 +183,7 @@ function getRequestIp(req) {
   );
 }
 
-async function recordWfmLogin(req, user, adminAccess, resolvedRole) {
-  if (Number(adminAccess || 0) !== 9 || resolvedRole !== "wfm") {
-    return;
-  }
 
-  const userName = getEmployeeDisplayName(user);
-  const employeeId = user.gy_emp_id || user.gy_user_code || "";
-
-  try {
-    await createWfmHistoryLog({
-      action: "login",
-      account: "WFM",
-      rawDataTitle: "Authentication",
-      message: "login",
-      userId: employeeId,
-      userName,
-      userEmail: user.gy_emp_email || null,
-      ipAddress: getRequestIp(req),
-      userAgent: req.headers["user-agent"] || null,
-      createdAt: new Date(),
-    });
-  } catch (error) {
-    console.warn("Failed to record WFM login history:", error?.message);
-  }
-}
 
 function getMaxAgeFromExpiresIn(value) {
   if (!value) return 5000;
@@ -709,8 +684,6 @@ router.post("/login", async (req, res) => {
 
       maxAge: getMaxAgeFromExpiresIn(expiresIn),
     });
-
-    await recordWfmLogin(req, user, adminAccess, resolvedRole);
 
     return res.status(200).json({
       success: true,
