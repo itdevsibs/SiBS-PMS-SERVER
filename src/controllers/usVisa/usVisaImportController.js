@@ -73,13 +73,18 @@ function pickErrorResponse(error = {}) {
 }
 
 function getPagination(query = {}, defaults = {}) {
+  const page = Math.max(Number(query.page) || 1, 1);
   const limit = Math.min(
     Math.max(Number(query.limit) || defaults.limit || 50, 1),
-    defaults.maxLimit || 200,
+    defaults.maxLimit || 500,
   );
-  const offset = Math.max(Number(query.offset) || 0, 0);
+  const offset =
+    query.offset !== undefined
+      ? Math.max(Number(query.offset) || 0, 0)
+      : (page - 1) * limit;
 
   return {
+    page,
     limit,
     offset,
   };
@@ -344,13 +349,17 @@ export async function listUsVisaImportBatchErrors(req, res) {
     }
 
     const pagination = getPagination(req.query, {
-      limit: 100,
+      limit: 25,
       maxLimit: 500,
     });
+    const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
+    const severity = typeof req.query.severity === "string" ? req.query.severity.trim() : "";
+
     const [errors, total] = await Promise.all([
-      listImportErrorsByBatchId(batch.id, pagination),
-      countImportErrorsByBatchId(batch.id),
+      listImportErrorsByBatchId(batch.id, { ...pagination, search, severity }),
+      countImportErrorsByBatchId(batch.id, { search, severity }),
     ]);
+    const totalPages = Math.ceil(total / pagination.limit) || 1;
 
     return res.json({
       success: true,
@@ -358,7 +367,10 @@ export async function listUsVisaImportBatchErrors(req, res) {
       data: errors.map(pickErrorResponse),
       pagination: {
         ...pagination,
+        search,
+        severity,
         total,
+        totalPages,
       },
     });
   } catch (error) {
