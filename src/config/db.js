@@ -66,7 +66,7 @@ function createDbPool({
     database,
 
     waitForConnections: true,
-    connectionLimit: 10,
+    connectionLimit: 10, 
     queueLimit: 0,
 
     connectTimeout: 10000,
