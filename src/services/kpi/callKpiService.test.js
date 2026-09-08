@@ -87,8 +87,36 @@ test("returns zero percentages instead of NaN when there are no calls", () => {
     ahtSeconds: 0,
     ahtCalls: 0,
     ahtCoveragePct: null,
+    totalQueueSeconds: 0,
+    asaSeconds: 0,
   });
   assert.deepEqual(result.series, []);
+});
+
+test("calculates Average Speed of Answer (ASA) = Total Queue Wait Time ÷ Total Calls Answered/Offered", () => {
+  const result = buildWfmCallKpiDashboard({
+    rows: [
+      {
+        productionDate: "2026-04-27",
+        callsOffered: 100,
+        callsHandled: 80,
+        handledWithinSlt: 70,
+        queueSeconds: 1600,
+        handleSecondsNumerator: 24000,
+        handleSecondsDenominator: 80,
+      },
+    ],
+    period: "weekly",
+    dataGrain: "SKILL_DAY",
+    sourceSystem: "FUSECOM",
+    dateFrom: "2026-04-27",
+    dateTo: "2026-05-03",
+  });
+
+  // 1600 / 80 = 20 seconds
+  assert.equal(result.summary.totalQueueSeconds, 1600);
+  assert.equal(result.summary.asaSeconds, 20);
+  assert.equal(result.series[0].asaSeconds, 20);
 });
 
 

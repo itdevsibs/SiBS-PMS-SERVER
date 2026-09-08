@@ -360,6 +360,23 @@ export async function getDailyCallKpiRows({
         ) AS handled_within_slt,
 
         SUM(
+          CASE
+            WHEN s.queue_seconds IS NOT NULL AND s.queue_seconds > 0 THEN s.queue_seconds
+            WHEN s.asa_seconds IS NOT NULL AND s.asa_seconds > 0 THEN (s.asa_seconds * COALESCE(s.calls_handled, s.calls_offered, 0))
+            WHEN s.source_system != 'HERODASH' AND s.queue_seconds IS NOT NULL AND s.queue_seconds > 0 THEN s.queue_seconds
+            WHEN s.source_system = 'HERODASH' AND s.asa_seconds IS NOT NULL AND s.asa_seconds > 0
+              THEN (s.asa_seconds * COALESCE(s.calls_handled, s.calls_offered, 0))
+            WHEN s.source_system != 'HERODASH' AND s.queue_seconds IS NOT NULL AND s.queue_seconds > 0
+              THEN s.queue_seconds
+            WHEN s.asa_seconds IS NOT NULL AND s.asa_seconds > 0
+              THEN (s.asa_seconds * COALESCE(s.calls_handled, s.calls_offered, 0))
+            WHEN s.source_system != 'HERODASH' AND s.queue_seconds IS NOT NULL AND s.queue_seconds > 0
+              THEN s.queue_seconds
+            ELSE 0
+          END
+        ) AS queue_seconds,
+
+        SUM(
           ${buildSkillHandleSecondsSql("s")}
         ) AS handle_seconds_numerator,
 
@@ -402,6 +419,10 @@ export async function getDailyCallKpiRows({
 
     handledWithinSlt: Number(
       row.handled_within_slt || 0,
+    ),
+
+    queueSeconds: Number(
+      row.queue_seconds || 0,
     ),
 
     handleSecondsNumerator: Number(
