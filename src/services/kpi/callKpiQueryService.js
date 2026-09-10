@@ -90,8 +90,12 @@ export async function getWfmCallKpiDashboard(query = {}) {
     sourceSystem,
     taskOrder,
   );
-  const country = String(query.country || "").trim() || null;
-  const skill = String(query.skill || "").trim() || null;
+  const country = Array.isArray(query.country)
+    ? query.country
+    : (String(query.country || "").trim() || null);
+  const skill = Array.isArray(query.skill)
+    ? query.skill
+    : (String(query.skill || "").trim() || null);
 
   const isCustomRange = period === "custom";
   const isLegacyManualRange = !isCustomRange

@@ -304,3 +304,31 @@ test("returns the selected Task Order, Skill, and Country in dashboard filters",
     assert.equal(result.filters.country, "australia");
   }
 });
+
+test("supports multi-task order normalization and combined countries", async () => {
+  const {
+    normalizeUsVisaTaskOrder,
+    getUsVisaTaskOrderCountries,
+    getUsVisaTaskOrderLabel,
+  } = await import("./usVisa/usVisaTaskOrderFilter.js");
+
+  // Multi task order as comma separated string
+  const normalizedStr = normalizeUsVisaTaskOrder("US_VISA", "TO12,TO16");
+  assert.deepEqual(normalizedStr, ["TO12", "TO16"]);
+
+  // Multi task order as array
+  const normalizedArr = normalizeUsVisaTaskOrder("US_VISA", ["TO12", "TO16"]);
+  assert.deepEqual(normalizedArr, ["TO12", "TO16"]);
+
+  // Countries combination from both TO12 (Europe) and TO16 (China, HK)
+  const combinedCountries = getUsVisaTaskOrderCountries("US_VISA", ["TO12", "TO16"]);
+  assert.ok(combinedCountries.includes("germany"));
+  assert.ok(combinedCountries.includes("austria"));
+  assert.ok(combinedCountries.includes("china"));
+  assert.ok(combinedCountries.includes("hong kong"));
+  assert.equal(combinedCountries.includes("australia"), false); // PAC country not in TO12/TO16
+
+  // Label formatting
+  assert.equal(getUsVisaTaskOrderLabel(["TO12", "TO16"]), "TO12 - NICE, TO16 - SEURECA");
+});
+
