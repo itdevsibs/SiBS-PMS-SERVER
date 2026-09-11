@@ -17,6 +17,7 @@ import {
   reconcileClassificationsWithStoredRows,
 } from "../importChunkClassifier.js";
 import {
+  getCellSourceValue,
   iterateWorksheetRowChunks,
   readHeaderRow,
 } from "../../shared/workbookReaderService.js";
@@ -26,12 +27,106 @@ import {
 } from "./agentInteractionHashService.js";
 import {
   AGENT_MAPPING_STATUSES,
-  matchAgentIdentity,
+  createAgentIdentityCacheKey,
+  createBulkAgentIdentityResolver,
 } from "./agentIdentityMatchingService.js";
-import { mapAgentInteractionRow } from "./agentInteractionMapper.js";
+import {
+  getAgentInteractionFieldMappings,
+  mapAgentInteractionIdentity,
+  mapAgentInteractionRow,
+} from "./agentInteractionMapper.js";
 import {
   validateCanonicalAgentInteractionRow,
 } from "./agentInteractionValidator.js";
+
+const AGENT_IDENTITY_FIELDS = [
+  "personal_id",
+  "agent_login",
+  "agent_name_raw",
+  "source_agent_key",
+];
+
+function normalizeHeaderValue(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function getIdentitySourceColumns(headers = [], profileCode) {
+  const fieldMappings = getAgentInteractionFieldMappings(profileCode);
+  const headerByNormalizedName = new Map(
+    headers.map((header) => [
+      normalizeHeaderValue(header.sourceHeader),
+      header,
+    ]),
+  );
+  const selectedByColumn = new Map();
+
+  for (const fieldName of AGENT_IDENTITY_FIELDS) {
+    const sourceHeaders = fieldMappings[fieldName] || [];
+    const matchedHeader = sourceHeaders
+      .map((sourceHeader) => headerByNormalizedName.get(normalizeHeaderValue(sourceHeader)))
+      .find(Boolean);
+
+    if (matchedHeader) {
+      selectedByColumn.set(matchedHeader.columnNumber, matchedHeader);
+    }
+  }
+
+  return [...selectedByColumn.values()];
+}
+
+async function collectUniqueAgentIdentities({
+  workbook,
+  workbookValidation,
+  profileCode,
+}) {
+  const identitiesByKey = new Map();
+  let scannedRows = 0;
+
+  for (const sheet of workbookValidation.sheets) {
+    const worksheet = workbook.getWorksheet(sheet.sheetName);
+
+    if (!worksheet) continue;
+
+    const headers = readHeaderRow(
+      workbook,
+      sheet.sheetName,
+      sheet.headerRowNumber,
+    );
+    const identityColumns = getIdentitySourceColumns(headers, profileCode);
+
+    for (
+      let rowNumber = sheet.headerRowNumber + 1;
+      rowNumber <= worksheet.rowCount;
+      rowNumber += 1
+    ) {
+      const row = worksheet.getRow(rowNumber);
+
+      if (!row.hasValues) continue;
+
+      const identitySourceRow = {};
+
+      for (const header of identityColumns) {
+        identitySourceRow[header.sourceHeader] = getCellSourceValue(
+          row.getCell(header.columnNumber),
+        );
+      }
+
+      const identity = mapAgentInteractionIdentity(identitySourceRow, {
+        profileCode,
+      });
+      identitiesByKey.set(createAgentIdentityCacheKey(identity), identity);
+      scannedRows += 1;
+    }
+  }
+
+  return {
+    identities: [...identitiesByKey.values()],
+    scannedRows,
+  };
+}
 
 function getRawStatusForClassification(classification) {
   if (classification === IMPORT_ROW_CLASSIFICATIONS.INVALID) return "INVALID";
@@ -162,12 +257,13 @@ async function prepareAgentInteractionRow({
   profileCode,
   sourceRow,
   sheet,
+  identityResolver,
 }) {
   const mapped = mapAgentInteractionRow(sourceRow.rowJson, {
     profileCode,
     sheetName: sheet.sheetName,
   });
-  const identityMatch = await matchAgentIdentity({
+  const identityMatch = await identityResolver.resolve({
     sourceSystem: mapped.mappedRow.source_system,
     personalId: mapped.mappedRow.personal_id,
     agentLogin: mapped.mappedRow.agent_login,
@@ -271,12 +367,14 @@ async function processAgentInteractionChunk({
   sheet,
   counters,
   seenRows,
+  identityResolver,
 }) {
   const preparedRows = await Promise.all(rowChunk.map((sourceRow) =>
     prepareAgentInteractionRow({
       profileCode,
       sourceRow,
       sheet,
+      identityResolver,
     }),
   ));
   const validHashes = [
@@ -407,7 +505,25 @@ export async function processAgentInteractionWorkbook({
   counters,
   chunkSize,
 }) {
+  const processorStartedAt = Date.now();
   const seenRows = new Map();
+
+  const identityCollectionStartedAt = Date.now();
+  const identityCollection = await collectUniqueAgentIdentities({
+    workbook,
+    workbookValidation,
+    profileCode,
+  });
+  const identityCollectionMs = Date.now() - identityCollectionStartedAt;
+
+  const identityResolutionStartedAt = Date.now();
+  const identityResolver = await createBulkAgentIdentityResolver(
+    identityCollection.identities,
+  );
+  const identityResolutionMs = Date.now() - identityResolutionStartedAt;
+
+  const rowProcessingStartedAt = Date.now();
+  let processedChunks = 0;
 
   for (const sheet of workbookValidation.sheets) {
     const headers = readHeaderRow(workbook, sheet.sheetName, sheet.headerRowNumber);
@@ -429,8 +545,23 @@ export async function processAgentInteractionWorkbook({
           sheet,
           counters,
           seenRows,
+          identityResolver,
         });
+        processedChunks += 1;
       },
     );
   }
+
+  const rowProcessingMs = Date.now() - rowProcessingStartedAt;
+
+  return {
+    identityCollectionMs,
+    identityResolutionMs,
+    rowProcessingMs,
+    processorTotalMs: Date.now() - processorStartedAt,
+    identityRowsScanned: identityCollection.scannedRows,
+    processedChunks,
+    ...identityResolver.stats,
+  };
 }
+

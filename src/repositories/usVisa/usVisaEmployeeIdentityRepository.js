@@ -39,6 +39,10 @@ function buildSourceSystemClause(sourceSystem) {
   };
 }
 
+function buildInClause(values = []) {
+  return values.map(() => "?").join(", ");
+}
+
 export async function findEmployeeAliasCandidates({
   aliasType,
   sourceSystem = null,
@@ -72,6 +76,65 @@ export async function findEmployeeAliasCandidates({
   return rows.map(mapEmployeeCandidate);
 }
 
+export async function findEmployeeAliasCandidatesBulk(lookups = []) {
+  const aliasTypes = [
+    ...new Set(
+      lookups
+        .map((lookup) => String(lookup?.aliasType || "").trim())
+        .filter(Boolean),
+    ),
+  ];
+  const normalizedAliasValues = [
+    ...new Set(
+      lookups
+        .map((lookup) => normalizeEmployeeIdentity(lookup?.aliasValue))
+        .filter(Boolean),
+    ),
+  ];
+  const sourceSystems = [
+    ...new Set(
+      lookups
+        .map((lookup) => normalizeEmployeeIdentity(lookup?.sourceSystem))
+        .filter(Boolean),
+    ),
+  ];
+
+  if (!aliasTypes.length || !normalizedAliasValues.length) {
+    return [];
+  }
+
+  const sourceSql = sourceSystems.length
+    ? `AND (source_system = 'GLOBAL' OR source_system IN (${buildInClause(sourceSystems)}))`
+    : "AND source_system = 'GLOBAL'";
+  const [rows] = await pmsDb.query(
+    `
+      SELECT
+        alias_type,
+        source_system,
+        normalized_alias_value,
+        employee_uid,
+        NULL AS employee_id,
+        NULL AS employee_name,
+        NULL AS employee_email,
+        'ALIAS' AS source
+      FROM ${pmsTables.usVisaEmployeeAliases}
+      WHERE is_active = 1
+        AND alias_type IN (${buildInClause(aliasTypes)})
+        AND normalized_alias_value IN (${buildInClause(normalizedAliasValues)})
+        ${sourceSql}
+      ORDER BY id ASC
+    `,
+    [...aliasTypes, ...normalizedAliasValues, ...sourceSystems],
+  );
+
+  return rows.map((row) => ({
+    aliasType: row.alias_type,
+    sourceSystem: normalizeEmployeeIdentity(row.source_system),
+    normalizedAliasValue: normalizeEmployeeIdentity(row.normalized_alias_value),
+    ...mapEmployeeCandidate(row),
+  }));
+}
+
 export async function findEmployeesByExactNormalizedName(agentName) {
   const normalizedName = normalizeEmployeeIdentity(agentName);
 
@@ -94,4 +157,38 @@ export async function findEmployeesByExactNormalizedName(agentName) {
   );
 
   return rows.map(mapEmployeeCandidate);
+}
+
+export async function findEmployeesByExactNormalizedNames(agentNames = []) {
+  const normalizedNames = [
+    ...new Set(
+      agentNames
+        .map(normalizeEmployeeIdentity)
+        .filter(Boolean),
+    ),
+  ];
+
+  if (!normalizedNames.length) {
+    return [];
+  }
+
+  const [rows] = await kronosDb.query(
+    `
+      SELECT
+        UPPER(TRIM(employee.gy_emp_fullname)) AS normalized_name,
+        employee.gy_emp_code AS employee_uid,
+        employee.gy_emp_id AS employee_id,
+        employee.gy_emp_fullname AS employee_name,
+        employee.gy_emp_email AS employee_email,
+        'KRONOS_NAME' AS source
+      FROM ${kronosTables.employee} employee
+      WHERE UPPER(TRIM(employee.gy_emp_fullname)) IN (${buildInClause(normalizedNames)})
+    `,
+    normalizedNames,
+  );
+
+  return rows.map((row) => ({
+    normalizedName: normalizeEmployeeIdentity(row.normalized_name),
+    ...mapEmployeeCandidate(row),
+  }));
 }
