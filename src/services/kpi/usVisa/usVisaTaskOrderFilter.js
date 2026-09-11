@@ -69,38 +69,84 @@ function createInvalidTaskOrderError(sourceSystem, taskOrder) {
 }
 
 export function normalizeUsVisaTaskOrder(sourceSystem, value) {
-  const taskOrder = String(value || "").trim().toUpperCase();
-  if (!taskOrder || taskOrder === "ALL") return null;
+  if (!value) return null;
+
+  const rawList = Array.isArray(value)
+    ? value
+    : String(value)
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+  if (!rawList.length) return null;
 
   const normalizedSourceSystem = normalizeSourceSystem(sourceSystem);
-  const config = TASK_ORDER_CONFIG[taskOrder];
+  const normalizedList = [];
 
-  if (!config) {
-    throw createInvalidTaskOrderError(normalizedSourceSystem, taskOrder);
+  for (const item of rawList) {
+    const taskOrder = String(item || "").trim().toUpperCase();
+    if (!taskOrder || taskOrder === "ALL") continue;
+
+    const config = TASK_ORDER_CONFIG[taskOrder];
+    if (!config) {
+      throw createInvalidTaskOrderError(normalizedSourceSystem, taskOrder);
+    }
+
+    if (
+      normalizedSourceSystem !== "US_VISA" &&
+      normalizedSourceSystem !== "US VISA" &&
+      config.sourceSystem !== normalizedSourceSystem
+    ) {
+      throw createInvalidTaskOrderError(normalizedSourceSystem, taskOrder);
+    }
+
+    if (!normalizedList.includes(taskOrder)) {
+      normalizedList.push(taskOrder);
+    }
   }
 
-  if (
-    normalizedSourceSystem !== "US_VISA" &&
-    normalizedSourceSystem !== "US VISA" &&
-    config.sourceSystem !== normalizedSourceSystem
-  ) {
-    throw createInvalidTaskOrderError(normalizedSourceSystem, taskOrder);
-  }
-
-  return taskOrder;
+  if (!normalizedList.length) return null;
+  return normalizedList.length === 1 ? normalizedList[0] : normalizedList;
 }
 
 export function getUsVisaTaskOrderCountries(sourceSystem, taskOrder) {
   const normalizedTaskOrder = normalizeUsVisaTaskOrder(sourceSystem, taskOrder);
   if (!normalizedTaskOrder) return [];
 
-  return [...TASK_ORDER_CONFIG[normalizedTaskOrder].countries];
+  const list = Array.isArray(normalizedTaskOrder)
+    ? normalizedTaskOrder
+    : [normalizedTaskOrder];
+
+  const countries = new Set();
+  for (const to of list) {
+    const config = TASK_ORDER_CONFIG[to];
+    if (config?.countries) {
+      config.countries.forEach((country) => countries.add(country));
+    }
+  }
+
+  return [...countries];
 }
 
 export function getUsVisaTaskOrderLabel(taskOrder) {
-  const normalizedTaskOrder = String(taskOrder || "").trim().toUpperCase();
-  const config = TASK_ORDER_CONFIG[normalizedTaskOrder];
-  return config ? `${normalizedTaskOrder} - ${config.label}` : "All Task Orders";
+  if (!taskOrder) return "All Task Orders";
+
+  const list = Array.isArray(taskOrder)
+    ? taskOrder
+    : String(taskOrder)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+  if (!list.length) return "All Task Orders";
+
+  return list
+    .map((to) => {
+      const normalizedTo = String(to || "").trim().toUpperCase();
+      const config = TASK_ORDER_CONFIG[normalizedTo];
+      return config ? `${normalizedTo} - ${config.label}` : normalizedTo;
+    })
+    .join(", ");
 }
 
 export function buildUsVisaTaskOrderCountrySqlFilter(

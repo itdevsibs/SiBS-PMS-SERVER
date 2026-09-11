@@ -32,20 +32,46 @@ function appendCountryFilter({
   sourceSystem,
   country,
 }) {
-  const normalizedCountry = String(country || "").trim().toLowerCase();
-  if (!normalizedCountry || normalizedCountry === "all") return;
+  if (!country) return;
+  const rawList = Array.isArray(country)
+    ? country
+    : String(country)
+        .split(",")
+        .map((c) => c.trim())
+        .filter(Boolean);
+
+  const normalizedCountries = [
+    ...new Set(
+      rawList
+        .map((c) => c.toLowerCase())
+        .filter((c) => c && c !== "all" && c !== "all countries"),
+    ),
+  ];
+
+  if (!normalizedCountries.length) return;
 
   const normalizedSourceSystem = String(sourceSystem || "").trim().toUpperCase();
+  const placeholders = normalizedCountries.map(() => "?").join(", ");
 
   if (normalizedSourceSystem === "HERODASH") {
-    conditions.push("LOWER(TRIM(s.country_region)) = ?");
-    values.push(normalizedCountry);
+    conditions.push(`LOWER(TRIM(s.country_region)) IN (${placeholders})`);
+    values.push(...normalizedCountries);
   } else if (normalizedSourceSystem === "FUSECOM") {
-    conditions.push("(LOWER(TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX(s.source_skill_name, ' - ', 1), '::', -1))) = ? OR LOWER(TRIM(s.country_region)) = ?)");
-    values.push(normalizedCountry, normalizedCountry);
+    conditions.push(
+      `(LOWER(TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX(s.source_skill_name, ' - ', 1), '::', -1))) IN (${placeholders}) OR LOWER(TRIM(s.country_region)) IN (${placeholders}))`,
+    );
+    values.push(...normalizedCountries, ...normalizedCountries);
   } else {
-    conditions.push("(LOWER(TRIM(s.country_region)) = ? OR LOWER(TRIM(s.source_skill_name)) LIKE ?)");
-    values.push(normalizedCountry, `%${normalizedCountry}%`);
+    const likeClauses = normalizedCountries
+      .map(() => "LOWER(TRIM(s.source_skill_name)) LIKE ?")
+      .join(" OR ");
+    conditions.push(
+      `(LOWER(TRIM(s.country_region)) IN (${placeholders}) OR ${likeClauses})`,
+    );
+    values.push(
+      ...normalizedCountries,
+      ...normalizedCountries.map((c) => `%${c}%`),
+    );
   }
 }
 
@@ -54,12 +80,27 @@ function appendSourceSystemFilter({
   values,
   sourceSystem,
 }) {
-  const normalized = String(sourceSystem || "").trim().toUpperCase();
-  if (!normalized || normalized === "US_VISA" || normalized === "US VISA" || normalized === "ALL") {
-    return;
+  if (!sourceSystem) return;
+  const rawList = Array.isArray(sourceSystem)
+    ? sourceSystem
+    : String(sourceSystem)
+        .split(",")
+        .map((s) => s.trim().toUpperCase())
+        .filter(Boolean);
+
+  const filtered = rawList.filter(
+    (s) => s && s !== "US_VISA" && s !== "US VISA" && s !== "ALL",
+  );
+  if (!filtered.length) return;
+
+  if (filtered.length === 1) {
+    conditions.push("s.source_system = ?");
+    values.push(filtered[0]);
+  } else {
+    const placeholders = filtered.map(() => "?").join(", ");
+    conditions.push(`s.source_system IN (${placeholders})`);
+    values.push(...filtered);
   }
-  conditions.push("s.source_system = ?");
-  values.push(normalized);
 }
 
 function appendSourceGrainFilter({
@@ -103,41 +144,64 @@ function appendSkillFilter({
   values,
   skill,
 }) {
-  const normalizedSkill = String(skill || "").trim();
-  if (!normalizedSkill || normalizedSkill.toUpperCase() === "ALL") return;
+  if (!skill) return;
+  const rawList = Array.isArray(skill)
+    ? skill
+    : String(skill)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
 
-  const key = normalizedSkill.toLowerCase().replace(/[\s_-]+/g, "");
+  const skillsToProcess = rawList.filter(
+    (s) => s && s.toUpperCase() !== "ALL" && s.toUpperCase() !== "ALL SKILLS",
+  );
+  if (!skillsToProcess.length) return;
 
-  if (key === "englishall" || key === "english") {
-    conditions.push(
-      "(s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?)",
-    );
-    values.push("%English%", "%English%");
-  } else if (key === "englishniv") {
-    conditions.push(
-      "((s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?) AND (s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?))",
-    );
-    values.push("%English%", "%English%", "%NIV%", "%NIV%");
-  } else if (key === "englishiv") {
-    conditions.push(
-      "((s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?) AND (s.source_skill_name REGEXP '(^|[^A-Za-z])IV($|[^A-Za-z])' OR s.skill_group_name REGEXP '(^|[^A-Za-z])IV($|[^A-Za-z])') AND s.source_skill_name NOT LIKE ? AND (s.skill_group_name IS NULL OR s.skill_group_name NOT LIKE ?))",
-    );
-    values.push("%English%", "%English%", "%NIV%", "%NIV%");
-  } else if (key === "englishacs") {
-    conditions.push(
-      "((s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?) AND (s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?))",
-    );
-    values.push("%English%", "%English%", "%ACS%", "%ACS%");
-  } else if (key === "nonenglish") {
-    conditions.push(
-      "(s.source_skill_name NOT LIKE ? AND (s.skill_group_name IS NULL OR s.skill_group_name NOT LIKE ?))",
-    );
-    values.push("%English%", "%English%");
-  } else {
-    conditions.push(
-      "(s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?)",
-    );
-    values.push(`%${normalizedSkill}%`, `%${normalizedSkill}%`);
+  const skillClauses = [];
+  const skillValues = [];
+
+  for (const item of skillsToProcess) {
+    const key = item.toLowerCase().replace(/[\s_-]+/g, "");
+
+    if (key === "englishall" || key === "english") {
+      skillClauses.push(
+        "(s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?)",
+      );
+      skillValues.push("%English%", "%English%");
+    } else if (key === "englishniv") {
+      skillClauses.push(
+        "((s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?) AND (s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?))",
+      );
+      skillValues.push("%English%", "%English%", "%NIV%", "%NIV%");
+    } else if (key === "englishiv") {
+      skillClauses.push(
+        "((s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?) AND (s.source_skill_name REGEXP '(^|[^A-Za-z])IV($|[^A-Za-z])' OR s.skill_group_name REGEXP '(^|[^A-Za-z])IV($|[^A-Za-z])') AND s.source_skill_name NOT LIKE ? AND (s.skill_group_name IS NULL OR s.skill_group_name NOT LIKE ?))",
+      );
+      skillValues.push("%English%", "%English%", "%NIV%", "%NIV%");
+    } else if (key === "englishacs") {
+      skillClauses.push(
+        "((s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?) AND (s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?))",
+      );
+      skillValues.push("%English%", "%English%", "%ACS%", "%ACS%");
+    } else if (key === "nonenglish") {
+      skillClauses.push(
+        "(s.source_skill_name NOT LIKE ? AND (s.skill_group_name IS NULL OR s.skill_group_name NOT LIKE ?))",
+      );
+      skillValues.push("%English%", "%English%");
+    } else {
+      skillClauses.push(
+        "(s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?)",
+      );
+      skillValues.push(`%${item}%`, `%${item}%`);
+    }
+  }
+
+  if (skillClauses.length === 1) {
+    conditions.push(skillClauses[0]);
+    values.push(...skillValues);
+  } else if (skillClauses.length > 1) {
+    conditions.push(`(${skillClauses.join(" OR ")})`);
+    values.push(...skillValues);
   }
 }
 
@@ -360,6 +424,23 @@ export async function getDailyCallKpiRows({
         ) AS handled_within_slt,
 
         SUM(
+          CASE
+            WHEN s.queue_seconds IS NOT NULL AND s.queue_seconds > 0 THEN s.queue_seconds
+            WHEN s.asa_seconds IS NOT NULL AND s.asa_seconds > 0 THEN (s.asa_seconds * COALESCE(s.calls_handled, s.calls_offered, 0))
+            WHEN s.source_system != 'HERODASH' AND s.queue_seconds IS NOT NULL AND s.queue_seconds > 0 THEN s.queue_seconds
+            WHEN s.source_system = 'HERODASH' AND s.asa_seconds IS NOT NULL AND s.asa_seconds > 0
+              THEN (s.asa_seconds * COALESCE(s.calls_handled, s.calls_offered, 0))
+            WHEN s.source_system != 'HERODASH' AND s.queue_seconds IS NOT NULL AND s.queue_seconds > 0
+              THEN s.queue_seconds
+            WHEN s.asa_seconds IS NOT NULL AND s.asa_seconds > 0
+              THEN (s.asa_seconds * COALESCE(s.calls_handled, s.calls_offered, 0))
+            WHEN s.source_system != 'HERODASH' AND s.queue_seconds IS NOT NULL AND s.queue_seconds > 0
+              THEN s.queue_seconds
+            ELSE 0
+          END
+        ) AS queue_seconds,
+
+        SUM(
           ${buildSkillHandleSecondsSql("s")}
         ) AS handle_seconds_numerator,
 
@@ -402,6 +483,10 @@ export async function getDailyCallKpiRows({
 
     handledWithinSlt: Number(
       row.handled_within_slt || 0,
+    ),
+
+    queueSeconds: Number(
+      row.queue_seconds || 0,
     ),
 
     handleSecondsNumerator: Number(

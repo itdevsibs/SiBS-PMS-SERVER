@@ -130,6 +130,7 @@ function emptyAccumulator(bucket = {}) {
     callsOffered: 0,
     callsHandled: 0,
     handledWithinSla: 0,
+    totalQueueSeconds: 0,
     handleSecondsNumerator: 0,
     handleSecondsDenominator: 0,
   };
@@ -173,6 +174,7 @@ function addRow(target, row = {}) {
   target.callsOffered += toFiniteNumber(row.callsOffered);
   target.callsHandled += toFiniteNumber(row.callsHandled);
   target.handledWithinSla += toFiniteNumber(row.handledWithinSlt ?? row.handledWithinSla);
+  target.totalQueueSeconds += toFiniteNumber(row.queueSeconds ?? row.totalQueueSeconds);
   target.handleSecondsNumerator += toFiniteNumber(row.handleSecondsNumerator);
   target.handleSecondsDenominator += toFiniteNumber(row.handleSecondsDenominator);
   return target;
@@ -190,6 +192,14 @@ function finalizeAccumulator(accumulator) {
     handledCalls: accumulator.handleSecondsDenominator,
   }) ?? 0;
 
+  // Formula: Average Speed of Answer (ASA) = Total Queue Wait Time ÷ Total Calls Answered/Offered
+  const answeredOrOfferedCalls = accumulator.callsHandled > 0
+    ? accumulator.callsHandled
+    : (accumulator.callsOffered > 0 ? accumulator.callsOffered : 0);
+  const asaSeconds = answeredOrOfferedCalls > 0
+    ? accumulator.totalQueueSeconds / answeredOrOfferedCalls
+    : 0;
+
   return {
     callsOffered: round(accumulator.callsOffered, 0),
     callsHandled: round(accumulator.callsHandled, 0),
@@ -201,6 +211,8 @@ function finalizeAccumulator(accumulator) {
     ahtCoveragePct: accumulator.callsHandled > 0
       ? round((accumulator.handleSecondsDenominator / accumulator.callsHandled) * 100)
       : null,
+    totalQueueSeconds: round(accumulator.totalQueueSeconds),
+    asaSeconds: round(asaSeconds),
   };
 }
 
