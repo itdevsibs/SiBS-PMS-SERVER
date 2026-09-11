@@ -28,7 +28,7 @@ function isMissingFileError(error) {
   );
 }
 
-function getCellSourceValue(cell) {
+export function getCellSourceValue(cell) {
   const value = cell?.value;
 
   if (

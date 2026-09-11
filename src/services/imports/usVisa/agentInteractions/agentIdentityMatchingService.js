@@ -1,7 +1,9 @@
 // Resolves Agent Level source identities to existing PMS/Kronos employee identities.
 import {
   findEmployeeAliasCandidates,
+  findEmployeeAliasCandidatesBulk,
   findEmployeesByExactNormalizedName,
+  findEmployeesByExactNormalizedNames,
   normalizeEmployeeIdentity,
 } from "../../../../repositories/usVisa/usVisaEmployeeIdentityRepository.js";
 
@@ -23,6 +25,25 @@ const SOURCE_ALIAS_TYPES = Object.freeze({
   FUSENET: "FUSENET_NAME",
   HERODASH: "HERODASH_NAME",
 });
+
+function normalizeIdentityPart(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toUpperCase();
+}
+
+export function createAgentIdentityCacheKey(identity = {}) {
+  return [
+    identity.sourceSystem,
+    identity.personalId,
+    identity.agentLogin,
+    identity.agentName,
+    identity.sourceAgentKey,
+  ]
+    .map(normalizeIdentityPart)
+    .join("\u001f");
+}
 
 function uniqueCandidates(candidates = []) {
   const byEmployeeUid = new Map();
@@ -153,6 +174,254 @@ export async function matchAgentIdentity({
     matchMethod: null,
     employee: null,
     candidates: [],
+  };
+}
+
+function createAliasLookupKey(aliasType, sourceSystem, aliasValue) {
+  return [
+    String(aliasType || "").trim(),
+    normalizeEmployeeIdentity(sourceSystem),
+    normalizeEmployeeIdentity(aliasValue),
+  ].join("\u001f");
+}
+
+function addAliasLookup(lookupsByKey, aliasType, sourceSystem, aliasValue) {
+  const normalizedAliasValue = normalizeEmployeeIdentity(aliasValue);
+
+  if (!aliasType || !normalizedAliasValue) {
+    return;
+  }
+
+  const lookup = {
+    aliasType,
+    sourceSystem: normalizeEmployeeIdentity(sourceSystem) || null,
+    aliasValue: normalizedAliasValue,
+  };
+  lookupsByKey.set(
+    createAliasLookupKey(lookup.aliasType, lookup.sourceSystem, lookup.aliasValue),
+    lookup,
+  );
+}
+
+function indexBulkAliasCandidates(rows = []) {
+  const byKey = new Map();
+
+  for (const row of rows) {
+    const key = createAliasLookupKey(
+      row.aliasType,
+      row.sourceSystem,
+      row.normalizedAliasValue,
+    );
+    const candidates = byKey.get(key) || [];
+    candidates.push(row);
+    byKey.set(key, candidates);
+  }
+
+  return byKey;
+}
+
+function getBulkAliasCandidates(index, aliasType, sourceSystem, aliasValue) {
+  const normalizedAliasValue = normalizeEmployeeIdentity(aliasValue);
+
+  if (!aliasType || !normalizedAliasValue) {
+    return [];
+  }
+
+  const normalizedSourceSystem = normalizeEmployeeIdentity(sourceSystem);
+  const globalKey = createAliasLookupKey(aliasType, "GLOBAL", normalizedAliasValue);
+  const sourceKey = createAliasLookupKey(
+    aliasType,
+    normalizedSourceSystem,
+    normalizedAliasValue,
+  );
+
+  if (!normalizedSourceSystem || normalizedSourceSystem === "GLOBAL") {
+    return index.get(globalKey) || [];
+  }
+
+  return [
+    ...(index.get(globalKey) || []),
+    ...(index.get(sourceKey) || []),
+  ];
+}
+
+function indexBulkNameCandidates(rows = []) {
+  const byName = new Map();
+
+  for (const row of rows) {
+    const normalizedName = normalizeEmployeeIdentity(row.normalizedName);
+
+    if (!normalizedName) continue;
+
+    const candidates = byName.get(normalizedName) || [];
+    candidates.push(row);
+    byName.set(normalizedName, candidates);
+  }
+
+  return byName;
+}
+
+function getAliasResolution(identity, aliasIndex) {
+  const sourceSystem = normalizeEmployeeIdentity(identity.sourceSystem);
+
+  const personalIdMatch = resultFromCandidates(
+    getBulkAliasCandidates(
+      aliasIndex,
+      "PERSONAL_ID",
+      sourceSystem,
+      identity.personalId,
+    ),
+    AGENT_MAPPING_METHODS.PERSONAL_ID,
+  );
+
+  if (personalIdMatch) return personalIdMatch;
+
+  const loginMatch = resultFromCandidates(
+    getBulkAliasCandidates(
+      aliasIndex,
+      "AGENT_LOGIN",
+      sourceSystem,
+      identity.agentLogin,
+    ),
+    AGENT_MAPPING_METHODS.AGENT_LOGIN,
+  );
+
+  if (loginMatch) return loginMatch;
+
+  const sourceAliasType = SOURCE_ALIAS_TYPES[sourceSystem];
+  const sourceAliasValue = identity.agentName || identity.sourceAgentKey;
+  const sourceAliasMatch = sourceAliasType
+    ? resultFromCandidates(
+      getBulkAliasCandidates(
+        aliasIndex,
+        sourceAliasType,
+        sourceSystem,
+        sourceAliasValue,
+      ),
+      AGENT_MAPPING_METHODS.SOURCE_ALIAS,
+    )
+    : null;
+
+  return sourceAliasMatch || null;
+}
+
+export async function createBulkAgentIdentityResolver(
+  identities = [],
+  options = {},
+) {
+  const repository = {
+    findEmployeeAliasCandidatesBulk,
+    findEmployeesByExactNormalizedNames,
+    ...options.repository,
+  };
+  const identitiesByKey = new Map();
+
+  for (const identity of identities) {
+    identitiesByKey.set(createAgentIdentityCacheKey(identity), identity);
+  }
+
+  const aliasLookupsByKey = new Map();
+
+  for (const identity of identitiesByKey.values()) {
+    const sourceSystem = normalizeEmployeeIdentity(identity.sourceSystem);
+    addAliasLookup(
+      aliasLookupsByKey,
+      "PERSONAL_ID",
+      sourceSystem,
+      identity.personalId,
+    );
+    addAliasLookup(
+      aliasLookupsByKey,
+      "AGENT_LOGIN",
+      sourceSystem,
+      identity.agentLogin,
+    );
+
+    const sourceAliasType = SOURCE_ALIAS_TYPES[sourceSystem];
+
+    if (sourceAliasType) {
+      addAliasLookup(
+        aliasLookupsByKey,
+        sourceAliasType,
+        sourceSystem,
+        identity.agentName || identity.sourceAgentKey,
+      );
+    }
+  }
+
+  const aliasLookups = [...aliasLookupsByKey.values()];
+  const aliasRows = aliasLookups.length
+    ? await repository.findEmployeeAliasCandidatesBulk(aliasLookups)
+    : [];
+  const aliasIndex = indexBulkAliasCandidates(aliasRows);
+  const resolvedByKey = new Map();
+  const unresolvedIdentities = [];
+
+  for (const [key, identity] of identitiesByKey.entries()) {
+    const aliasResolution = getAliasResolution(identity, aliasIndex);
+
+    if (aliasResolution) {
+      resolvedByKey.set(key, aliasResolution);
+    } else {
+      unresolvedIdentities.push([key, identity]);
+    }
+  }
+
+  const unresolvedNames = [
+    ...new Set(
+      unresolvedIdentities
+        .map(([, identity]) => normalizeEmployeeIdentity(identity.agentName))
+        .filter(Boolean),
+    ),
+  ];
+  const nameRows = unresolvedNames.length
+    ? await repository.findEmployeesByExactNormalizedNames(unresolvedNames)
+    : [];
+  const nameIndex = indexBulkNameCandidates(nameRows);
+
+  for (const [key, identity] of unresolvedIdentities) {
+    const normalizedName = normalizeEmployeeIdentity(identity.agentName);
+    const nameMatch = resultFromCandidates(
+      normalizedName ? nameIndex.get(normalizedName) || [] : [],
+      AGENT_MAPPING_METHODS.EXACT_AGENT_NAME,
+    );
+
+    resolvedByKey.set(
+      key,
+      nameMatch || {
+        matchStatus: AGENT_MAPPING_STATUSES.UNMATCHED,
+        matchMethod: null,
+        employee: null,
+        candidates: [],
+      },
+    );
+  }
+
+  return {
+    get size() {
+      return resolvedByKey.size;
+    },
+
+    stats: {
+      uniqueIdentities: identitiesByKey.size,
+      aliasLookupCount: aliasLookups.length,
+      aliasCandidateRows: aliasRows.length,
+      kronosNameLookupCount: unresolvedNames.length,
+      kronosCandidateRows: nameRows.length,
+    },
+
+    resolve(identity = {}) {
+      const key = createAgentIdentityCacheKey(identity);
+      const result = resolvedByKey.get(key);
+
+      if (!result) {
+        throw new Error(
+          "Agent identity was not included in bulk pre-resolution.",
+        );
+      }
+
+      return result;
+    },
   };
 }
 

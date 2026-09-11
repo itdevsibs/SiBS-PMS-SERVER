@@ -211,6 +211,30 @@ export function getAgentInteractionSourceSystem(profileCode) {
   return SOURCE_SYSTEM_BY_PROFILE[profileCode] || null;
 }
 
+export function mapAgentInteractionIdentity(sourceRow = {}, options = {}) {
+  const profileCode = options.profileCode;
+  const sourceSystem = getAgentInteractionSourceSystem(profileCode);
+  const fieldMappings = PROFILE_FIELD_MAPPINGS[profileCode];
+
+  if (!sourceSystem || !fieldMappings) {
+    throw new Error(`Unsupported Agent Level profile "${profileCode || ""}".`);
+  }
+
+  function getIdentityValue(fieldName) {
+    const { value } = findValue(sourceRow, fieldMappings[fieldName] || []);
+
+    return toStringValue(value).value;
+  }
+
+  return {
+    sourceSystem,
+    personalId: getIdentityValue("personal_id"),
+    agentLogin: getIdentityValue("agent_login"),
+    agentName: getIdentityValue("agent_name_raw"),
+    sourceAgentKey: getIdentityValue("source_agent_key"),
+  };
+}
+
 export function mapAgentInteractionRow(sourceRow = {}, options = {}) {
   const profileCode = options.profileCode;
   const sourceSystem = getAgentInteractionSourceSystem(profileCode);

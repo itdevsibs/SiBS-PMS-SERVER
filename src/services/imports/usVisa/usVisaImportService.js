@@ -61,6 +61,58 @@ import { getUsVisaImportProcessor } from "./importProfileDispatcher.js";
 
 const DEFAULT_ROW_CHUNK_SIZE = 1000;
 
+function bytesToMegabytes(value) {
+  const bytes = Number(value);
+
+  if (!Number.isFinite(bytes)) return null;
+
+  return Math.round((bytes / (1024 * 1024)) * 100) / 100;
+}
+
+export function createAgentImportPerformanceSummary({
+  batchId,
+  profileCode,
+  fileHashMs = 0,
+  workbookLoadMs = 0,
+  workbookValidationMs = 0,
+  totalImportMs = 0,
+  heapBeforeWorkbookBytes = null,
+  heapAfterWorkbookBytes = null,
+  heapAfterImportBytes = null,
+  processorMetrics = {},
+} = {}) {
+  const heapBeforeWorkbookMb = bytesToMegabytes(heapBeforeWorkbookBytes);
+  const heapAfterWorkbookMb = bytesToMegabytes(heapAfterWorkbookBytes);
+  const heapAfterImportMb = bytesToMegabytes(heapAfterImportBytes);
+
+  return {
+    batchId: batchId || null,
+    profileCode: profileCode || null,
+    fileHashMs,
+    workbookLoadMs,
+    workbookValidationMs,
+    identityCollectionMs: processorMetrics.identityCollectionMs || 0,
+    identityResolutionMs: processorMetrics.identityResolutionMs || 0,
+    rowProcessingMs: processorMetrics.rowProcessingMs || 0,
+    processorTotalMs: processorMetrics.processorTotalMs || 0,
+    totalImportMs,
+    identityRowsScanned: processorMetrics.identityRowsScanned || 0,
+    uniqueIdentities: processorMetrics.uniqueIdentities || 0,
+    aliasLookupCount: processorMetrics.aliasLookupCount || 0,
+    aliasCandidateRows: processorMetrics.aliasCandidateRows || 0,
+    kronosNameLookupCount: processorMetrics.kronosNameLookupCount || 0,
+    kronosCandidateRows: processorMetrics.kronosCandidateRows || 0,
+    processedChunks: processorMetrics.processedChunks || 0,
+    heapBeforeWorkbookMb,
+    heapAfterWorkbookMb,
+    heapAfterImportMb,
+    heapGrowthDuringWorkbookMb:
+      heapBeforeWorkbookMb === null || heapAfterWorkbookMb === null
+        ? null
+        : Math.round((heapAfterWorkbookMb - heapBeforeWorkbookMb) * 100) / 100,
+  };
+}
+
 export class UsVisaImportError extends Error {
   constructor(message, options = {}) {
     super(message);
@@ -666,11 +718,13 @@ function getBatchCreateInput({
 }
 
 export async function importUsVisaRawWorkbook(options = {}) {
+  const importStartedAt = Date.now();
   const importProfileIdOrCode = options.importProfileId || options.profileCode;
   const temporaryFile = options.file || {};
   const filePath = temporaryFile.path || options.filePath;
   let batch = null;
   const counters = createCounters();
+  let agentPerformance = null;
 
   if (!filePath) {
     throw new UsVisaImportError("Temporary upload file path is required.", {
@@ -679,9 +733,25 @@ export async function importUsVisaRawWorkbook(options = {}) {
   }
 
   try {
+    const fileHashStartedAt = Date.now();
     const fileHash = await calculateFileSha256(filePath);
+    const fileHashMs = Date.now() - fileHashStartedAt;
     const profile = await loadImportProfile(importProfileIdOrCode);
     const profileCode = profile.profileCode;
+    const isAgentLevel =
+      String(profile.reportType || "").trim().toUpperCase() === "AGENT_LEVEL";
+
+    if (isAgentLevel) {
+      agentPerformance = {
+        fileHashMs,
+        workbookLoadMs: 0,
+        workbookValidationMs: 0,
+        heapBeforeWorkbookBytes: null,
+        heapAfterWorkbookBytes: null,
+        heapAfterImportBytes: null,
+        processorMetrics: {},
+      };
+    }
     const exactDuplicateBatch = await findCompletedBatchByFileHash(
       fileHash,
       profile.id,
@@ -731,7 +801,18 @@ export async function importUsVisaRawWorkbook(options = {}) {
       }),
     );
 
+    const heapBeforeWorkbookBytes = isAgentLevel
+      ? process.memoryUsage().heapUsed
+      : null;
+    const workbookLoadStartedAt = Date.now();
     const workbook = await openWorkbook(filePath);
+
+    if (agentPerformance) {
+      agentPerformance.workbookLoadMs = Date.now() - workbookLoadStartedAt;
+      agentPerformance.heapBeforeWorkbookBytes = heapBeforeWorkbookBytes;
+      agentPerformance.heapAfterWorkbookBytes = process.memoryUsage().heapUsed;
+    }
+
     const workbookDateRange = getWorkbookReportDateRange(workbook);
     const reportDateFrom =
       options.reportDateFrom || workbookDateRange.reportDateFrom;
@@ -745,7 +826,13 @@ export async function importUsVisaRawWorkbook(options = {}) {
       );
     }
 
+    const workbookValidationStartedAt = Date.now();
     const workbookValidation = validateWorkbookProfile(workbook, profileCode);
+
+    if (agentPerformance) {
+      agentPerformance.workbookValidationMs =
+        Date.now() - workbookValidationStartedAt;
+    }
 
     if (workbookValidation.warnings.length > 0) {
       await insertImportErrors(
@@ -783,7 +870,7 @@ export async function importUsVisaRawWorkbook(options = {}) {
     const processor = getUsVisaImportProcessor(profile);
 
     if (processor.processWorkbook) {
-      await processor.processWorkbook({
+      const processorMetrics = await processor.processWorkbook({
         workbook,
         batch,
         profile,
@@ -792,6 +879,10 @@ export async function importUsVisaRawWorkbook(options = {}) {
         counters,
         chunkSize: getChunkSize(),
       });
+
+      if (agentPerformance) {
+        agentPerformance.processorMetrics = processorMetrics || {};
+      }
     } else {
       const seenRows = new Map();
 
@@ -824,6 +915,26 @@ export async function importUsVisaRawWorkbook(options = {}) {
           "Import completed with row-level errors or warnings.",
         )
       : await markBatchCompleted(batch.id, counters);
+
+    if (agentPerformance) {
+      agentPerformance.heapAfterImportBytes = process.memoryUsage().heapUsed;
+
+      console.info(
+        "US VISA Agent Level import performance:",
+        createAgentImportPerformanceSummary({
+          batchId: batch.id,
+          profileCode,
+          fileHashMs: agentPerformance.fileHashMs,
+          workbookLoadMs: agentPerformance.workbookLoadMs,
+          workbookValidationMs: agentPerformance.workbookValidationMs,
+          totalImportMs: Date.now() - importStartedAt,
+          heapBeforeWorkbookBytes: agentPerformance.heapBeforeWorkbookBytes,
+          heapAfterWorkbookBytes: agentPerformance.heapAfterWorkbookBytes,
+          heapAfterImportBytes: agentPerformance.heapAfterImportBytes,
+          processorMetrics: agentPerformance.processorMetrics,
+        }),
+      );
+    }
 
     return {
       batch: finalBatch,
