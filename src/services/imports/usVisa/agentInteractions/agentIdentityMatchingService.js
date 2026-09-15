@@ -17,6 +17,7 @@ export const AGENT_MAPPING_METHODS = Object.freeze({
   PERSONAL_ID: "PERSONAL_ID",
   AGENT_LOGIN: "AGENT_LOGIN",
   SOURCE_ALIAS: "SOURCE_ALIAS",
+  AGENT_NAME_ALIAS: "AGENT_NAME_ALIAS",
   EXACT_AGENT_NAME: "EXACT_AGENT_NAME",
 });
 
@@ -158,6 +159,16 @@ export async function matchAgentIdentity({
     : null;
 
   if (sourceAliasMatch) return sourceAliasMatch;
+
+  const agentNameAliasMatch = await tryAliasMatch({
+    aliasType: "AGENT_NAME",
+    sourceSystem: "GLOBAL",
+    aliasValue: agentName,
+    method: AGENT_MAPPING_METHODS.AGENT_NAME_ALIAS,
+    repository,
+  });
+
+  if (agentNameAliasMatch) return agentNameAliasMatch;
 
   const nameCandidates = normalizeEmployeeIdentity(agentName)
     ? await repository.findEmployeesByExactNormalizedName(agentName)
@@ -302,7 +313,19 @@ function getAliasResolution(identity, aliasIndex) {
     )
     : null;
 
-  return sourceAliasMatch || null;
+  if (sourceAliasMatch) return sourceAliasMatch;
+
+  const agentNameAliasMatch = resultFromCandidates(
+    getBulkAliasCandidates(
+      aliasIndex,
+      "AGENT_NAME",
+      "GLOBAL",
+      identity.agentName,
+    ),
+    AGENT_MAPPING_METHODS.AGENT_NAME_ALIAS,
+  );
+
+  return agentNameAliasMatch || null;
 }
 
 export async function createBulkAgentIdentityResolver(
@@ -347,6 +370,13 @@ export async function createBulkAgentIdentityResolver(
         identity.agentName || identity.sourceAgentKey,
       );
     }
+
+    addAliasLookup(
+      aliasLookupsByKey,
+      "AGENT_NAME",
+      "GLOBAL",
+      identity.agentName,
+    );
   }
 
   const aliasLookups = [...aliasLookupsByKey.values()];
