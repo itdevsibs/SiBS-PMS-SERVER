@@ -1,4 +1,4 @@
-// Handles safe temporary upload storage for US VISA raw Excel workbooks.
+// Handles safe temporary upload storage for US VISA raw XLSX/CSV imports.
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
@@ -44,8 +44,8 @@ function createUploadError(code, message, status = 400) {
   return error;
 }
 
-function isXlsxFile(file = {}) {
-  return getFileExtension(file.originalname) === ".xlsx";
+export function isSupportedUsVisaUploadFile(file = {}) {
+  return [".xlsx", ".csv"].includes(getFileExtension(file.originalname));
 }
 
 ensureTempUploadDirectory();
@@ -78,11 +78,11 @@ const upload = multer({
     files: 1,
   },
   fileFilter(_req, file, callback) {
-    if (!isXlsxFile(file)) {
+    if (!isSupportedUsVisaUploadFile(file)) {
       return callback(
         createUploadError(
           "INVALID_FILE_TYPE",
-          "Only .xlsx files are supported.",
+          "Only .xlsx and .csv files are supported.",
         ),
       );
     }
@@ -97,7 +97,7 @@ function normalizeUploadError(error) {
   if (error.code === "INVALID_FILE_TYPE") {
     return createUploadError(
       "INVALID_FILE_TYPE",
-      error.message || "Only .xlsx files are supported.",
+      error.message || "Only .xlsx and .csv files are supported.",
     );
   }
 
@@ -163,7 +163,7 @@ export function usVisaUploadMiddleware(req, res, next) {
         res,
         createUploadError(
           "FILE_REQUIRED",
-          "A .xlsx file is required.",
+          "An .xlsx or .csv file is required.",
         ),
       );
     }

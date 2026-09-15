@@ -1,4 +1,5 @@
-// Orchestrates US VISA raw Excel imports from upload through canonical storage.
+// Orchestrates US VISA raw XLSX/CSV imports from upload through canonical storage.
+import path from "node:path";
 import { pmsDb, pmsTables } from "../../../config/db.js";
 import {
   createBatch,
@@ -24,6 +25,7 @@ import {
   insertSkillStatisticsRowsWithDuplicateProtection,
 } from "../../../repositories/usVisa/usVisaSkillStatisticsRepository.js";
 import { calculateFileSha256 } from "../shared/fileHashService.js";
+import { readCsvFile } from "../shared/csvReaderService.js";
 import {
   FUSECOM_SOURCE_SYSTEM,
   isFusecom15MinuteSheet,
@@ -58,6 +60,12 @@ import {
   validateWorkbookProfile,
 } from "./workbookValidator.js";
 import { getUsVisaImportProcessor } from "./importProfileDispatcher.js";
+import {
+  getAgentOccupancyCsvReportDateRange,
+} from "./agentOccupancy/agentOccupancyMapper.js";
+import {
+  validateAgentOccupancyCsvProfile,
+} from "./agentOccupancy/agentOccupancyImportProcessor.js";
 
 const DEFAULT_ROW_CHUNK_SIZE = 1000;
 
@@ -203,6 +211,22 @@ function mapWorkbookIssueToImportError(issue, batchId) {
     errorType: issue.errorType || "WORKBOOK_STRUCTURE",
     errorCode: issue.errorCode,
     columnName: issue.columnName,
+    rawValue: null,
+    errorMessage: issue.message,
+    existingRowId: null,
+  };
+}
+
+function mapCsvIssueToImportError(issue, batchId) {
+  return {
+    batchId,
+    rawRowId: null,
+    sheetName: "CSV",
+    excelRowNumber: null,
+    severity: issue.severity || "ERROR",
+    errorType: issue.errorType || "CSV_STRUCTURE",
+    errorCode: issue.errorCode,
+    columnName: issue.columnName || null,
     rawValue: null,
     errorMessage: issue.message,
     existingRowId: null,
@@ -689,6 +713,23 @@ function getWorkbookReportDateRange(workbook) {
   return range;
 }
 
+function getUploadedFileExtension(temporaryFile = {}, filePath = "") {
+  const sourceName = temporaryFile.originalname || temporaryFile.filename || filePath;
+  return path.extname(String(sourceName || "")).toLowerCase();
+}
+
+function assertProfileFileType(processor = {}, temporaryFile = {}, filePath = "") {
+  const expectedExtension = processor.fileType === "CSV" ? ".csv" : ".xlsx";
+  const actualExtension = getUploadedFileExtension(temporaryFile, filePath);
+
+  if (actualExtension !== expectedExtension) {
+    throw new UsVisaImportError(
+      `This import profile requires a ${expectedExtension} file.`,
+      { code: "INVALID_FILE_TYPE" },
+    );
+  }
+}
+
 function getBatchCreateInput({
   profile,
   profileCode,
@@ -738,6 +779,8 @@ export async function importUsVisaRawWorkbook(options = {}) {
     const fileHashMs = Date.now() - fileHashStartedAt;
     const profile = await loadImportProfile(importProfileIdOrCode);
     const profileCode = profile.profileCode;
+    const processor = getUsVisaImportProcessor(profile);
+    assertProfileFileType(processor, temporaryFile, filePath);
     const isAgentLevel =
       String(profile.reportType || "").trim().toUpperCase() === "AGENT_LEVEL";
 
@@ -800,6 +843,96 @@ export async function importUsVisaRawWorkbook(options = {}) {
         reportDateTo: options.reportDateTo,
       }),
     );
+
+    if (processor.fileType === "CSV") {
+      const csvData = await readCsvFile(filePath);
+      const csvDateRange = getAgentOccupancyCsvReportDateRange(
+        csvData,
+        profileCode,
+        {
+          reportDateFrom: options.reportDateFrom,
+          reportDateTo: options.reportDateTo,
+        },
+      );
+      const reportDateFrom =
+        options.reportDateFrom || csvDateRange.reportDateFrom;
+      const reportDateTo = options.reportDateTo || csvDateRange.reportDateTo;
+
+      if (reportDateFrom || reportDateTo) {
+        batch = await updateBatchReportDates(
+          batch.id,
+          reportDateFrom,
+          reportDateTo,
+        );
+      }
+
+      const csvValidation = validateAgentOccupancyCsvProfile(
+        csvData,
+        profileCode,
+        { reportDateFrom, reportDateTo },
+      );
+
+      if (!csvValidation.isValid) {
+        await insertImportErrors(
+          csvValidation.errors.map((issue) =>
+            mapCsvIssueToImportError(issue, batch.id),
+          ),
+        );
+
+        const failedBatch = await markBatchFailed(
+          batch.id,
+          "CSV structure validation failed.",
+        );
+
+        return {
+          batch: failedBatch,
+          profile,
+          profileCode,
+          fileHash,
+          worksheetNames: ["CSV"],
+          csvValidation,
+          counters,
+        };
+      }
+
+      await updateBatchStatus(batch.id, US_VISA_BATCH_STATUSES.IMPORTING);
+
+      if (!processor.processCsv) {
+        throw new UsVisaImportError(
+          "CSV processor is not configured for this import profile.",
+          { code: "CSV_PROCESSOR_NOT_CONFIGURED" },
+        );
+      }
+
+      await processor.processCsv({
+        csvData,
+        batch,
+        profile,
+        profileCode,
+        counters,
+        chunkSize: getChunkSize(),
+        reportDateFrom,
+        reportDateTo,
+      });
+
+      const finalBatch = hasCompletedWithErrors(counters)
+        ? await markBatchCompletedWithErrors(
+            batch.id,
+            counters,
+            "Import completed with row-level errors or warnings.",
+          )
+        : await markBatchCompleted(batch.id, counters);
+
+      return {
+        batch: finalBatch,
+        profile,
+        profileCode,
+        fileHash,
+        worksheetNames: ["CSV"],
+        csvValidation,
+        counters,
+      };
+    }
 
     const heapBeforeWorkbookBytes = isAgentLevel
       ? process.memoryUsage().heapUsed
@@ -866,8 +999,6 @@ export async function importUsVisaRawWorkbook(options = {}) {
     }
 
     await updateBatchStatus(batch.id, US_VISA_BATCH_STATUSES.IMPORTING);
-
-    const processor = getUsVisaImportProcessor(profile);
 
     if (processor.processWorkbook) {
       const processorMetrics = await processor.processWorkbook({

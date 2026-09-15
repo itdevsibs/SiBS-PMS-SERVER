@@ -104,3 +104,25 @@ export async function findScopeAssignmentsByOperationsManagerUid(
 export function mapUsVisaEmployeeScopeAssignment(row = {}) {
   return mapScopeAssignment(row);
 }
+
+export async function findScopeAssignmentsByEmployeeUids(employeeUids = []) {
+  const normalizedUids = [
+    ...new Set(employeeUids.map(normalizeUid).filter(Boolean)),
+  ];
+
+  if (!normalizedUids.length) return [];
+
+  const placeholders = normalizedUids.map(() => "?").join(", ");
+  const [rows] = await pmsDb.query(
+    `
+      SELECT *
+      FROM ${pmsTables.usVisaEmployeeScopeAssignments}
+      WHERE employee_uid IN (${placeholders})
+        AND is_active = 1
+      ORDER BY employee_uid ASC, effective_from DESC, id DESC
+    `,
+    normalizedUids,
+  );
+
+  return rows.map(mapScopeAssignment);
+}
