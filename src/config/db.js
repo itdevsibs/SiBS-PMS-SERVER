@@ -132,6 +132,10 @@ export const pmsTables = {
     PMS_DB_NAME,
     "us_visa_raw_agent_interactions",
   ),
+  usVisaRawAgentOccupancy: dbTable(
+    PMS_DB_NAME,
+    "us_visa_raw_agent_occupancy",
+  ),
   usVisaEmployeeAliases: dbTable(PMS_DB_NAME, "us_visa_employee_aliases"),
   usVisaEmployeeScopeAssignments: dbTable(
     PMS_DB_NAME,

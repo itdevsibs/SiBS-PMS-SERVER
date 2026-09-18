@@ -30,6 +30,8 @@ function pickBatchResponse(batch = {}) {
     importProfileName: batch.importProfileName,
     sourceFilename: batch.sourceFilename,
     sourceSystem: batch.sourceSystem,
+    reportDateFrom: batch.reportDateFrom,
+    reportDateTo: batch.reportDateTo,
     status: batch.status,
     totalRows: batch.totalRows,
     validRows: batch.validRows,
@@ -93,6 +95,7 @@ function getPagination(query = {}, defaults = {}) {
 function getFatalCode(result = {}) {
   return (
     result.workbookValidation?.errors?.[0]?.errorCode ||
+    result.csvValidation?.errors?.[0]?.errorCode ||
     result.error?.code ||
     "IMPORT_FAILED"
   );
@@ -121,6 +124,15 @@ function getFatalMessage(result = {}) {
   const isFusenet = /fusenet/i.test(profileCode);
   const isAgentLevel = /agent/i.test(profileCode);
   const profileLabel = result.profile?.profileName || profileCode || "selected";
+
+  if (result.csvValidation?.errors?.length) {
+    const firstError = result.csvValidation.errors[0];
+    return (
+      firstError.errorMessage ||
+      firstError.message ||
+      "The uploaded CSV does not match the expected Agent Occupancy format."
+    );
+  }
 
   if (result.workbookValidation?.errors?.length) {
     const firstError = result.workbookValidation.errors[0];
@@ -167,7 +179,11 @@ function getFatalMessage(result = {}) {
     return result.error.message;
   }
 
-  return "Unable to import the uploaded workbook.";
+  if (result.error?.message) {
+    return result.error.message;
+  }
+
+  return "Unable to import the uploaded file.";
 }
 
 async function removeUploadedFile(file) {
@@ -248,7 +264,7 @@ export async function uploadUsVisaImport(req, res) {
     return res.status(500).json({
       success: false,
       code: error.code || "IMPORT_FAILED",
-      message: "Unable to import the uploaded workbook.",
+      message: "Unable to import the uploaded file.",
     });
   } finally {
     await removeUploadedFile(req.file);

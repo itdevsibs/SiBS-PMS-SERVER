@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS us_visa_employee_scope_assignments (
   employee_uid VARCHAR(100) NOT NULL,
   task_order_id VARCHAR(50) NOT NULL,
   team_leader_uid VARCHAR(100) NOT NULL,
-  operations_manager_uid VARCHAR(100) NOT NULL,
+  operations_manager_uid VARCHAR(100) NULL,
   effective_from DATE NOT NULL,
   effective_to DATE NULL,
   is_active TINYINT(1) NOT NULL DEFAULT 1,

@@ -1,5 +1,7 @@
 // Looks up PMS employee aliases and Kronos employee identities for Agent Level imports.
 import {
+  hrisDb,
+  hrisTables,
   kronosDb,
   kronosTables,
   pmsDb,
@@ -192,3 +194,89 @@ export async function findEmployeesByExactNormalizedNames(agentNames = []) {
     ...mapEmployeeCandidate(row),
   }));
 }
+
+export async function findOccupancyEmployeeMetadataByUids(employeeUids = []) {
+  const normalizedUids = [
+    ...new Set(
+      employeeUids
+        .map((value) => String(value || "").trim())
+        .filter(Boolean),
+    ),
+  ];
+
+  if (!normalizedUids.length) {
+    return [];
+  }
+
+  const placeholders = buildInClause(normalizedUids);
+  const [kronosRows, hrisRows] = await Promise.all([
+    kronosDb.query(
+      `
+        SELECT
+          employee.gy_emp_code AS employee_uid,
+          employee.gy_emp_fullname AS employee_name,
+          TRIM(employee.gy_emp_account) AS employee_account
+        FROM ${kronosTables.employee} employee
+        WHERE employee.gy_emp_code IN (${placeholders})
+      `,
+      normalizedUids,
+    ).then(([rows]) => rows),
+    hrisDb.query(
+      `
+        SELECT
+          TRIM(account.sibs_id) AS employee_uid,
+          account.admin_access
+        FROM ${hrisTables.assignedAccounts} account
+        WHERE TRIM(account.sibs_id) IN (${placeholders})
+          AND account.admin_access IS NOT NULL
+          AND TRIM(account.admin_access) <> ''
+      `,
+      normalizedUids,
+    ).then(([rows]) => rows),
+  ]);
+
+  const byEmployeeUid = new Map(
+    normalizedUids.map((employeeUid) => [
+      employeeUid,
+      {
+        employeeUid,
+        employeeName: null,
+        employeeAccount: null,
+        adminAccessValues: [],
+      },
+    ]),
+  );
+
+  for (const row of kronosRows) {
+    const employeeUid = String(row.employee_uid || "").trim();
+    if (!employeeUid) continue;
+    const current = byEmployeeUid.get(employeeUid) || {
+      employeeUid,
+      employeeName: null,
+      employeeAccount: null,
+      adminAccessValues: [],
+    };
+    current.employeeName = row.employee_name || current.employeeName;
+    current.employeeAccount = String(row.employee_account || "").trim() || null;
+    byEmployeeUid.set(employeeUid, current);
+  }
+
+  for (const row of hrisRows) {
+    const employeeUid = String(row.employee_uid || "").trim();
+    const adminAccess = String(row.admin_access || "").trim();
+    if (!employeeUid || !adminAccess) continue;
+    const current = byEmployeeUid.get(employeeUid) || {
+      employeeUid,
+      employeeName: null,
+      employeeAccount: null,
+      adminAccessValues: [],
+    };
+    if (!current.adminAccessValues.includes(adminAccess)) {
+      current.adminAccessValues.push(adminAccess);
+    }
+    byEmployeeUid.set(employeeUid, current);
+  }
+
+  return [...byEmployeeUid.values()];
+}
+
