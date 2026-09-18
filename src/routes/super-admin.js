@@ -13,6 +13,7 @@ const USER_INTERFACES = [
   "Super Admin",
   "Operations Management",
   "Client",
+  "Employee Ledger",
 ];
 
 const ACCESS_STORE_PATH = path.resolve(

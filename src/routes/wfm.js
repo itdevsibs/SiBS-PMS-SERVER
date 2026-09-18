@@ -26,7 +26,7 @@ const requireWfm = [
 
 const requireWfmGraphViewer = [
   authMiddleware,
-  requireRole([7, 6, 9, 10]),
+  requireRole([5, 6, 7, 8, 9, 10]),
 ];
 
 router.get(

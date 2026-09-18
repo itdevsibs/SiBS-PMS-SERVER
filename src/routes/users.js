@@ -96,6 +96,7 @@ function getResolvedRole(adminAccess) {
   if (access === 8) return "tl";
   if (access === 9) return "wfm";
   if (access === 10) return "som";
+  if (access === 11) return "masterdata";
 
   return "employee";
 }
@@ -119,6 +120,9 @@ function getDashboardPath(adminAccess) {
 
     case 10:
       return "/dashboard/som";
+
+    case 11:
+      return "/dashboard/employee-master-data";
 
     default:
       return "/dashboard/agent";
@@ -149,6 +153,7 @@ function getHighestAdminAccess(assignedAccounts = []) {
   const accessPriority = [
     7,
     6,
+    11,
     10,
     5,
     9,
@@ -659,7 +664,7 @@ router.post("/login", async (req, res) => {
 
     const resolvedRole = getResolvedRole(adminAccess);
 
-    const isAdmin = [7, 6, 5, 8, 9, 10].includes(
+    const isAdmin = [7, 6, 5, 8, 9, 10, 11].includes(
       Number(adminAccess || 0)
     );
 
