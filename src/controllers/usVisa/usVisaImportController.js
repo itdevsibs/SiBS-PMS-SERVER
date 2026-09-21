@@ -224,6 +224,28 @@ export async function uploadUsVisaImport(req, res) {
       user: req.user,
     });
 
+    if (result.duplicate) {
+      return res.status(409).json({
+        success: false,
+        duplicate: true,
+        code: "DUPLICATE_FILE",
+        message:
+          result.message ||
+          `Duplicate file. Matching completed batch ID: ${result.exactDuplicateBatch?.id || "unknown"}.`,
+        existingBatch: result.exactDuplicateBatch
+          ? pickBatchResponse(result.exactDuplicateBatch)
+          : null,
+      });
+    }
+
+    if (result.rejected) {
+      return res.status(400).json({
+        success: false,
+        code: getFatalCode(result),
+        message: getFatalMessage(result),
+      });
+    }
+
     if (result.batch?.status === "FAILED") {
       return res.status(400).json({
         success: false,

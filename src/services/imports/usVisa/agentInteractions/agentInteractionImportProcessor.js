@@ -298,9 +298,7 @@ async function prepareAgentInteractionRow({
 
 function buildCanonicalRow({
   mappedRow,
-  rowHash,
   contentHash,
-  rowJson,
   batch,
   rawRowId,
   profile,
@@ -337,8 +335,6 @@ function buildCanonicalRow({
     handleSeconds: mappedRow.handle_seconds,
     holdCount: mappedRow.hold_count,
     disconnectIndicator: mappedRow.disconnect_indicator,
-    rowJson,
-    rowIdentityHash: rowHash,
     rowContentHash: contentHash,
   };
 }
@@ -417,9 +413,7 @@ async function processAgentInteractionChunk({
   const canonicalRows = newRows.map((row) =>
     buildCanonicalRow({
       mappedRow: row.mappedRow,
-      rowHash: row.rowHash,
       contentHash: row.contentHash,
-      rowJson: row.rowJson,
       batch,
       rawRowId: row.rawRowId,
       profile,

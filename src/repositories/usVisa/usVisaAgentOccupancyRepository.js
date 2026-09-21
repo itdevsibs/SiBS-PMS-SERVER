@@ -65,8 +65,6 @@ const INSERT_COLUMNS = [
   "avail_time_phone_seconds",
   "true_talk_seconds",
   "shrink_seconds",
-  "row_json",
-  "row_identity_hash",
   "row_content_hash",
 ];
 
@@ -76,10 +74,6 @@ function quoteIdentifier(identifier) {
 
 function toNullableValue(value) {
   return value === undefined || value === "" ? null : value;
-}
-
-function serializeJson(value) {
-  return JSON.stringify(value ?? {});
 }
 
 function buildInPlaceholders(values = []) {
@@ -164,8 +158,6 @@ function getInsertValues(row = {}) {
     toNullableValue(row.availTimePhoneSeconds ?? row.avail_time_phone_seconds),
     toNullableValue(row.trueTalkSeconds ?? row.true_talk_seconds),
     toNullableValue(row.shrinkSeconds ?? row.shrink_seconds),
-    serializeJson(row.rowJson ?? row.row_json),
-    row.rowIdentityHash ?? row.row_identity_hash,
     row.rowContentHash ?? row.row_content_hash,
   ];
 }
@@ -176,9 +168,17 @@ export async function findAgentOccupancyByIdentityHashes(hashes = []) {
 
   const [rows] = await pmsDb.query(
     `
-      SELECT id, batch_id, raw_import_row_id, row_identity_hash, row_content_hash, created_at
-      FROM ${pmsTables.usVisaRawAgentOccupancy}
-      WHERE row_identity_hash IN (${buildInPlaceholders(uniqueHashes)})
+      SELECT
+        ao.id,
+        ao.batch_id,
+        ao.raw_import_row_id,
+        rr.row_identity_hash,
+        ao.row_content_hash,
+        ao.created_at
+      FROM ${pmsTables.usVisaRawAgentOccupancy} ao
+      INNER JOIN ${pmsTables.usVisaRawImportRows} rr
+        ON rr.id = ao.raw_import_row_id
+      WHERE rr.row_identity_hash IN (${buildInPlaceholders(uniqueHashes)})
     `,
     uniqueHashes,
   );
