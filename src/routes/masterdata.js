@@ -275,22 +275,26 @@ router.get("/ledger", async (req, res, next) => {
       const phoneAlias = aliases.find((a) => a.alias_type === "PERSONAL_ID");
       const loginAlias = aliases.find((a) => a.alias_type === "AGENT_LOGIN");
 
-      const phoneId = phoneAlias ? phoneAlias.alias_value : "";
-      const agentLogin = loginAlias ? loginAlias.alias_value : "";
+      const phoneId = phoneAlias ? phoneAlias.alias_value : null;
+      const agentLogin = loginAlias ? loginAlias.alias_value : null;
 
-      const fusecomName = fusecomAlias ? fusecomAlias.alias_value : canonicalName;
-      const fusenetName = fusenetAlias ? fusenetAlias.alias_value : canonicalName;
-      const herodashName = herodashAlias ? herodashAlias.alias_value : canonicalName;
+      const fusecomName = fusecomAlias ? fusecomAlias.alias_value : null;
+      const fusenetName = fusenetAlias ? fusenetAlias.alias_value : null;
+      const herodashName = herodashAlias ? herodashAlias.alias_value : null;
 
       const isExactFusecom =
-        normalizeValue(fusecomName) === normalizeValue(canonicalName);
+        fusecomName ? normalizeValue(fusecomName) === normalizeValue(canonicalName) : false;
       const isExactFuseNet =
-        normalizeValue(fusenetName) === normalizeValue(canonicalName);
+        fusenetName ? normalizeValue(fusenetName) === normalizeValue(canonicalName) : false;
       const isExactHeroDash =
-        normalizeValue(herodashName) === normalizeValue(canonicalName);
+        herodashName ? normalizeValue(herodashName) === normalizeValue(canonicalName) : false;
 
       const hasCustomAlias =
-        !isExactFusecom || !isExactFuseNet || !isExactHeroDash;
+        Boolean(
+          (fusecomName && !isExactFusecom) ||
+          (fusenetName && !isExactFuseNet) ||
+          (herodashName && !isExactHeroDash),
+        );
       const hasPhoneId = Boolean(phoneId && phoneId.trim());
 
       // Dynamic Health Indicator
@@ -317,15 +321,15 @@ router.get("/ledger", async (req, res, next) => {
         toolMappings: {
           fusecom: {
             name: fusecomName,
-            type: isExactFusecom ? "EXACT" : "ALIAS",
+            type: fusecomName ? (isExactFusecom ? "EXACT" : "ALIAS") : null,
           },
           fusenet: {
             name: fusenetName,
-            type: isExactFuseNet ? "EXACT" : "ALIAS",
+            type: fusenetName ? (isExactFuseNet ? "EXACT" : "ALIAS") : null,
           },
           herodash: {
             name: herodashName,
-            type: isExactHeroDash ? "EXACT" : "ALIAS",
+            type: herodashName ? (isExactHeroDash ? "EXACT" : "ALIAS") : null,
           },
         },
       };
