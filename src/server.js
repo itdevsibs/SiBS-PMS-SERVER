@@ -16,6 +16,7 @@ import sampleRoutes from "./routes/sample.js";
 import usVisaImportRoutes from "./routes/usVisa/usVisaImports.js";
 import userRoutes from "./routes/users.js";
 import wfmRoutes from "./routes/wfm.js";
+import masterdataRoutes from "./routes/masterdata.js";
 
 const app = express();
 
@@ -264,6 +265,14 @@ app.use(
 app.use(
   "/api/us-visa",
   usVisaImportRoutes
+);
+
+/*
+  Employee Master Data & Identity Ledger
+*/
+app.use(
+  "/api/masterdata",
+  masterdataRoutes
 );
 
 /* ================================
