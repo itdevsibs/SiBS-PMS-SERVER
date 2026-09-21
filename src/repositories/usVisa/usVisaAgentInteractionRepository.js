@@ -33,8 +33,6 @@ const INSERT_COLUMNS = [
   "handle_seconds",
   "hold_count",
   "disconnect_indicator",
-  "row_json",
-  "row_identity_hash",
   "row_content_hash",
 ];
 
@@ -44,10 +42,6 @@ function quoteIdentifier(identifier) {
 
 function toNullableValue(value) {
   return value === undefined || value === "" ? null : value;
-}
-
-function serializeJson(value) {
-  return JSON.stringify(value ?? {});
 }
 
 function buildInPlaceholders(values = []) {
@@ -90,7 +84,7 @@ function mapAgentInteractionRow(row) {
     handleSeconds: row.handle_seconds,
     holdCount: row.hold_count,
     disconnectIndicator: row.disconnect_indicator,
-    rowJson: row.row_json ? JSON.parse(row.row_json) : null,
+    rowJson: row.raw_row_json ? JSON.parse(row.raw_row_json) : null,
     rowIdentityHash: row.row_identity_hash,
     rowContentHash: row.row_content_hash,
     createdAt: row.created_at,
@@ -137,8 +131,6 @@ function getInsertValues(row = {}) {
     toSafeSeconds(row.handleSeconds ?? row.handle_seconds),
     toNullableValue(row.holdCount ?? row.hold_count),
     toNullableValue(row.disconnectIndicator ?? row.disconnect_indicator),
-    serializeJson(row.rowJson ?? row.row_json),
-    row.rowIdentityHash ?? row.row_identity_hash,
     row.rowContentHash ?? row.row_content_hash,
   ];
 }
@@ -146,9 +138,11 @@ function getInsertValues(row = {}) {
 export async function findAgentInteractionByIdentityHash(rowIdentityHash) {
   const [rows] = await pmsDb.query(
     `
-      SELECT *
-      FROM ${pmsTables.usVisaRawAgentInteractions}
-      WHERE row_identity_hash = ?
+      SELECT ai.*, rr.row_json AS raw_row_json, rr.row_identity_hash
+      FROM ${pmsTables.usVisaRawAgentInteractions} ai
+      INNER JOIN ${pmsTables.usVisaRawImportRows} rr
+        ON rr.id = ai.raw_import_row_id
+      WHERE rr.row_identity_hash = ?
       LIMIT 1
     `,
     [rowIdentityHash],
@@ -169,14 +163,16 @@ export async function findAgentInteractionsByIdentityHashes(rowIdentityHashes = 
   const [rows] = await pmsDb.query(
     `
       SELECT
-        id,
-        batch_id,
-        raw_import_row_id,
-        row_identity_hash,
-        row_content_hash,
-        created_at
-      FROM ${pmsTables.usVisaRawAgentInteractions}
-      WHERE row_identity_hash IN (${buildInPlaceholders(uniqueHashes)})
+        ai.id,
+        ai.batch_id,
+        ai.raw_import_row_id,
+        rr.row_identity_hash,
+        ai.row_content_hash,
+        ai.created_at
+      FROM ${pmsTables.usVisaRawAgentInteractions} ai
+      INNER JOIN ${pmsTables.usVisaRawImportRows} rr
+        ON rr.id = ai.raw_import_row_id
+      WHERE rr.row_identity_hash IN (${buildInPlaceholders(uniqueHashes)})
     `,
     uniqueHashes,
   );

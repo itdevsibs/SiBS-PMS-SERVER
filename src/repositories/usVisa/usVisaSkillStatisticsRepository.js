@@ -46,8 +46,7 @@ const INSERT_COLUMNS = [
   "abandonment_pct",
   "reachability_pct",
   "calls_on_hold",
-  "row_hash",
-  "content_hash",
+  "row_content_hash",
 ];
 
 function quoteIdentifier(identifier) {
@@ -111,8 +110,10 @@ function mapSkillStatisticsRow(row) {
     abandonmentPct: row.abandonment_pct,
     reachabilityPct: row.reachability_pct,
     callsOnHold: row.calls_on_hold,
-    rowHash: row.row_hash,
-    contentHash: row.content_hash,
+    rowHash: row.row_identity_hash,
+    rowIdentityHash: row.row_identity_hash,
+    contentHash: row.row_content_hash,
+    rowContentHash: row.row_content_hash,
     createdAt: row.created_at,
   };
 }
@@ -163,17 +164,18 @@ function getInsertValues(row = {}) {
     toNullableValue(row.abandonment_pct),
     toNullableValue(row.reachability_pct),
     toNullableValue(row.calls_on_hold),
-    row.rowHash || row.row_hash,
-    row.contentHash || row.content_hash,
+    row.rowContentHash || row.row_content_hash || row.contentHash || row.content_hash,
   ];
 }
 
 export async function findSkillStatisticsByRowHash(rowHash) {
   const [rows] = await pmsDb.query(
     `
-      SELECT *
-      FROM ${pmsTables.usVisaRawSkillStatistics}
-      WHERE row_hash = ?
+      SELECT ss.*, rr.row_identity_hash
+      FROM ${pmsTables.usVisaRawSkillStatistics} ss
+      INNER JOIN ${pmsTables.usVisaRawImportRows} rr
+        ON rr.id = ss.raw_import_row_id
+      WHERE rr.row_identity_hash = ?
       LIMIT 1
     `,
     [rowHash],
@@ -194,14 +196,16 @@ export async function findSkillStatisticsByRowHashes(rowHashes = []) {
   const [rows] = await pmsDb.query(
     `
       SELECT
-        id,
-        batch_id,
-        raw_import_row_id,
-        row_hash,
-        content_hash,
-        created_at
-      FROM ${pmsTables.usVisaRawSkillStatistics}
-      WHERE row_hash IN (${buildInPlaceholders(uniqueHashes)})
+        ss.id,
+        ss.batch_id,
+        ss.raw_import_row_id,
+        rr.row_identity_hash,
+        ss.row_content_hash,
+        ss.created_at
+      FROM ${pmsTables.usVisaRawSkillStatistics} ss
+      INNER JOIN ${pmsTables.usVisaRawImportRows} rr
+        ON rr.id = ss.raw_import_row_id
+      WHERE rr.row_identity_hash IN (${buildInPlaceholders(uniqueHashes)})
     `,
     uniqueHashes,
   );
@@ -212,9 +216,11 @@ export async function findSkillStatisticsByRowHashes(rowHashes = []) {
 export async function getContentHashByRowHash(rowHash) {
   const [rows] = await pmsDb.query(
     `
-      SELECT id, content_hash
-      FROM ${pmsTables.usVisaRawSkillStatistics}
-      WHERE row_hash = ?
+      SELECT ss.id, ss.row_content_hash
+      FROM ${pmsTables.usVisaRawSkillStatistics} ss
+      INNER JOIN ${pmsTables.usVisaRawImportRows} rr
+        ON rr.id = ss.raw_import_row_id
+      WHERE rr.row_identity_hash = ?
       LIMIT 1
     `,
     [rowHash],
@@ -226,7 +232,7 @@ export async function getContentHashByRowHash(rowHash) {
 
   return {
     id: rows[0].id,
-    contentHash: rows[0].content_hash,
+    contentHash: rows[0].row_content_hash,
   };
 }
 

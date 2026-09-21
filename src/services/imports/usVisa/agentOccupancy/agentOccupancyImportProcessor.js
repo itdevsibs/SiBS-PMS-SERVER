@@ -302,8 +302,6 @@ function buildCanonicalRow(row, batch, profile) {
     rawImportRowId: row.rawRowId,
     importProfileId: profile.id,
     ...row.mappedRow,
-    rowJson: row.rowJson,
-    rowIdentityHash: row.rowHash,
     rowContentHash: row.contentHash,
   };
 }

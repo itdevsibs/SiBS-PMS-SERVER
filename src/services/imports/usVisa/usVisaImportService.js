@@ -7,9 +7,6 @@ import {
   markBatchCompleted,
   markBatchCompletedWithErrors,
   markBatchFailed,
-  markDuplicate,
-  updateBatchReportDates,
-  updateBatchStatus,
   US_VISA_BATCH_STATUSES,
 } from "../../../repositories/usVisa/usVisaImportBatchRepository.js";
 import {
@@ -68,6 +65,42 @@ import {
 } from "./agentOccupancy/agentOccupancyImportProcessor.js";
 
 const DEFAULT_ROW_CHUNK_SIZE = 1000;
+const US_VISA_IMPORT_LOCK_NAME = "sibs:pms:us-visa:raw-import";
+const US_VISA_IMPORT_LOCK_TIMEOUT_SECONDS = 120;
+
+async function acquireUsVisaImportLock() {
+  const connection = await pmsDb.getConnection();
+
+  try {
+    const [[row]] = await connection.query(
+      "SELECT GET_LOCK(?, ?) AS acquired",
+      [US_VISA_IMPORT_LOCK_NAME, US_VISA_IMPORT_LOCK_TIMEOUT_SECONDS],
+    );
+
+    if (Number(row?.acquired) !== 1) {
+      const error = new Error(
+        "Another US Visa raw import is still processing. Please retry after it completes.",
+      );
+      error.code = "US_VISA_IMPORT_LOCK_TIMEOUT";
+      throw error;
+    }
+
+    return connection;
+  } catch (error) {
+    connection.release();
+    throw error;
+  }
+}
+
+async function releaseUsVisaImportLock(connection) {
+  if (!connection) return;
+
+  try {
+    await connection.query("SELECT RELEASE_LOCK(?)", [US_VISA_IMPORT_LOCK_NAME]);
+  } finally {
+    connection.release();
+  }
+}
 
 function bytesToMegabytes(value) {
   const bytes = Number(value);
@@ -217,22 +250,6 @@ function mapWorkbookIssueToImportError(issue, batchId) {
   };
 }
 
-function mapCsvIssueToImportError(issue, batchId) {
-  return {
-    batchId,
-    rawRowId: null,
-    sheetName: "CSV",
-    excelRowNumber: null,
-    severity: issue.severity || "ERROR",
-    errorType: issue.errorType || "CSV_STRUCTURE",
-    errorCode: issue.errorCode,
-    columnName: issue.columnName || null,
-    rawValue: null,
-    errorMessage: issue.message,
-    existingRowId: null,
-  };
-}
-
 function mapConversionErrorToImportError(error, context = {}) {
   return {
     batchId: context.batchId,
@@ -333,7 +350,6 @@ function mapSourceRow({ profileCode, sourceRow, sheet }) {
 
 function buildDomainRow({
   mappedRow,
-  rowHash,
   contentHash,
   batch,
   rawRowId,
@@ -344,8 +360,7 @@ function buildDomainRow({
     batchId: batch.id,
     rawImportRowId: rawRowId,
     importProfileId: profile.id,
-    rowHash,
-    contentHash,
+    rowContentHash: contentHash,
   };
 }
 
@@ -531,7 +546,6 @@ async function processRowChunk({
   const domainRows = newRows.map((row) => {
     return buildDomainRow({
       mappedRow: row.mappedRow,
-      rowHash: row.rowHash,
       contentHash: row.contentHash,
       batch,
       rawRowId: row.rawRowId,
@@ -753,7 +767,7 @@ function getBatchCreateInput({
     reportDateFrom,
     reportDateTo,
     uploadedBy: getUploadedBy(options),
-    status: US_VISA_BATCH_STATUSES.VALIDATING,
+    status: US_VISA_BATCH_STATUSES.IMPORTING,
     processingStartedAt: new Date(),
   };
 }
@@ -766,6 +780,7 @@ export async function importUsVisaRawWorkbook(options = {}) {
   let batch = null;
   const counters = createCounters();
   let agentPerformance = null;
+  let importLockConnection = null;
 
   if (!filePath) {
     throw new UsVisaImportError("Temporary upload file path is required.", {
@@ -780,6 +795,7 @@ export async function importUsVisaRawWorkbook(options = {}) {
     const profile = await loadImportProfile(importProfileIdOrCode);
     const profileCode = profile.profileCode;
     const processor = getUsVisaImportProcessor(profile);
+    importLockConnection = await acquireUsVisaImportLock();
     assertProfileFileType(processor, temporaryFile, filePath);
     const isAgentLevel =
       String(profile.reportType || "").trim().toUpperCase() === "AGENT_LEVEL";
@@ -801,26 +817,11 @@ export async function importUsVisaRawWorkbook(options = {}) {
     );
 
     if (exactDuplicateBatch) {
-      batch = await createBatch(
-        getBatchCreateInput({
-          profile,
-          profileCode,
-          temporaryFile,
-          options,
-          filePath,
-          fileHash,
-          reportDateFrom:
-            options.reportDateFrom || exactDuplicateBatch.reportDateFrom,
-          reportDateTo: options.reportDateTo || exactDuplicateBatch.reportDateTo,
-        }),
-      );
-      const duplicateBatch = await markDuplicate(
-        batch.id,
-        exactDuplicateBatch.id,
-      );
-
       return {
-        batch: duplicateBatch,
+        batch: null,
+        duplicate: true,
+        code: "DUPLICATE_FILE",
+        message: `Duplicate file. Matching completed batch ID: ${exactDuplicateBatch.id}.`,
         profile,
         profileCode,
         fileHash,
@@ -830,19 +831,6 @@ export async function importUsVisaRawWorkbook(options = {}) {
         counters,
       };
     }
-
-    batch = await createBatch(
-      getBatchCreateInput({
-        profile,
-        profileCode,
-        temporaryFile,
-        options,
-        filePath,
-        fileHash,
-        reportDateFrom: options.reportDateFrom,
-        reportDateTo: options.reportDateTo,
-      }),
-    );
 
     if (processor.fileType === "CSV") {
       const csvData = await readCsvFile(filePath);
@@ -858,14 +846,6 @@ export async function importUsVisaRawWorkbook(options = {}) {
         options.reportDateFrom || csvDateRange.reportDateFrom;
       const reportDateTo = options.reportDateTo || csvDateRange.reportDateTo;
 
-      if (reportDateFrom || reportDateTo) {
-        batch = await updateBatchReportDates(
-          batch.id,
-          reportDateFrom,
-          reportDateTo,
-        );
-      }
-
       const csvValidation = validateAgentOccupancyCsvProfile(
         csvData,
         profileCode,
@@ -873,19 +853,11 @@ export async function importUsVisaRawWorkbook(options = {}) {
       );
 
       if (!csvValidation.isValid) {
-        await insertImportErrors(
-          csvValidation.errors.map((issue) =>
-            mapCsvIssueToImportError(issue, batch.id),
-          ),
-        );
-
-        const failedBatch = await markBatchFailed(
-          batch.id,
-          "CSV structure validation failed.",
-        );
-
         return {
-          batch: failedBatch,
+          batch: null,
+          rejected: true,
+          code: csvValidation.errors[0]?.errorCode || "CSV_STRUCTURE_VALIDATION_FAILED",
+          message: csvValidation.errors[0]?.message || "CSV structure validation failed.",
           profile,
           profileCode,
           fileHash,
@@ -895,7 +867,18 @@ export async function importUsVisaRawWorkbook(options = {}) {
         };
       }
 
-      await updateBatchStatus(batch.id, US_VISA_BATCH_STATUSES.IMPORTING);
+      batch = await createBatch(
+        getBatchCreateInput({
+          profile,
+          profileCode,
+          temporaryFile,
+          options,
+          filePath,
+          fileHash,
+          reportDateFrom,
+          reportDateTo,
+        }),
+      );
 
       if (!processor.processCsv) {
         throw new UsVisaImportError(
@@ -951,14 +934,6 @@ export async function importUsVisaRawWorkbook(options = {}) {
       options.reportDateFrom || workbookDateRange.reportDateFrom;
     const reportDateTo = options.reportDateTo || workbookDateRange.reportDateTo;
 
-    if (reportDateFrom || reportDateTo) {
-      batch = await updateBatchReportDates(
-        batch.id,
-        reportDateFrom,
-        reportDateTo,
-      );
-    }
-
     const workbookValidationStartedAt = Date.now();
     const workbookValidation = validateWorkbookProfile(workbook, profileCode);
 
@@ -967,28 +942,16 @@ export async function importUsVisaRawWorkbook(options = {}) {
         Date.now() - workbookValidationStartedAt;
     }
 
-    if (workbookValidation.warnings.length > 0) {
-      await insertImportErrors(
-        workbookValidation.warnings.map((issue) =>
-          mapWorkbookIssueToImportError(issue, batch.id),
-        ),
-      );
-    }
-
     if (!workbookValidation.isValid) {
-      await insertImportErrors(
-        workbookValidation.errors.map((issue) =>
-          mapWorkbookIssueToImportError(issue, batch.id),
-        ),
-      );
-
-      const failedBatch = await markBatchFailed(
-        batch.id,
-        "Workbook structure validation failed.",
-      );
-
       return {
-        batch: failedBatch,
+        batch: null,
+        rejected: true,
+        code:
+          workbookValidation.errors[0]?.errorCode ||
+          "WORKBOOK_STRUCTURE_VALIDATION_FAILED",
+        message:
+          workbookValidation.errors[0]?.message ||
+          "Workbook structure validation failed.",
         profile,
         profileCode,
         fileHash,
@@ -998,7 +961,26 @@ export async function importUsVisaRawWorkbook(options = {}) {
       };
     }
 
-    await updateBatchStatus(batch.id, US_VISA_BATCH_STATUSES.IMPORTING);
+    batch = await createBatch(
+      getBatchCreateInput({
+        profile,
+        profileCode,
+        temporaryFile,
+        options,
+        filePath,
+        fileHash,
+        reportDateFrom,
+        reportDateTo,
+      }),
+    );
+
+    if (workbookValidation.warnings.length > 0) {
+      await insertImportErrors(
+        workbookValidation.warnings.map((issue) =>
+          mapWorkbookIssueToImportError(issue, batch.id),
+        ),
+      );
+    }
 
     if (processor.processWorkbook) {
       const processorMetrics = await processor.processWorkbook({
@@ -1120,6 +1102,8 @@ export async function importUsVisaRawWorkbook(options = {}) {
     }
 
     throw error;
+  } finally {
+    await releaseUsVisaImportLock(importLockConnection);
   }
 }
 

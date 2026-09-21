@@ -15,7 +15,8 @@ function mapRawImportRow(row) {
     excelRowNumber: row.excel_row_number,
     dataGrain: row.data_grain,
     rowJson: row.row_json ? JSON.parse(row.row_json) : null,
-    rowHash: row.row_hash,
+    rowIdentityHash: row.row_identity_hash,
+    rowHash: row.row_identity_hash,
     validationStatus: row.validation_status,
     createdAt: row.created_at,
   };
@@ -34,7 +35,7 @@ export async function insertRawImportRow(rawRow = {}) {
         excel_row_number,
         data_grain,
         row_json,
-        row_hash,
+        row_identity_hash,
         validation_status
       )
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -45,7 +46,7 @@ export async function insertRawImportRow(rawRow = {}) {
       rawRow.excelRowNumber,
       rawRow.dataGrain || null,
       serializeJson(rawRow.rowJson),
-      rawRow.rowHash,
+      rawRow.rowIdentityHash ?? rawRow.rowHash,
       rawRow.validationStatus || "PENDING",
     ],
   );
@@ -70,7 +71,7 @@ export async function insertRawImportRows(rawRows = []) {
     rawRow.excelRowNumber,
     rawRow.dataGrain || null,
     serializeJson(rawRow.rowJson),
-    rawRow.rowHash,
+    rawRow.rowIdentityHash ?? rawRow.rowHash,
     rawRow.validationStatus || "PENDING",
   ]);
 
@@ -82,7 +83,7 @@ export async function insertRawImportRows(rawRows = []) {
         excel_row_number,
         data_grain,
         row_json,
-        row_hash,
+        row_identity_hash,
         validation_status
       )
       VALUES ?
@@ -121,7 +122,7 @@ export async function getRawImportRowsByBatchSheetRowNumbers(
         sheet_name,
         excel_row_number,
         data_grain,
-        row_hash,
+        row_identity_hash,
         validation_status,
         created_at
       FROM ${pmsTables.usVisaRawImportRows}
