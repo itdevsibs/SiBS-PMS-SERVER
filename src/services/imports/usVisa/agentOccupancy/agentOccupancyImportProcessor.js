@@ -1,4 +1,4 @@
-// Processes US Visa Agent Occupancy CSV rows through raw audit and canonical storage.
+// Processes centralized US Visa Agent Occupancy workbooks through raw audit and canonical storage.
 import {
   findAgentOccupancyByIdentityHashes,
   insertAgentOccupancyRowsWithDuplicateProtection,
@@ -11,6 +11,7 @@ import {
 import { insertImportErrors } from "../../../../repositories/usVisa/usVisaImportErrorRepository.js";
 import { findScopeAssignmentsByEmployeeUids } from "../../../../repositories/usVisa/usVisaEmployeeScopeRepository.js";
 import { findOccupancyEmployeeMetadataByUids } from "../../../../repositories/usVisa/usVisaEmployeeIdentityRepository.js";
+import { iterateWorksheetRowChunks } from "../../shared/workbookReaderService.js";
 import {
   IMPORT_ROW_CLASSIFICATIONS,
   classifyPreparedChunkRows,
@@ -36,87 +37,6 @@ import {
   buildOccupancyScopeIndex,
 } from "./agentOccupancyScopeService.js";
 import { validateCanonicalAgentOccupancyRow } from "./agentOccupancyValidator.js";
-import { hasCsvHeader } from "../../shared/csvReaderService.js";
-
-const CSV_SHEET_NAME = "CSV";
-
-const REQUIRED_HEADERS = Object.freeze({
-  [AGENT_OCCUPANCY_PROFILE_CODES.FUSECOM]: [
-    ["Date", 1],
-    ["Agent Name", 2],
-    ["Agent Login", 1],
-    ["Logged Time", 1],
-    ["Productive Login", 1],
-  ],
-  [AGENT_OCCUPANCY_PROFILE_CODES.FUSENET]: [
-    ["Date", 1],
-    ["Agent Name", 2],
-    ["Agent Login", 1],
-    ["Logged Time", 1],
-    ["Productive Login", 1],
-  ],
-  [AGENT_OCCUPANCY_PROFILE_CODES.HERODASH]: [
-    ["Agent login", 1],
-    ["Productive login", 1],
-    ["Available / Idle time", 1],
-    ["Answered call", 1],
-  ],
-});
-
-function isValidDate(value) {
-  const text = String(value || "").trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
-  const date = new Date(`${text}T00:00:00Z`);
-  return !Number.isNaN(date.getTime()) && date.toISOString().startsWith(text);
-}
-
-export function validateAgentOccupancyCsvProfile(csvData = {}, profileCode, options = {}) {
-  const errors = [];
-  const requiredHeaders = REQUIRED_HEADERS[profileCode];
-
-  if (!requiredHeaders) {
-    errors.push({
-      errorCode: "UNSUPPORTED_IMPORT_PROFILE",
-      columnName: null,
-      message: `Unsupported Agent Occupancy profile "${profileCode || ""}".`,
-    });
-  } else {
-    for (const [headerName, occurrence] of requiredHeaders) {
-      if (!hasCsvHeader(csvData.headers, headerName, occurrence)) {
-        errors.push({
-          errorCode: "MISSING_REQUIRED_HEADER",
-          columnName: occurrence > 1 ? `${headerName}#${occurrence}` : headerName,
-          message: `Required CSV header "${headerName}"${occurrence > 1 ? ` occurrence ${occurrence}` : ""} was not found.`,
-        });
-      }
-    }
-  }
-
-  if (profileCode === AGENT_OCCUPANCY_PROFILE_CODES.HERODASH) {
-    const from = options.reportDateFrom;
-    const to = options.reportDateTo;
-    if (!isValidDate(from) || !isValidDate(to) || from > to) {
-      errors.push({
-        errorCode: "REPORTING_PERIOD_REQUIRED",
-        columnName: null,
-        message: "HeroDash Agent Occupancy requires a valid reporting start date and end date.",
-      });
-    }
-  }
-
-  if (!csvData.rows?.length) {
-    errors.push({
-      errorCode: "EMPTY_CSV",
-      columnName: null,
-      message: "The CSV file does not contain any data rows.",
-    });
-  }
-
-  return {
-    isValid: errors.length === 0,
-    errors,
-  };
-}
 
 function mapRowsByHash(rows = []) {
   return new Map(
@@ -144,11 +64,11 @@ function rawStatusForClassification(classification) {
   return "VALID";
 }
 
-function rowContext(batch, row, rawRow) {
+function rowContext(batch, row, rawRow, sheetName) {
   return {
     batchId: batch.id,
     rawRowId: rawRow?.id || null,
-    sheetName: CSV_SHEET_NAME,
+    sheetName,
     excelRowNumber: row.excelRowNumber,
   };
 }
@@ -255,16 +175,18 @@ export function prepareAgentOccupancyRow({
   sourceRow,
   headers,
   profileCode,
-  reportDateFrom,
-  reportDateTo,
+  taskOrderId,
+  fileHash,
+  sourceTimezone,
   identityResolver,
   scopeIndex,
   employeeMetadataIndex,
 }) {
   const mapped = mapAgentOccupancyRow(sourceRow, headers, {
     profileCode,
-    reportDateFrom,
-    reportDateTo,
+    taskOrderId,
+    fileHash,
+    sourceTimezone,
   });
   const identity = {
     sourceSystem: mapped.mappedRow.source_system,
@@ -285,7 +207,7 @@ export function prepareAgentOccupancyRow({
   const contentHash = createAgentOccupancyContentHash(scopedRow);
 
   return {
-    excelRowNumber: sourceRow.rowNumber,
+    excelRowNumber: sourceRow.excelRowNumber ?? sourceRow.rowNumber,
     mappedRow: scopedRow,
     rowJson: mapped.rowJson,
     conversionErrors: mapped.conversionErrors,
@@ -319,11 +241,13 @@ function updateCounters(counters, rows = []) {
 async function processChunk({
   rowChunk,
   headers,
+  sheetName,
   batch,
   profile,
   profileCode,
-  reportDateFrom,
-  reportDateTo,
+  taskOrderId,
+  fileHash,
+  sourceTimezone,
   counters,
   seenRows,
   identityResolver,
@@ -334,13 +258,16 @@ async function processChunk({
     sourceRow,
     headers,
     profileCode,
-    reportDateFrom,
-    reportDateTo,
+    taskOrderId,
+    fileHash,
+    sourceTimezone,
     identityResolver,
     scopeIndex,
     employeeMetadataIndex,
   }));
-  const validHashes = [...new Set(preparedRows.filter((row) => row.isValid).map((row) => row.rowHash))];
+  const validHashes = [...new Set(
+    preparedRows.filter((row) => row.isValid).map((row) => row.rowHash),
+  )];
   const existingRows = await findAgentOccupancyByIdentityHashes(validHashes);
   const classifiedRows = classifyPreparedChunkRows({
     rows: preparedRows,
@@ -350,7 +277,7 @@ async function processChunk({
 
   await insertRawImportRows(classifiedRows.map((row) => ({
     batchId: batch.id,
-    sheetName: CSV_SHEET_NAME,
+    sheetName,
     excelRowNumber: row.excelRowNumber,
     dataGrain: row.mappedRow.data_grain,
     rowJson: row.rowJson,
@@ -360,7 +287,7 @@ async function processChunk({
 
   const rawRows = await getRawImportRowsByBatchSheetRowNumbers(
     batch.id,
-    CSV_SHEET_NAME,
+    sheetName,
     classifiedRows.map((row) => row.excelRowNumber),
   );
   const rawByNumber = mapRawRowsByNumber(rawRows);
@@ -375,7 +302,9 @@ async function processChunk({
     row.rawRowId = rawByNumber.get(Number(row.excelRowNumber)).id;
   }
 
-  const newRows = classifiedRows.filter((row) => row.classification === IMPORT_ROW_CLASSIFICATIONS.NEW);
+  const newRows = classifiedRows.filter(
+    (row) => row.classification === IMPORT_ROW_CLASSIFICATIONS.NEW,
+  );
   if (newRows.length) {
     await insertAgentOccupancyRowsWithDuplicateProtection(
       newRows.map((row) => buildCanonicalRow(row, batch, profile)),
@@ -407,7 +336,12 @@ async function processChunk({
 
   const errors = [];
   for (const row of finalRows) {
-    const context = rowContext(batch, row, rawByNumber.get(Number(row.excelRowNumber)));
+    const context = rowContext(
+      batch,
+      row,
+      rawByNumber.get(Number(row.excelRowNumber)),
+      sheetName,
+    );
     if (row.classification === IMPORT_ROW_CLASSIFICATIONS.INVALID) {
       errors.push(
         ...row.conversionErrors.map((item) => conversionError(item, context)),
@@ -426,9 +360,7 @@ async function processChunk({
     if (row.mappedRow.mapping_status !== AGENT_MAPPING_STATUSES.MATCHED) {
       const mappingIssue = buildOccupancyMappingIssue(row, context);
       errors.push(mappingIssue);
-      if (mappingIssue.severity === "WARNING") {
-        counters.warningRows += 1;
-      }
+      if (mappingIssue.severity === "WARNING") counters.warningRows += 1;
     }
   }
 
@@ -436,76 +368,135 @@ async function processChunk({
   updateCounters(counters, finalRows);
 }
 
-export async function processAgentOccupancyCsv({
-  csvData,
+export function createHeroDashReportingPeriodIssue(batchId, sheetName) {
+  return {
+    batchId,
+    rawRowId: null,
+    sheetName,
+    excelRowNumber: null,
+    severity: "INFO",
+    errorType: "OCCUPANCY_REPORTING_PERIOD",
+    errorCode: "HERODASH_REPORTING_PERIOD_UNAVAILABLE",
+    columnName: null,
+    rawValue: null,
+    errorMessage: "HeroDash Occupancy source does not provide an authoritative reporting period. The selected Task Order and current active scope are used without fabricating source dates.",
+    existingRowId: null,
+  };
+}
+
+function getProcessorDependencies(overrides = {}) {
+  return {
+    iterateWorksheetRowChunks,
+    createBulkAgentIdentityResolver,
+    findScopeAssignmentsByEmployeeUids,
+    findOccupancyEmployeeMetadataByUids,
+    processChunk,
+    insertImportErrors,
+    ...overrides,
+  };
+}
+
+export async function processAgentOccupancyWorkbook({
+  workbook,
   batch,
   profile,
   profileCode,
+  workbookValidation,
   counters,
   chunkSize,
-  reportDateFrom,
-  reportDateTo,
+  taskOrderId,
+  fileHash,
+  sourceTimezone,
+  dependencies: dependencyOverrides = {},
 }) {
-  const validation = validateAgentOccupancyCsvProfile(csvData, profileCode, {
-    reportDateFrom,
-    reportDateTo,
-  });
-  if (!validation.isValid) {
-    const error = new Error(validation.errors[0]?.message || "Agent Occupancy CSV validation failed.");
-    error.code = validation.errors[0]?.errorCode || "CSV_VALIDATION_FAILED";
-    error.csvValidation = validation;
+  const sheet = workbookValidation?.sheets?.[0];
+  if (!sheet?.sheetName) {
+    const error = new Error("Agent Occupancy workbook has no validated canonical worksheet.");
+    error.code = "OCCUPANCY_CANONICAL_SHEET_MISSING";
     throw error;
   }
 
+  const dependencies = getProcessorDependencies(dependencyOverrides);
+  const sheetName = sheet.sheetName;
+  const headerRowNumber = sheet.headerRowNumber || 1;
+  const safeChunkSize = Number.isInteger(Number(chunkSize)) && Number(chunkSize) > 0
+    ? Number(chunkSize)
+    : 1000;
+  const mappingOptions = {
+    profileCode,
+    taskOrderId,
+    fileHash,
+    sourceTimezone,
+  };
   const identitiesByKey = new Map();
-  for (const sourceRow of csvData.rows) {
-    const identity = mapAgentOccupancyIdentity(sourceRow, csvData.headers, {
-      profileCode,
-      reportDateFrom,
-      reportDateTo,
-    });
-    identitiesByKey.set(createAgentIdentityCacheKey(identity), identity);
-  }
 
-  const identityResolver = await createBulkAgentIdentityResolver([...identitiesByKey.values()]);
+  const identityScan = await dependencies.iterateWorksheetRowChunks(
+    workbook,
+    sheetName,
+    { headerRowNumber, chunkSize: safeChunkSize },
+    async (rowChunk) => {
+      for (const sourceRow of rowChunk) {
+        const identity = mapAgentOccupancyIdentity(sourceRow, [], mappingOptions);
+        identitiesByKey.set(createAgentIdentityCacheKey(identity), identity);
+      }
+    },
+  );
+
+  const identityResolver = await dependencies.createBulkAgentIdentityResolver(
+    [...identitiesByKey.values()],
+  );
   const matchedEmployeeUids = [];
   for (const identity of identitiesByKey.values()) {
     const resolution = identityResolver.resolve(identity);
-    if (resolution.matchStatus === AGENT_MAPPING_STATUSES.MATCHED && resolution.employee?.employeeUid) {
+    if (
+      resolution.matchStatus === AGENT_MAPPING_STATUSES.MATCHED &&
+      resolution.employee?.employeeUid
+    ) {
       matchedEmployeeUids.push(resolution.employee.employeeUid);
     }
   }
+  const uniqueEmployeeUids = [...new Set(matchedEmployeeUids)];
   const [scopeAssignments, employeeMetadata] = await Promise.all([
-    findScopeAssignmentsByEmployeeUids(matchedEmployeeUids),
-    findOccupancyEmployeeMetadataByUids(matchedEmployeeUids),
+    dependencies.findScopeAssignmentsByEmployeeUids(uniqueEmployeeUids),
+    dependencies.findOccupancyEmployeeMetadataByUids(uniqueEmployeeUids),
   ]);
   const scopeIndex = buildOccupancyScopeIndex(scopeAssignments);
   const employeeMetadataIndex = buildOccupancyEmployeeMetadataIndex(employeeMetadata);
   const seenRows = new Map();
-  let processedChunks = 0;
-  const safeChunkSize = Number.isInteger(Number(chunkSize)) && Number(chunkSize) > 0 ? Number(chunkSize) : 1000;
 
-  for (let start = 0; start < csvData.rows.length; start += safeChunkSize) {
-    await processChunk({
-      rowChunk: csvData.rows.slice(start, start + safeChunkSize),
-      headers: csvData.headers,
-      batch,
-      profile,
-      profileCode,
-      reportDateFrom,
-      reportDateTo,
-      counters,
-      seenRows,
-      identityResolver,
-      scopeIndex,
-      employeeMetadataIndex,
-    });
-    processedChunks += 1;
+  if (profileCode === AGENT_OCCUPANCY_PROFILE_CODES.HERODASH) {
+    await dependencies.insertImportErrors([
+      createHeroDashReportingPeriodIssue(batch.id, sheetName),
+    ]);
   }
 
+  const processing = await dependencies.iterateWorksheetRowChunks(
+    workbook,
+    sheetName,
+    { headerRowNumber, chunkSize: safeChunkSize },
+    async (rowChunk) => {
+      await dependencies.processChunk({
+        rowChunk,
+        headers: [],
+        sheetName,
+        batch,
+        profile,
+        profileCode,
+        taskOrderId,
+        fileHash,
+        sourceTimezone,
+        counters,
+        seenRows,
+        identityResolver,
+        scopeIndex,
+        employeeMetadataIndex,
+      });
+    },
+  );
+
   return {
-    processedChunks,
-    identityRowsScanned: csvData.rows.length,
+    processedChunks: processing.processedChunks || 0,
+    identityRowsScanned: identityScan.processedRows || 0,
     ...identityResolver.stats,
   };
 }

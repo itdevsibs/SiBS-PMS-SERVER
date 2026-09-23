@@ -10,6 +10,9 @@ export const IMPORT_PROFILE_CODES = {
   FUSECOM_AGENT_LEVEL: "FUSECOM_AGENT_LEVEL",
   FUSENET_AGENT_LEVEL: "FUSENET_AGENT_LEVEL",
   HERODASH_AGENT_LEVEL: "HERODASH_AGENT_LEVEL",
+  FUSECOM_AGENT_OCCUPANCY: "FUSECOM_AGENT_OCCUPANCY",
+  FUSENET_AGENT_OCCUPANCY: "FUSENET_AGENT_OCCUPANCY",
+  HERODASH_AGENT_OCCUPANCY: "HERODASH_AGENT_OCCUPANCY",
 };
 
 export const WORKBOOK_VALIDATION_ERROR_CODES = {
@@ -185,6 +188,81 @@ const HERODASH_AGENT_LEVEL_HEADERS = [
   ["Duration (sec)", "Talk Time (sec)", "Talk Time", "Talk Seconds"],
 ];
 
+
+const COMMON_AGENT_OCCUPANCY_HEADERS = [
+  "Record Number",
+  "Date/Time",
+  "Agent Name",
+  "Agent Login",
+  "Personal ID",
+  "Logged Time",
+  "Answered Sessions",
+  "Outbound Calls",
+  "Outbound Calls w/o Skill",
+  "Internal Outbound Calls",
+  "AVG Calls/Hour",
+  "AVG Talking Time(sec)",
+  "Productive Login",
+  "Talking Time",
+  "Hold Time",
+  "After Call Time",
+  "Available / Idle Time",
+  "Wrapup Time",
+  "Chatting Time",
+  "Ringing Time",
+  "Email Time",
+  "Break Time",
+  "Lunch Time",
+  "Pre-Op Time",
+  "Personal Time",
+  "HR Meeting Time",
+  "Mandatory Training Time",
+  "Discretionary Training Time",
+  "Training Support SME Time",
+  "In Training Time",
+  "Project Time",
+  "Ticket Work Time",
+  "One on One Time",
+  "Team Meeting Time",
+  "Outbound Time",
+  "Inbound Time",
+  "Floor Support-SME Time",
+  "Paused By System Time",
+  "Auto-Pause: Extension Offline Time",
+  "Auto-Pause: Ringing Timeout Time",
+  "Auto-Pause: Rejecting Calls Time",
+  "Auto-Pause: Client Offline Time",
+  "Auto-Pause: Extension Busy Time",
+  "DID Inbound Call Time",
+  "Standby Time",
+  "In a call",
+];
+
+const FUSE_AGENT_OCCUPANCY_REQUIRED_HEADERS = [
+  "Date/Time",
+  "Agent Name",
+  "Agent Login",
+  "Logged Time",
+  "Productive Login",
+];
+
+const HERODASH_AGENT_OCCUPANCY_HEADERS = [
+  "Agent login",
+  "Productive login",
+  "Available / Idle time",
+  "Lunch time",
+  "In Training time",
+  "Break time",
+  "Answered call",
+  "AVG calls/hour",
+  "AVG talking time (sec)",
+  "Wrap-up time",
+  "Ringing time",
+  "Talking time",
+  "Hold time",
+  "Inbound time",
+];
+
 export const WORKBOOK_PROFILE_DEFINITIONS = {
   [IMPORT_PROFILE_CODES.HERO_SKILL_STATISTICS_INBOUND]: {
     profileCode:
@@ -266,6 +344,52 @@ export const WORKBOOK_PROFILE_DEFINITIONS = {
         headerRowCandidates: [1],
         requiredHeaders: HERODASH_AGENT_LEVEL_HEADERS,
         ignoredHeaders: COMMON_AGENT_LEVEL_IGNORED_HEADERS,
+      },
+    ],
+  },
+
+  [IMPORT_PROFILE_CODES.FUSECOM_AGENT_OCCUPANCY]: {
+    profileCode: IMPORT_PROFILE_CODES.FUSECOM_AGENT_OCCUPANCY,
+    sourceSystem: "FUSECOM",
+    requiredSheets: [
+      {
+        sheetName: "15 Minutes",
+        dataGrain: "AGENT_OCCUPANCY_15_MINUTE",
+        headerRowNumber: 9,
+        headerRowCandidates: [9, 1],
+        requiredHeaders: FUSE_AGENT_OCCUPANCY_REQUIRED_HEADERS,
+        ignoredHeaders: COMMON_AGENT_OCCUPANCY_HEADERS,
+      },
+    ],
+  },
+
+  [IMPORT_PROFILE_CODES.FUSENET_AGENT_OCCUPANCY]: {
+    profileCode: IMPORT_PROFILE_CODES.FUSENET_AGENT_OCCUPANCY,
+    sourceSystem: "FUSENET",
+    requiredSheets: [
+      {
+        sheetName: "15 Minutes",
+        dataGrain: "AGENT_OCCUPANCY_15_MINUTE",
+        headerRowNumber: 9,
+        headerRowCandidates: [9, 1],
+        requiredHeaders: FUSE_AGENT_OCCUPANCY_REQUIRED_HEADERS,
+        ignoredHeaders: COMMON_AGENT_OCCUPANCY_HEADERS,
+      },
+    ],
+  },
+
+  [IMPORT_PROFILE_CODES.HERODASH_AGENT_OCCUPANCY]: {
+    profileCode: IMPORT_PROFILE_CODES.HERODASH_AGENT_OCCUPANCY,
+    sourceSystem: "HERODASH",
+    requiredSheets: [
+      {
+        sheetName: "Sheet1",
+        sheetNameCandidates: ["Sheet1"],
+        dataGrain: "AGENT_OCCUPANCY_PERIOD",
+        headerRowNumber: 1,
+        headerRowCandidates: [1],
+        requiredHeaders: HERODASH_AGENT_OCCUPANCY_HEADERS,
+        ignoredHeaders: HERODASH_AGENT_OCCUPANCY_HEADERS,
       },
     ],
   },

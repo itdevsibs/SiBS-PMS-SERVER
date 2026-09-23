@@ -22,7 +22,6 @@ import {
   insertSkillStatisticsRowsWithDuplicateProtection,
 } from "../../../repositories/usVisa/usVisaSkillStatisticsRepository.js";
 import { calculateFileSha256 } from "../shared/fileHashService.js";
-import { readCsvFile } from "../shared/csvReaderService.js";
 import {
   FUSECOM_SOURCE_SYSTEM,
   isFusecom15MinuteSheet,
@@ -57,12 +56,8 @@ import {
   validateWorkbookProfile,
 } from "./workbookValidator.js";
 import { getUsVisaImportProcessor } from "./importProfileDispatcher.js";
-import {
-  getAgentOccupancyCsvReportDateRange,
-} from "./agentOccupancy/agentOccupancyMapper.js";
-import {
-  validateAgentOccupancyCsvProfile,
-} from "./agentOccupancy/agentOccupancyImportProcessor.js";
+import { extractAgentOccupancyWorkbookMetadata } from "./agentOccupancy/agentOccupancyWorkbookMetadata.js";
+import { assertUsVisaTaskOrderForSource } from "../../../config/usVisaTaskOrders.js";
 
 const DEFAULT_ROW_CHUNK_SIZE = 1000;
 const US_VISA_IMPORT_LOCK_NAME = "sibs:pms:us-visa:raw-import";
@@ -744,7 +739,7 @@ function assertProfileFileType(processor = {}, temporaryFile = {}, filePath = ""
   }
 }
 
-function getBatchCreateInput({
+export function getBatchCreateInput({
   profile,
   profileCode,
   temporaryFile,
@@ -753,10 +748,12 @@ function getBatchCreateInput({
   fileHash,
   reportDateFrom,
   reportDateTo,
+  taskOrderId,
 }) {
   return {
     importProfileId: profile.id,
     sourceSystem: profile.sourceSystem || getProfileSourceSystem(profileCode),
+    taskOrderId: taskOrderId || null,
     sourceFilename:
       temporaryFile.originalname || options.sourceFilename || temporaryFile.filename,
     storedFilename:
@@ -799,6 +796,30 @@ export async function importUsVisaRawWorkbook(options = {}) {
     assertProfileFileType(processor, temporaryFile, filePath);
     const isAgentLevel =
       String(profile.reportType || "").trim().toUpperCase() === "AGENT_LEVEL";
+    const isAgentOccupancy = processor.domain === "AGENT_OCCUPANCY";
+    let occupancyTaskOrder = null;
+
+    if (isAgentOccupancy) {
+      try {
+        occupancyTaskOrder = assertUsVisaTaskOrderForSource(
+          profile.sourceSystem || getProfileSourceSystem(profileCode),
+          options.taskOrderId,
+        );
+      } catch (error) {
+        return {
+          batch: null,
+          rejected: true,
+          code: error.code || "TASK_ORDER_MISMATCH",
+          message: error.message,
+          profile,
+          profileCode,
+          fileHash,
+          worksheetNames: [],
+          workbookValidation: null,
+          counters,
+        };
+      }
+    }
 
     if (isAgentLevel) {
       agentPerformance = {
@@ -828,91 +849,6 @@ export async function importUsVisaRawWorkbook(options = {}) {
         exactDuplicateBatch,
         worksheetNames: [],
         workbookValidation: null,
-        counters,
-      };
-    }
-
-    if (processor.fileType === "CSV") {
-      const csvData = await readCsvFile(filePath);
-      const csvDateRange = getAgentOccupancyCsvReportDateRange(
-        csvData,
-        profileCode,
-        {
-          reportDateFrom: options.reportDateFrom,
-          reportDateTo: options.reportDateTo,
-        },
-      );
-      const reportDateFrom =
-        options.reportDateFrom || csvDateRange.reportDateFrom;
-      const reportDateTo = options.reportDateTo || csvDateRange.reportDateTo;
-
-      const csvValidation = validateAgentOccupancyCsvProfile(
-        csvData,
-        profileCode,
-        { reportDateFrom, reportDateTo },
-      );
-
-      if (!csvValidation.isValid) {
-        return {
-          batch: null,
-          rejected: true,
-          code: csvValidation.errors[0]?.errorCode || "CSV_STRUCTURE_VALIDATION_FAILED",
-          message: csvValidation.errors[0]?.message || "CSV structure validation failed.",
-          profile,
-          profileCode,
-          fileHash,
-          worksheetNames: ["CSV"],
-          csvValidation,
-          counters,
-        };
-      }
-
-      batch = await createBatch(
-        getBatchCreateInput({
-          profile,
-          profileCode,
-          temporaryFile,
-          options,
-          filePath,
-          fileHash,
-          reportDateFrom,
-          reportDateTo,
-        }),
-      );
-
-      if (!processor.processCsv) {
-        throw new UsVisaImportError(
-          "CSV processor is not configured for this import profile.",
-          { code: "CSV_PROCESSOR_NOT_CONFIGURED" },
-        );
-      }
-
-      await processor.processCsv({
-        csvData,
-        batch,
-        profile,
-        profileCode,
-        counters,
-        chunkSize: getChunkSize(),
-        reportDateFrom,
-        reportDateTo,
-      });
-
-      const finalBatch = hasCompletedWithErrors(counters)
-        ? await markBatchCompletedWithErrors(
-            batch.id,
-            counters,
-            "Import completed with row-level errors or warnings.",
-          )
-        : await markBatchCompleted(batch.id, counters);
-
-      return {
-        batch: finalBatch,
-        profile,
-        profileCode,
-        fileHash,
-        worksheetNames: ["CSV"],
-        csvValidation,
         counters,
       };
     }
@@ -961,6 +897,54 @@ export async function importUsVisaRawWorkbook(options = {}) {
       };
     }
 
+    let occupancyMetadata = null;
+    if (isAgentOccupancy) {
+      const canonicalSheetName = workbookValidation.sheets[0]?.sheetName || null;
+      occupancyMetadata = extractAgentOccupancyWorkbookMetadata(
+        workbook,
+        canonicalSheetName,
+      );
+
+      if (
+        occupancyTaskOrder &&
+        occupancyMetadata.declaredTaskOrderId &&
+        occupancyMetadata.declaredTaskOrderId !== occupancyTaskOrder.id
+      ) {
+        return {
+          batch: null,
+          rejected: true,
+          code: "TASK_ORDER_MISMATCH",
+          message: `Selected ${occupancyTaskOrder.id} does not match workbook ${occupancyMetadata.declaredTaskOrderId}.`,
+          profile,
+          profileCode,
+          fileHash,
+          worksheetNames: getWorksheetNames(workbook),
+          workbookValidation,
+          occupancyMetadata,
+          counters,
+        };
+      }
+
+      if (
+        ["FUSECOM", "FUSENET"].includes(String(profile.sourceSystem || "").toUpperCase()) &&
+        !occupancyMetadata.sourceTimezone
+      ) {
+        return {
+          batch: null,
+          rejected: true,
+          code: "SOURCE_TIMEZONE_MISSING",
+          message: "The Occupancy workbook is missing its source timezone metadata.",
+          profile,
+          profileCode,
+          fileHash,
+          worksheetNames: getWorksheetNames(workbook),
+          workbookValidation,
+          occupancyMetadata,
+          counters,
+        };
+      }
+    }
+
     batch = await createBatch(
       getBatchCreateInput({
         profile,
@@ -971,6 +955,7 @@ export async function importUsVisaRawWorkbook(options = {}) {
         fileHash,
         reportDateFrom,
         reportDateTo,
+        taskOrderId: occupancyTaskOrder?.id || null,
       }),
     );
 
@@ -991,6 +976,9 @@ export async function importUsVisaRawWorkbook(options = {}) {
         workbookValidation,
         counters,
         chunkSize: getChunkSize(),
+        taskOrderId: occupancyTaskOrder?.id || batch.taskOrderId || null,
+        fileHash,
+        sourceTimezone: occupancyMetadata?.sourceTimezone || null,
       });
 
       if (agentPerformance) {

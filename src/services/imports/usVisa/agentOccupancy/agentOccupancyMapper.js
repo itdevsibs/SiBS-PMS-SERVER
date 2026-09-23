@@ -1,11 +1,12 @@
 import {
-  toDateValue,
   toDecimalValue,
-  toDurationSecondsValue,
   toIntegerValue,
   toStringValue,
 } from "../../shared/valueConversionService.js";
-import { getCsvRowValue } from "../../shared/csvReaderService.js";
+import {
+  normalizeOccupancyIntervalStart,
+  toOccupancyDurationSeconds,
+} from "./agentOccupancyTimeService.js";
 
 export const AGENT_OCCUPANCY_PROFILE_CODES = Object.freeze({
   FUSECOM: "FUSECOM_AGENT_OCCUPANCY",
@@ -16,6 +17,7 @@ export const AGENT_OCCUPANCY_PROFILE_CODES = Object.freeze({
 export const AGENT_OCCUPANCY_GRAINS = Object.freeze({
   DAY: "AGENT_OCCUPANCY_DAY",
   PERIOD: "AGENT_OCCUPANCY_PERIOD",
+  FIFTEEN_MINUTE: "AGENT_OCCUPANCY_15_MINUTE",
 });
 
 const SOURCE_SYSTEM_BY_PROFILE = Object.freeze({
@@ -86,25 +88,30 @@ const COUNT_FIELDS = Object.freeze({
   "Internal Outbound Calls": "internal_outbound_calls",
 });
 
+function normalizeHeader(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function buildHeaderMap(rowJson = {}) {
+  const map = new Map();
+  for (const [key, value] of Object.entries(rowJson || {})) {
+    map.set(normalizeHeader(key), value);
+  }
+  return map;
+}
+
+function getValue(sourceRow, headerName) {
+  const map = buildHeaderMap(sourceRow?.rowJson || {});
+  return map.get(normalizeHeader(headerName));
+}
+
 function sourceSystemForProfile(profileCode) {
   return SOURCE_SYSTEM_BY_PROFILE[profileCode] || null;
 }
 
-function getValue(row, headers, headerName, occurrence = 1) {
-  return getCsvRowValue(row, headers, headerName, occurrence);
-}
-
-function addConvertedValue({
-  mappedRow,
-  conversionErrors,
-  targetField,
-  sourceHeader,
-  rawValue,
-  converter,
-}) {
+function addConvertedValue({ mappedRow, conversionErrors, targetField, sourceHeader, rawValue, converter }) {
   const result = converter(rawValue);
   mappedRow[targetField] = result.value;
-
   if (!result.ok) {
     conversionErrors.push({
       fieldName: targetField,
@@ -117,20 +124,14 @@ function addConvertedValue({
   }
 }
 
-function extractTaskOrderId(value) {
-  const text = String(value || "").trim();
-  if (!text) return null;
-  const match = text.match(/\bTO\s*([0-9]+)\b/i);
-  return match ? `TO${Number(match[1])}` : null;
-}
-
-function mapFuseRow(sourceRow, headers, profileCode) {
-  const sourceSystem = sourceSystemForProfile(profileCode);
-  const mappedRow = {
+function baseRow(sourceRow, sourceSystem, grain, options = {}) {
+  return {
     source_system: sourceSystem,
-    source_row_number: sourceRow.rowNumber,
-    data_grain: AGENT_OCCUPANCY_GRAINS.DAY,
+    source_row_number: sourceRow.excelRowNumber ?? sourceRow.rowNumber ?? null,
+    data_grain: grain,
     production_date: null,
+    interval_start_utc: null,
+    source_timezone: null,
     report_date_from: null,
     report_date_to: null,
     agent_name_raw: null,
@@ -140,149 +141,82 @@ function mapFuseRow(sourceRow, headers, profileCode) {
     employee_uid: null,
     mapping_status: "UNMATCHED",
     mapping_method: null,
-    source_task_order: null,
-    task_order_id: null,
+    source_task_order: options.taskOrderId || null,
+    task_order_id: options.taskOrderId || null,
   };
+}
+
+function mapFuseRow(sourceRow, profileCode, options) {
+  const sourceSystem = sourceSystemForProfile(profileCode);
+  const mappedRow = baseRow(sourceRow, sourceSystem, AGENT_OCCUPANCY_GRAINS.FIFTEEN_MINUTE, options);
   const conversionErrors = [];
+  mappedRow.source_timezone = options.sourceTimezone || null;
 
-  addConvertedValue({
-    mappedRow,
-    conversionErrors,
-    targetField: "production_date",
-    sourceHeader: "Date",
-    rawValue: getValue(sourceRow, headers, "Date"),
-    converter: toDateValue,
-  });
+  const interval = normalizeOccupancyIntervalStart(
+    getValue(sourceRow, "Date/Time"),
+    mappedRow.source_timezone,
+  );
+  mappedRow.production_date = interval.productionDate || null;
+  mappedRow.interval_start_utc = interval.intervalStartUtc || null;
+  if (!interval.ok) {
+    conversionErrors.push({
+      fieldName: "interval_start_utc",
+      targetField: "interval_start_utc",
+      sourceHeader: "Date/Time",
+      rawValue: getValue(sourceRow, "Date/Time"),
+      errorCode: interval.errorCode,
+      message: interval.message,
+    });
+  }
 
-  mappedRow.agent_name_raw = toStringValue(
-    getValue(sourceRow, headers, "Agent Name", 2),
-  ).value;
-  mappedRow.agent_login = toStringValue(getValue(sourceRow, headers, "Agent Login")).value;
-  mappedRow.personal_id = toStringValue(getValue(sourceRow, headers, "Personal ID")).value;
-  mappedRow.source_agent_key =
-    mappedRow.agent_login || mappedRow.personal_id || mappedRow.agent_name_raw;
-  mappedRow.source_task_order = toStringValue(getValue(sourceRow, headers, "Task Order")).value;
-  mappedRow.task_order_id = extractTaskOrderId(mappedRow.source_task_order);
+  mappedRow.agent_name_raw = toStringValue(getValue(sourceRow, "Agent Name")).value;
+  mappedRow.agent_login = toStringValue(getValue(sourceRow, "Agent Login")).value;
+  mappedRow.personal_id = toStringValue(getValue(sourceRow, "Personal ID")).value;
+  mappedRow.source_agent_key = mappedRow.agent_login || mappedRow.personal_id || mappedRow.agent_name_raw;
 
   for (const [sourceHeader, targetField] of Object.entries(COUNT_FIELDS)) {
-    addConvertedValue({
-      mappedRow,
-      conversionErrors,
-      targetField,
-      sourceHeader,
-      rawValue: getValue(sourceRow, headers, sourceHeader),
-      converter: toIntegerValue,
-    });
+    addConvertedValue({ mappedRow, conversionErrors, targetField, sourceHeader, rawValue: getValue(sourceRow, sourceHeader), converter: toIntegerValue });
   }
-
-  addConvertedValue({
-    mappedRow,
-    conversionErrors,
-    targetField: "avg_calls_per_hour",
-    sourceHeader: "AVG Calls/Hour",
-    rawValue: getValue(sourceRow, headers, "AVG Calls/Hour"),
-    converter: toDecimalValue,
-  });
-  addConvertedValue({
-    mappedRow,
-    conversionErrors,
-    targetField: "avg_talking_seconds",
-    sourceHeader: "AVG Talking Time(sec)",
-    rawValue: getValue(sourceRow, headers, "AVG Talking Time(sec)"),
-    converter: toDecimalValue,
-  });
+  addConvertedValue({ mappedRow, conversionErrors, targetField: "avg_calls_per_hour", sourceHeader: "AVG Calls/Hour", rawValue: getValue(sourceRow, "AVG Calls/Hour"), converter: toDecimalValue });
+  addConvertedValue({ mappedRow, conversionErrors, targetField: "avg_talking_seconds", sourceHeader: "AVG Talking Time(sec)", rawValue: getValue(sourceRow, "AVG Talking Time(sec)"), converter: toDecimalValue });
 
   for (const [sourceHeader, targetField] of Object.entries(FUSE_DURATION_FIELDS)) {
-    addConvertedValue({
-      mappedRow,
-      conversionErrors,
-      targetField,
-      sourceHeader,
-      rawValue: getValue(sourceRow, headers, sourceHeader),
-      converter: toDurationSecondsValue,
-    });
+    addConvertedValue({ mappedRow, conversionErrors, targetField, sourceHeader, rawValue: getValue(sourceRow, sourceHeader), converter: toOccupancyDurationSeconds });
   }
 
-  return {
-    mappedRow,
-    rowJson: { ...sourceRow.rowJson },
-    conversionErrors,
-  };
+  return { mappedRow, rowJson: { ...(sourceRow.rowJson || {}) }, conversionErrors };
 }
 
-function mapHeroDashRow(sourceRow, headers, options) {
-  const mappedAgentName = toStringValue(getValue(sourceRow, headers, "Agent Name")).value;
-  const agentLogin = toStringValue(getValue(sourceRow, headers, "Agent login")).value;
-  const mappedRow = {
-    source_system: "HERODASH",
-    source_row_number: sourceRow.rowNumber,
-    data_grain: AGENT_OCCUPANCY_GRAINS.PERIOD,
-    production_date: null,
-    report_date_from: options.reportDateFrom || null,
-    report_date_to: options.reportDateTo || null,
-    agent_name_raw: mappedAgentName || agentLogin,
-    agent_login: agentLogin,
-    personal_id: null,
-    source_agent_key: agentLogin || mappedAgentName,
-    employee_uid: null,
-    mapping_status: "UNMATCHED",
-    mapping_method: null,
-    source_task_order: toStringValue(getValue(sourceRow, headers, "Task Order")).value,
-    task_order_id: null,
-  };
+function mapHeroDashRow(sourceRow, options) {
+  const mappedRow = baseRow(sourceRow, "HERODASH", AGENT_OCCUPANCY_GRAINS.PERIOD, options);
   const conversionErrors = [];
-  mappedRow.task_order_id = extractTaskOrderId(mappedRow.source_task_order);
+  mappedRow.source_file_hash = options.fileHash || null;
 
-  addConvertedValue({
-    mappedRow,
-    conversionErrors,
-    targetField: "answered_sessions",
-    sourceHeader: "Answered call",
-    rawValue: getValue(sourceRow, headers, "Answered call"),
-    converter: toIntegerValue,
-  });
-  addConvertedValue({
-    mappedRow,
-    conversionErrors,
-    targetField: "avg_calls_per_hour",
-    sourceHeader: "AVG calls/hour",
-    rawValue: getValue(sourceRow, headers, "AVG calls/hour"),
-    converter: toDecimalValue,
-  });
-  addConvertedValue({
-    mappedRow,
-    conversionErrors,
-    targetField: "avg_talking_seconds",
-    sourceHeader: "AVG talking time (sec)",
-    rawValue: getValue(sourceRow, headers, "AVG talking time (sec)"),
-    converter: toDecimalValue,
-  });
+  const mappedAgentName = toStringValue(getValue(sourceRow, "Agent Name")).value;
+  const agentLogin = toStringValue(getValue(sourceRow, "Agent login")).value;
+  mappedRow.agent_name_raw = mappedAgentName || agentLogin;
+  mappedRow.agent_login = agentLogin;
+  mappedRow.personal_id = toStringValue(getValue(sourceRow, "Personal ID")).value;
+  mappedRow.source_agent_key = agentLogin || mappedAgentName;
+
+  addConvertedValue({ mappedRow, conversionErrors, targetField: "answered_sessions", sourceHeader: "Answered call", rawValue: getValue(sourceRow, "Answered call"), converter: toIntegerValue });
+  addConvertedValue({ mappedRow, conversionErrors, targetField: "avg_calls_per_hour", sourceHeader: "AVG calls/hour", rawValue: getValue(sourceRow, "AVG calls/hour"), converter: toDecimalValue });
+  addConvertedValue({ mappedRow, conversionErrors, targetField: "avg_talking_seconds", sourceHeader: "AVG talking time (sec)", rawValue: getValue(sourceRow, "AVG talking time (sec)"), converter: toDecimalValue });
 
   for (const [sourceHeader, targetField] of Object.entries(HERO_DURATION_FIELDS)) {
-    addConvertedValue({
-      mappedRow,
-      conversionErrors,
-      targetField,
-      sourceHeader,
-      rawValue: getValue(sourceRow, headers, sourceHeader),
-      converter: toDurationSecondsValue,
-    });
+    addConvertedValue({ mappedRow, conversionErrors, targetField, sourceHeader, rawValue: getValue(sourceRow, sourceHeader), converter: toOccupancyDurationSeconds });
   }
 
-  return {
-    mappedRow,
-    rowJson: { ...sourceRow.rowJson },
-    conversionErrors,
-  };
+  return { mappedRow, rowJson: { ...(sourceRow.rowJson || {}) }, conversionErrors };
 }
 
-export function mapAgentOccupancyRow(sourceRow = {}, headers = [], options = {}) {
+export function mapAgentOccupancyRow(sourceRow = {}, _headers = [], options = {}) {
   const profileCode = options.profileCode;
-  if (profileCode === AGENT_OCCUPANCY_PROFILE_CODES.FUSECOM || profileCode === AGENT_OCCUPANCY_PROFILE_CODES.FUSENET) {
-    return mapFuseRow(sourceRow, headers, profileCode);
+  if ([AGENT_OCCUPANCY_PROFILE_CODES.FUSECOM, AGENT_OCCUPANCY_PROFILE_CODES.FUSENET].includes(profileCode)) {
+    return mapFuseRow(sourceRow, profileCode, options);
   }
   if (profileCode === AGENT_OCCUPANCY_PROFILE_CODES.HERODASH) {
-    return mapHeroDashRow(sourceRow, headers, options);
+    return mapHeroDashRow(sourceRow, options);
   }
   throw new Error(`Unsupported Agent Occupancy profile "${profileCode || ""}".`);
 }
@@ -300,40 +234,4 @@ export function mapAgentOccupancyIdentity(sourceRow = {}, headers = [], options 
 
 export function getAgentOccupancySourceSystem(profileCode) {
   return sourceSystemForProfile(profileCode);
-}
-
-export function extractAgentOccupancyTaskOrderId(value) {
-  return extractTaskOrderId(value);
-}
-
-export function getAgentOccupancyCsvReportDateRange(csvData = {}, profileCode, options = {}) {
-  if (profileCode === AGENT_OCCUPANCY_PROFILE_CODES.HERODASH) {
-    return {
-      reportDateFrom: options.reportDateFrom || null,
-      reportDateTo: options.reportDateTo || null,
-    };
-  }
-
-  if (
-    profileCode !== AGENT_OCCUPANCY_PROFILE_CODES.FUSECOM &&
-    profileCode !== AGENT_OCCUPANCY_PROFILE_CODES.FUSENET
-  ) {
-    return { reportDateFrom: null, reportDateTo: null };
-  }
-
-  const dates = [];
-  for (const row of csvData.rows || []) {
-    const converted = toDateValue(getValue(row, csvData.headers || [], "Date"));
-    if (converted.ok && converted.value) dates.push(converted.value);
-  }
-
-  if (!dates.length) {
-    return { reportDateFrom: null, reportDateTo: null };
-  }
-
-  dates.sort();
-  return {
-    reportDateFrom: dates[0],
-    reportDateTo: dates[dates.length - 1],
-  };
 }
