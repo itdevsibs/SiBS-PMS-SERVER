@@ -226,6 +226,7 @@ function createCounters() {
     invalidRows: 0,
     duplicateRows: 0,
     warningRows: 0,
+    infoRows: 0,
   };
 }
 

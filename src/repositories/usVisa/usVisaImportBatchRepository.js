@@ -28,6 +28,7 @@ const EMPTY_IMPORT_SUMMARY = Object.freeze({
   invalidRows: 0,
   duplicateRows: 0,
   warningRows: 0,
+  infoRows: 0,
 });
 
 function normalizeAccountFilter(value) {
@@ -145,6 +146,7 @@ function mapBatchRow(row) {
     invalidRows: row.invalid_rows,
     duplicateRows: row.duplicate_rows,
     warningRows: row.warning_rows,
+    infoRows: row.info_rows || 0,
     errorMessage: row.error_message,
     processingStartedAt: processingStartedAt
       ? processingStartedAt.toISOString()
@@ -263,7 +265,8 @@ export async function getImportSummary(options = {}) {
         COALESCE(SUM(valid_rows), 0) AS valid_rows,
         COALESCE(SUM(invalid_rows), 0) AS invalid_rows,
         COALESCE(SUM(duplicate_rows), 0) AS duplicate_rows,
-        COALESCE(SUM(warning_rows), 0) AS warning_rows
+        COALESCE(SUM(warning_rows), 0) AS warning_rows,
+        COALESCE(SUM(info_rows), 0) AS info_rows
       FROM ${pmsTables.usVisaImportBatches}
     `,
     [
@@ -281,6 +284,7 @@ export async function getImportSummary(options = {}) {
     invalidRows: toInteger(summary.invalid_rows),
     duplicateRows: toInteger(summary.duplicate_rows),
     warningRows: toInteger(summary.warning_rows),
+    infoRows: toInteger(summary.info_rows),
   };
 }
 
@@ -434,6 +438,7 @@ export function updateRowCounters(batchId, counters = {}) {
     invalid_rows: counters.invalidRows,
     duplicate_rows: counters.duplicateRows,
     warning_rows: counters.warningRows,
+    info_rows: counters.infoRows,
   });
 }
 
@@ -444,6 +449,7 @@ export function markBatchCompleted(batchId, counters = {}) {
     invalid_rows: counters.invalidRows,
     duplicate_rows: counters.duplicateRows,
     warning_rows: counters.warningRows,
+    info_rows: counters.infoRows,
     status: US_VISA_BATCH_STATUSES.COMPLETED,
     error_message: null,
     completed_at: new Date(),
@@ -461,6 +467,7 @@ export function markBatchCompletedWithErrors(
     invalid_rows: counters.invalidRows,
     duplicate_rows: counters.duplicateRows,
     warning_rows: counters.warningRows,
+    info_rows: counters.infoRows,
     status: US_VISA_BATCH_STATUSES.COMPLETED_WITH_ERRORS,
     error_message: errorMessage,
     completed_at: new Date(),
