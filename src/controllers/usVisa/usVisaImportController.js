@@ -30,6 +30,7 @@ function pickBatchResponse(batch = {}) {
     importProfileName: batch.importProfileName,
     sourceFilename: batch.sourceFilename,
     sourceSystem: batch.sourceSystem,
+    taskOrderId: batch.taskOrderId,
     reportDateFrom: batch.reportDateFrom,
     reportDateTo: batch.reportDateTo,
     status: batch.status,
@@ -92,8 +93,9 @@ function getPagination(query = {}, defaults = {}) {
   };
 }
 
-function getFatalCode(result = {}) {
+export function getFatalCode(result = {}) {
   return (
+    result.code ||
     result.workbookValidation?.errors?.[0]?.errorCode ||
     result.csvValidation?.errors?.[0]?.errorCode ||
     result.error?.code ||
@@ -113,7 +115,7 @@ function getWorkbookReaderPublicMessage(code) {
   return "The uploaded Excel workbook could not be read.";
 }
 
-function getFatalMessage(result = {}) {
+export function getFatalMessage(result = {}) {
   const profileCode =
     result.profile?.profileCode ||
     result.profileCode ||
@@ -122,8 +124,13 @@ function getFatalMessage(result = {}) {
   const isHerodash = /hero/i.test(profileCode);
   const isFusecom = /fuse/i.test(profileCode);
   const isFusenet = /fusenet/i.test(profileCode);
-  const isAgentLevel = /agent/i.test(profileCode);
+  const isOccupancy = /occupancy/i.test(profileCode);
+  const isAgentLevel = /agent/i.test(profileCode) && !isOccupancy;
   const profileLabel = result.profile?.profileName || profileCode || "selected";
+
+  if (result.message && result.code) {
+    return result.message;
+  }
 
   if (result.csvValidation?.errors?.length) {
     const firstError = result.csvValidation.errors[0];
@@ -143,6 +150,18 @@ function getFatalMessage(result = {}) {
       firstError.errorCode === "MISSING_REQUIRED_COLUMN" ||
       firstError.errorCode === "MISSING_REQUIRED_HEADER"
     ) {
+      if (isOccupancy) {
+        if (isHerodash) {
+          return "Only HeroDash Agent Occupancy (.xlsx) files are allowed for this card. The selected file is missing required HeroDash Occupancy sheets or column headers.";
+        }
+        if (isFusenet) {
+          return "Only FuseNet Agent Occupancy (.xlsx) files are allowed for this card. The selected file is missing the required 15 Minutes sheet or Occupancy column headers.";
+        }
+        if (isFusecom) {
+          return "Only Fusecom Agent Occupancy (.xlsx) files are allowed for this card. The selected file is missing the required 15 Minutes sheet or Occupancy column headers.";
+        }
+        return `Only ${profileLabel} (.xlsx) files are allowed for this card. The selected file does not match the required Agent Occupancy workbook structure.`;
+      }
       if (isAgentLevel) {
         if (isHerodash) {
           return "Only HeroDash Agent Level (.xlsx) files are allowed for this card. The selected file is missing required HeroDash Agent Level sheets or column headers.";
@@ -219,6 +238,7 @@ export async function uploadUsVisaImport(req, res) {
     const result = await importUsVisaRawWorkbook({
       file: req.file,
       importProfileId,
+      taskOrderId: String(req.body?.taskOrderId || "").trim(),
       reportDateFrom: req.body?.reportDateFrom,
       reportDateTo: req.body?.reportDateTo,
       user: req.user,

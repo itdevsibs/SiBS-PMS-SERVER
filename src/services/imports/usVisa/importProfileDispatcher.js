@@ -1,6 +1,6 @@
 // Selects the domain processor and source file type for a US VISA import profile.
 import { processAgentInteractionWorkbook } from "./agentInteractions/agentInteractionImportProcessor.js";
-import { processAgentOccupancyCsv } from "./agentOccupancy/agentOccupancyImportProcessor.js";
+import { processAgentOccupancyWorkbook } from "./agentOccupancy/agentOccupancyImportProcessor.js";
 
 export const US_VISA_IMPORT_REPORT_TYPES = Object.freeze({
   SKILL_STATISTICS: "SKILL_STATISTICS",
@@ -17,9 +17,9 @@ const PROCESSORS_BY_REPORT_TYPE = Object.freeze({
   },
   [US_VISA_IMPORT_REPORT_TYPES.AGENT_OCCUPANCY]: {
     domain: "AGENT_OCCUPANCY",
-    fileType: "CSV",
-    processWorkbook: null,
-    processCsv: processAgentOccupancyCsv,
+    fileType: "XLSX",
+    processWorkbook: processAgentOccupancyWorkbook,
+    processCsv: null,
   },
 });
 

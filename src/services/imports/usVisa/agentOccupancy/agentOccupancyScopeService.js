@@ -50,6 +50,12 @@ function assignmentApplies(row, assignment) {
   if (row.data_grain === "AGENT_OCCUPANCY_PERIOD") {
     const rangeFrom = row.report_date_from;
     const rangeTo = row.report_date_to;
+    if (!rangeFrom && !rangeTo) {
+      // HeroDash currently has no authoritative reporting period. For these
+      // rows, use active assignments for current eligibility only; the
+      // selected Task Order is applied separately below.
+      return true;
+    }
     if (!rangeFrom || !rangeTo || !from) return false;
     return from <= rangeTo && (!to || to >= rangeFrom);
   }

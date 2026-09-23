@@ -45,6 +45,10 @@ function buildInClause(values = []) {
   return values.map(() => "?").join(", ");
 }
 
+function kronosUtf8Text(sqlExpression) {
+  return `CONVERT(${sqlExpression} USING utf8mb4) COLLATE utf8mb4_unicode_ci`;
+}
+
 export async function findEmployeeAliasCandidates({
   aliasType,
   sourceSystem = null,
@@ -153,7 +157,7 @@ export async function findEmployeesByExactNormalizedName(agentName) {
         employee.gy_emp_email AS employee_email,
         'KRONOS_NAME' AS source
       FROM ${kronosTables.employee} employee
-      WHERE UPPER(TRIM(employee.gy_emp_fullname)) = ?
+      WHERE UPPER(TRIM(${kronosUtf8Text("employee.gy_emp_fullname")})) = ?
     `,
     [normalizedName],
   );
@@ -177,14 +181,14 @@ export async function findEmployeesByExactNormalizedNames(agentNames = []) {
   const [rows] = await kronosDb.query(
     `
       SELECT
-        UPPER(TRIM(employee.gy_emp_fullname)) AS normalized_name,
+        UPPER(TRIM(${kronosUtf8Text("employee.gy_emp_fullname")})) AS normalized_name,
         employee.gy_emp_code AS employee_uid,
         employee.gy_emp_id AS employee_id,
         employee.gy_emp_fullname AS employee_name,
         employee.gy_emp_email AS employee_email,
         'KRONOS_NAME' AS source
       FROM ${kronosTables.employee} employee
-      WHERE UPPER(TRIM(employee.gy_emp_fullname)) IN (${buildInClause(normalizedNames)})
+      WHERE UPPER(TRIM(${kronosUtf8Text("employee.gy_emp_fullname")})) IN (${buildInClause(normalizedNames)})
     `,
     normalizedNames,
   );
@@ -217,7 +221,7 @@ export async function findOccupancyEmployeeMetadataByUids(employeeUids = []) {
           employee.gy_emp_fullname AS employee_name,
           TRIM(employee.gy_emp_account) AS employee_account
         FROM ${kronosTables.employee} employee
-        WHERE employee.gy_emp_code IN (${placeholders})
+        WHERE ${kronosUtf8Text("employee.gy_emp_code")} IN (${placeholders})
       `,
       normalizedUids,
     ).then(([rows]) => rows),

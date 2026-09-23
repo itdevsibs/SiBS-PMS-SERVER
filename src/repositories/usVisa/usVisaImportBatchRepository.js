@@ -130,6 +130,7 @@ function mapBatchRow(row) {
     importProfileCode: row.import_profile_code,
     importProfileName: row.import_profile_name,
     sourceSystem: row.source_system,
+    taskOrderId: row.task_order_id,
     sourceFilename: row.source_filename,
     storedFilename: row.stored_filename,
     storedPath: row.stored_path,
@@ -330,6 +331,7 @@ export async function createBatch(batch = {}) {
             batch_code,
             import_profile_id,
             source_system,
+            task_order_id,
             source_filename,
             stored_filename,
             stored_path,
@@ -340,12 +342,13 @@ export async function createBatch(batch = {}) {
             uploaded_by,
             status
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           batchCode,
           batch.importProfileId,
           batch.sourceSystem,
+          toNullableValue(batch.taskOrderId),
           batch.sourceFilename,
           batch.storedFilename,
           batch.storedPath,

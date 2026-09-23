@@ -4,6 +4,8 @@ const CONTENT_FIELDS = [
   "source_system",
   "data_grain",
   "production_date",
+  "interval_start_utc",
+  "source_timezone",
   "report_date_from",
   "report_date_to",
   "agent_name_raw",
@@ -69,15 +71,26 @@ function hash(parts) {
 }
 
 export function buildAgentOccupancyIdentityParts(row = {}) {
+  const sourceAgentKey = row.source_agent_key || row.agent_login || row.personal_id || row.agent_name_raw;
+  const taskOrderId = row.task_order_id || row.source_task_order;
+
   if (row.data_grain === "AGENT_OCCUPANCY_PERIOD") {
     return [
       normalize(row.source_system),
+      normalize(taskOrderId),
       normalize(row.data_grain),
-      normalize(row.report_date_from),
-      normalize(row.report_date_to),
-      normalize(row.source_agent_key || row.agent_login || row.agent_name_raw),
-      normalize(row.task_order_id || row.source_task_order),
-      normalize(row.source_row_number),
+      normalize(row.source_file_hash),
+      normalize(sourceAgentKey),
+    ];
+  }
+
+  if (row.data_grain === "AGENT_OCCUPANCY_15_MINUTE") {
+    return [
+      normalize(row.source_system),
+      normalize(taskOrderId),
+      normalize(row.data_grain),
+      normalize(row.interval_start_utc),
+      normalize(sourceAgentKey),
     ];
   }
 
@@ -85,8 +98,8 @@ export function buildAgentOccupancyIdentityParts(row = {}) {
     normalize(row.source_system),
     normalize(row.data_grain),
     normalize(row.production_date),
-    normalize(row.source_agent_key || row.agent_login || row.personal_id || row.agent_name_raw),
-    normalize(row.task_order_id || row.source_task_order),
+    normalize(sourceAgentKey),
+    normalize(taskOrderId),
   ];
 }
 

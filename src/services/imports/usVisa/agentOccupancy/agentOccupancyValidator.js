@@ -1,6 +1,7 @@
 const VALID_GRAINS = new Set([
   "AGENT_OCCUPANCY_DAY",
   "AGENT_OCCUPANCY_PERIOD",
+  "AGENT_OCCUPANCY_15_MINUTE",
 ]);
 
 const NUMERIC_FIELDS = [
@@ -90,6 +91,10 @@ export function validateCanonicalAgentOccupancyRow(row = {}) {
     errors.push(makeIssue("source_agent_key", "MISSING_REQUIRED_VALUE", row.source_agent_key, "A source agent identity is required."));
   }
 
+  if (isBlank(row.task_order_id)) {
+    errors.push(makeIssue("task_order_id", "MISSING_REQUIRED_VALUE", row.task_order_id, "task_order_id is required."));
+  }
+
   if (row.data_grain === "AGENT_OCCUPANCY_DAY") {
     if (!isValidDate(row.production_date)) {
       errors.push(makeIssue("production_date", "INVALID_DATE", row.production_date, "production_date must be a valid date for daily Occupancy rows."));
@@ -97,18 +102,32 @@ export function validateCanonicalAgentOccupancyRow(row = {}) {
   }
 
   if (row.data_grain === "AGENT_OCCUPANCY_PERIOD") {
-    if (!isValidDate(row.report_date_from)) {
-      errors.push(makeIssue("report_date_from", "INVALID_DATE", row.report_date_from, "report_date_from must be a valid date for period Occupancy rows."));
+    const hasFrom = !isBlank(row.report_date_from);
+    const hasTo = !isBlank(row.report_date_to);
+    if (hasFrom !== hasTo) {
+      errors.push(makeIssue("report_date_from", "REPORTING_PERIOD_INCOMPLETE", row.report_date_from, "Period Occupancy requires both report dates when either is supplied."));
+    } else if (hasFrom && hasTo) {
+      if (!isValidDate(row.report_date_from)) {
+        errors.push(makeIssue("report_date_from", "INVALID_DATE", row.report_date_from, "report_date_from must be a valid date for period Occupancy rows."));
+      }
+      if (!isValidDate(row.report_date_to)) {
+        errors.push(makeIssue("report_date_to", "INVALID_DATE", row.report_date_to, "report_date_to must be a valid date for period Occupancy rows."));
+      }
+      if (isValidDate(row.report_date_from) && isValidDate(row.report_date_to) && row.report_date_from > row.report_date_to) {
+        errors.push(makeIssue("report_date_to", "INVALID_DATE_RANGE", row.report_date_to, "report_date_to cannot be earlier than report_date_from."));
+      }
     }
-    if (!isValidDate(row.report_date_to)) {
-      errors.push(makeIssue("report_date_to", "INVALID_DATE", row.report_date_to, "report_date_to must be a valid date for period Occupancy rows."));
+  }
+
+  if (row.data_grain === "AGENT_OCCUPANCY_15_MINUTE") {
+    if (!isValidDate(row.production_date)) {
+      errors.push(makeIssue("production_date", "INVALID_DATE", row.production_date, "production_date must be a valid source date for 15-minute Occupancy rows."));
     }
-    if (
-      isValidDate(row.report_date_from) &&
-      isValidDate(row.report_date_to) &&
-      row.report_date_from > row.report_date_to
-    ) {
-      errors.push(makeIssue("report_date_to", "INVALID_DATE_RANGE", row.report_date_to, "report_date_to cannot be earlier than report_date_from."));
+    if (isBlank(row.interval_start_utc)) {
+      errors.push(makeIssue("interval_start_utc", "MISSING_REQUIRED_VALUE", row.interval_start_utc, "interval_start_utc is required for 15-minute Occupancy rows."));
+    }
+    if (isBlank(row.source_timezone)) {
+      errors.push(makeIssue("source_timezone", "MISSING_REQUIRED_VALUE", row.source_timezone, "source_timezone is required for 15-minute Occupancy rows."));
     }
   }
 
