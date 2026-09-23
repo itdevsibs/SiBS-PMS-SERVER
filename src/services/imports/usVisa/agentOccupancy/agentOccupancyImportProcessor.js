@@ -361,6 +361,7 @@ async function processChunk({
       const mappingIssue = buildOccupancyMappingIssue(row, context);
       errors.push(mappingIssue);
       if (mappingIssue.severity === "WARNING") counters.warningRows += 1;
+      else if (mappingIssue.severity === "INFO") counters.infoRows = (counters.infoRows || 0) + 1;
     }
   }
 

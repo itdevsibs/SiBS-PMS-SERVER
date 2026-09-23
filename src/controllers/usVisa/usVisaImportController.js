@@ -39,6 +39,7 @@ function pickBatchResponse(batch = {}) {
     invalidRows: batch.invalidRows,
     duplicateRows: batch.duplicateRows,
     warningRows: batch.warningRows,
+    infoRows: batch.infoRows ?? 0,
     uploadedBy: batch.uploadedBy,
     errorMessage: batch.errorMessage,
     createdAt: batch.createdAt,
