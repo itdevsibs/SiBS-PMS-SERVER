@@ -203,8 +203,61 @@ router.get("/ledger", async (req, res, next) => {
       employeesQuery += ` WHERE ${whereClauses.join(" AND ")}`;
     }
 
-    employeesQuery += ` ORDER BY gy_emp_id DESC LIMIT ? OFFSET ?`;
-    const [employees] = await kronosDb.query(employeesQuery, [...queryParams, limit, offset]);
+    // Sort by tool aliases if requested
+    const sortBy = String(req.query.sortBy || "").toLowerCase().trim();
+    const sortOrder = String(req.query.sortOrder || "desc").toLowerCase().trim() === "asc" ? "asc" : "desc";
+
+    const validSortTools = {
+      fusecom: { type: "FUSECOM_NAME", src: "FUSECOM" },
+      fusenet: { type: "FUSENET_NAME", src: "FUSENET" },
+      herodash: { type: "HERODASH_NAME", src: "HERODASH" },
+    };
+
+    let sortOrderByClause = "gy_emp_id DESC";
+    const sortQueryParams = [];
+
+    if (validSortTools[sortBy]) {
+      const toolCfg = validSortTools[sortBy];
+      const [toolAliasRows] = await pmsDb.query(
+        `SELECT DISTINCT employee_uid, alias_value 
+         FROM ${pmsTables.usVisaEmployeeAliases} 
+         WHERE (alias_type = ? OR (source_system = ? AND alias_type = 'AGENT_NAME')) 
+           AND is_active = 1 
+           AND TRIM(alias_value) != ''
+         ORDER BY alias_value ASC`,
+        [toolCfg.type, toolCfg.src],
+      );
+
+      const uidMap = new Map();
+      for (const row of toolAliasRows) {
+        const uidStr = String(row.employee_uid || "").trim();
+        if (uidStr && !uidMap.has(uidStr)) {
+          uidMap.set(uidStr, row.alias_value);
+        }
+      }
+      const sortedUids = Array.from(uidMap.keys());
+
+      if (sortedUids.length > 0) {
+        const inPlaceholders = sortedUids.map(() => "?").join(", ");
+        if (sortOrder === "desc") {
+          // Aliases first (0), ordered by alias name, then no-aliases (1) by gy_emp_id DESC
+          sortOrderByClause = `CASE WHEN gy_emp_code IN (${inPlaceholders}) THEN 0 ELSE 1 END ASC, FIELD(gy_emp_code, ${inPlaceholders}) ASC, gy_emp_id DESC`;
+          sortQueryParams.push(...sortedUids, ...sortedUids);
+        } else {
+          // No-aliases first (0), then aliases (1), ordered by alias name
+          sortOrderByClause = `CASE WHEN gy_emp_code IN (${inPlaceholders}) THEN 1 ELSE 0 END ASC, FIELD(gy_emp_code, ${inPlaceholders}) ASC, gy_emp_id DESC`;
+          sortQueryParams.push(...sortedUids, ...sortedUids);
+        }
+      }
+    }
+
+    employeesQuery += ` ORDER BY ${sortOrderByClause} LIMIT ? OFFSET ?`;
+    const [employees] = await kronosDb.query(employeesQuery, [
+      ...queryParams,
+      ...sortQueryParams,
+      limit,
+      offset,
+    ]);
 
     if (employees.length === 0) {
       return res.json({
@@ -377,49 +430,85 @@ router.put("/ledger/:sibsId", async (req, res, next) => {
 
       const upsertAlias = async (aliasType, sourceSystem, value) => {
         const trimmed = String(value || "").trim();
-        if (!trimmed) return;
-
         const normalized = normalizeValue(trimmed);
 
-        // Deactivate older active alias for this specific type & system
-        await connection.query(
+        // Check if an alias record already exists for this employee, tool type, and source
+        const [existing] = await connection.query(
           `
-            UPDATE ${pmsTables.usVisaEmployeeAliases}
-            SET is_active = 0
+            SELECT id FROM ${pmsTables.usVisaEmployeeAliases}
             WHERE employee_uid = ? AND alias_type = ? AND source_system = ?
+            ORDER BY id ASC
           `,
           [sibsId, aliasType, sourceSystem],
         );
 
-        // Insert new active alias
-        await connection.query(
-          `
-            INSERT INTO ${pmsTables.usVisaEmployeeAliases}
-              (employee_uid, alias_type, source_system, alias_value, normalized_alias_value, is_active)
-            VALUES (?, ?, ?, ?, ?, 1)
-            ON DUPLICATE KEY UPDATE
-              alias_value = VALUES(alias_value),
-              normalized_alias_value = VALUES(normalized_alias_value),
-              is_active = 1,
-              updated_at = CURRENT_TIMESTAMP
-          `,
-          [sibsId, aliasType, sourceSystem, trimmed, normalized],
-        );
+        if (existing.length > 0) {
+          const targetId = existing[0].id;
+
+          if (!trimmed) {
+            // Deactivate and clear the existing record in-place
+            await connection.query(
+              `
+                UPDATE ${pmsTables.usVisaEmployeeAliases}
+                SET alias_value = '',
+                    normalized_alias_value = '',
+                    is_active = 0,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+              `,
+              [targetId],
+            );
+          } else {
+            // Update the existing record in-place (no new row, no auto-increment)
+            await connection.query(
+              `
+                UPDATE ${pmsTables.usVisaEmployeeAliases}
+                SET alias_value = ?,
+                    normalized_alias_value = ?,
+                    is_active = 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+              `,
+              [trimmed, normalized, targetId],
+            );
+          }
+
+          // Clean up any extraneous duplicate rows if they exist
+          if (existing.length > 1) {
+            await connection.query(
+              `
+                DELETE FROM ${pmsTables.usVisaEmployeeAliases}
+                WHERE employee_uid = ? AND alias_type = ? AND source_system = ? AND id != ?
+              `,
+              [sibsId, aliasType, sourceSystem, targetId],
+            );
+          }
+        } else if (trimmed) {
+          // Only insert if no record exists yet and a value is supplied
+          await connection.query(
+            `
+              INSERT INTO ${pmsTables.usVisaEmployeeAliases}
+                (employee_uid, alias_type, source_system, alias_value, normalized_alias_value, is_active)
+              VALUES (?, ?, ?, ?, ?, 1)
+            `,
+            [sibsId, aliasType, sourceSystem, trimmed, normalized],
+          );
+        }
       };
 
-      if (phoneId) {
+      if (phoneId !== undefined) {
         await upsertAlias("PERSONAL_ID", "GLOBAL", phoneId);
       }
-      if (agentLogin) {
+      if (agentLogin !== undefined) {
         await upsertAlias("AGENT_LOGIN", "GLOBAL", agentLogin);
       }
-      if (fusecomName) {
+      if (fusecomName !== undefined) {
         await upsertAlias("FUSECOM_NAME", "FUSECOM", fusecomName);
       }
-      if (fusenetName) {
+      if (fusenetName !== undefined) {
         await upsertAlias("FUSENET_NAME", "FUSENET", fusenetName);
       }
-      if (herodashName) {
+      if (herodashName !== undefined) {
         await upsertAlias("HERODASH_NAME", "HERODASH", herodashName);
       }
 
