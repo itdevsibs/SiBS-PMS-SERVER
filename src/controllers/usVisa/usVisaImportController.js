@@ -10,6 +10,12 @@ import {
   WORKBOOK_READER_ERROR_CODES,
 } from "../../services/imports/shared/workbookReaderService.js";
 import {
+  completeImportProgress,
+  failImportProgress,
+  getImportProgress,
+  initializeImportProgress,
+} from "../../services/imports/usVisa/importProgressTracker.js";
+import {
   deleteBatchById,
   findBatchByIdOrCode,
   getBatchById,
@@ -225,10 +231,23 @@ async function removeUploadedFile(file) {
 }
 
 export async function uploadUsVisaImport(req, res) {
+  const progressToken = String(req.body?.progressToken || "").trim();
+
+  if (progressToken) {
+    initializeImportProgress(progressToken, {
+      stage: "reading",
+      percent: 22,
+      message: "Upload received. Reading workbook.",
+    });
+  }
+
   try {
     const importProfileId = String(req.body?.importProfileId || "").trim();
 
     if (!importProfileId) {
+      failImportProgress(progressToken, {
+        message: "importProfileId is required.",
+      });
       return res.status(400).json({
         success: false,
         code: "IMPORT_PROFILE_REQUIRED",
@@ -242,10 +261,14 @@ export async function uploadUsVisaImport(req, res) {
       taskOrderId: String(req.body?.taskOrderId || "").trim(),
       reportDateFrom: req.body?.reportDateFrom,
       reportDateTo: req.body?.reportDateTo,
+      progressToken,
       user: req.user,
     });
 
     if (result.duplicate) {
+      completeImportProgress(progressToken, {
+        message: "Duplicate file detected. No new import was created.",
+      });
       return res.status(409).json({
         success: false,
         duplicate: true,
@@ -260,6 +283,9 @@ export async function uploadUsVisaImport(req, res) {
     }
 
     if (result.rejected) {
+      failImportProgress(progressToken, {
+        message: getFatalMessage(result),
+      });
       return res.status(400).json({
         success: false,
         code: getFatalCode(result),
@@ -268,6 +294,9 @@ export async function uploadUsVisaImport(req, res) {
     }
 
     if (result.batch?.status === "FAILED") {
+      failImportProgress(progressToken, {
+        message: getFatalMessage(result),
+      });
       return res.status(400).json({
         success: false,
         code: getFatalCode(result),
@@ -275,6 +304,12 @@ export async function uploadUsVisaImport(req, res) {
         batch: pickBatchResponse(result.batch),
       });
     }
+
+    completeImportProgress(progressToken, {
+      message: "Import completed successfully.",
+      processedRows: result.batch?.totalRows ?? null,
+      totalRows: result.batch?.totalRows ?? null,
+    });
 
     return res.status(200).json({
       success: true,
@@ -289,6 +324,9 @@ export async function uploadUsVisaImport(req, res) {
     });
 
     if (error instanceof WorkbookReaderError) {
+      failImportProgress(progressToken, {
+        message: getWorkbookReaderPublicMessage(error.code),
+      });
       return res.status(400).json({
         success: false,
         code: error.code,
@@ -297,12 +335,19 @@ export async function uploadUsVisaImport(req, res) {
     }
 
     if (error instanceof UsVisaImportError) {
+      failImportProgress(progressToken, {
+        message: error.message,
+      });
       return res.status(400).json({
         success: false,
         code: error.code,
         message: error.message,
       });
     }
+
+    failImportProgress(progressToken, {
+      message: "Import failed while processing the uploaded file.",
+    });
 
     return res.status(500).json({
       success: false,
@@ -312,6 +357,23 @@ export async function uploadUsVisaImport(req, res) {
   } finally {
     await removeUploadedFile(req.file);
   }
+}
+
+export async function getUsVisaImportProgress(req, res) {
+  const progress = getImportProgress(req.params.progressToken);
+
+  if (!progress) {
+    return res.status(404).json({
+      success: false,
+      code: "IMPORT_PROGRESS_NOT_FOUND",
+      message: "Import progress is not available yet.",
+    });
+  }
+
+  return res.json({
+    success: true,
+    progress,
+  });
 }
 
 export async function listUsVisaImportHistory(req, res) {

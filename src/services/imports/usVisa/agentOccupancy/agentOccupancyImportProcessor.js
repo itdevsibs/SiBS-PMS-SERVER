@@ -408,6 +408,7 @@ export async function processAgentOccupancyWorkbook({
   taskOrderId,
   fileHash,
   sourceTimezone,
+  onProgress,
   dependencies: dependencyOverrides = {},
 }) {
   const sheet = workbookValidation?.sheets?.[0];
@@ -430,6 +431,9 @@ export async function processAgentOccupancyWorkbook({
     sourceTimezone,
   };
   const identitiesByKey = new Map();
+  const worksheet = workbook.getWorksheet(sheetName);
+  const totalRows = Math.max((worksheet?.rowCount || 0) - headerRowNumber, 0);
+  let identityRowsScanned = 0;
 
   const identityScan = await dependencies.iterateWorksheetRowChunks(
     workbook,
@@ -440,6 +444,15 @@ export async function processAgentOccupancyWorkbook({
         const identity = mapAgentOccupancyIdentity(sourceRow, [], mappingOptions);
         identitiesByKey.set(createAgentIdentityCacheKey(identity), identity);
       }
+      identityRowsScanned += rowChunk.length;
+      const ratio = totalRows > 0 ? Math.min(identityRowsScanned / totalRows, 1) : 1;
+      onProgress?.({
+        stage: "processing",
+        percent: 45 + Math.round(ratio * 10),
+        processedRows: null,
+        totalRows: null,
+        message: "Scanning occupancy employee identities.",
+      });
     },
   );
 
@@ -464,6 +477,14 @@ export async function processAgentOccupancyWorkbook({
   const scopeIndex = buildOccupancyScopeIndex(scopeAssignments);
   const employeeMetadataIndex = buildOccupancyEmployeeMetadataIndex(employeeMetadata);
   const seenRows = new Map();
+  let processedRows = 0;
+  onProgress?.({
+    stage: "processing",
+    percent: 58,
+    processedRows: 0,
+    totalRows,
+    message: "Employee identities and scope resolved. Processing occupancy records.",
+  });
 
   if (profileCode === AGENT_OCCUPANCY_PROFILE_CODES.HERODASH) {
     await dependencies.insertImportErrors([
@@ -491,6 +512,15 @@ export async function processAgentOccupancyWorkbook({
         identityResolver,
         scopeIndex,
         employeeMetadataIndex,
+      });
+      processedRows += rowChunk.length;
+      const ratio = totalRows > 0 ? Math.min(processedRows / totalRows, 1) : 1;
+      onProgress?.({
+        stage: "processing",
+        percent: 58 + Math.round(ratio * 32),
+        processedRows,
+        totalRows,
+        message: "Processing occupancy records.",
       });
     },
   );

@@ -46,7 +46,7 @@ export async function insertRawImportRow(rawRow = {}) {
       rawRow.excelRowNumber,
       rawRow.dataGrain || null,
       serializeJson(rawRow.rowJson),
-      rawRow.rowIdentityHash ?? rawRow.rowHash,
+      rawRow.rowIdentityHash ?? rawRow.rowHash ?? null,
       rawRow.validationStatus || "PENDING",
     ],
   );
@@ -71,7 +71,7 @@ export async function insertRawImportRows(rawRows = []) {
     rawRow.excelRowNumber,
     rawRow.dataGrain || null,
     serializeJson(rawRow.rowJson),
-    rawRow.rowIdentityHash ?? rawRow.rowHash,
+    rawRow.rowIdentityHash ?? rawRow.rowHash ?? null,
     rawRow.validationStatus || "PENDING",
   ]);
 

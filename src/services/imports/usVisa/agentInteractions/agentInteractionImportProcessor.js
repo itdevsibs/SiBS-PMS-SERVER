@@ -81,6 +81,8 @@ async function collectUniqueAgentIdentities({
   workbook,
   workbookValidation,
   profileCode,
+  onProgress,
+  totalRows = 0,
 }) {
   const identitiesByKey = new Map();
   let scannedRows = 0;
@@ -119,6 +121,17 @@ async function collectUniqueAgentIdentities({
       });
       identitiesByKey.set(createAgentIdentityCacheKey(identity), identity);
       scannedRows += 1;
+
+      if (scannedRows % 1000 === 0) {
+        const ratio = totalRows > 0 ? Math.min(scannedRows / totalRows, 1) : 0;
+        onProgress?.({
+          stage: "processing",
+          percent: 45 + Math.round(ratio * 10),
+          processedRows: null,
+          totalRows: null,
+          message: "Scanning agent identities.",
+        });
+      }
     }
   }
 
@@ -498,26 +511,49 @@ export async function processAgentInteractionWorkbook({
   workbookValidation,
   counters,
   chunkSize,
+  onProgress,
 }) {
   const processorStartedAt = Date.now();
   const seenRows = new Map();
 
+  const totalRows = (workbookValidation.sheets || []).reduce((total, sheet) => {
+    const worksheet = workbook.getWorksheet(sheet.sheetName);
+    return total + Math.max((worksheet?.rowCount || 0) - (sheet.headerRowNumber || 1), 0);
+  }, 0);
   const identityCollectionStartedAt = Date.now();
   const identityCollection = await collectUniqueAgentIdentities({
     workbook,
     workbookValidation,
     profileCode,
+    onProgress,
+    totalRows,
   });
   const identityCollectionMs = Date.now() - identityCollectionStartedAt;
+  onProgress?.({
+    stage: "processing",
+    percent: 52,
+    processedRows: null,
+    totalRows: null,
+    message: "Scanning agent identities.",
+  });
 
   const identityResolutionStartedAt = Date.now();
   const identityResolver = await createBulkAgentIdentityResolver(
     identityCollection.identities,
   );
   const identityResolutionMs = Date.now() - identityResolutionStartedAt;
+  onProgress?.({
+    stage: "processing",
+    percent: 58,
+    processedRows: 0,
+    totalRows: identityCollection.scannedRows,
+    message: "Employee identities resolved. Processing agent interactions.",
+  });
 
   const rowProcessingStartedAt = Date.now();
   let processedChunks = 0;
+  let processedRows = 0;
+  const processingTotalRows = identityCollection.scannedRows || totalRows;
 
   for (const sheet of workbookValidation.sheets) {
     const headers = readHeaderRow(workbook, sheet.sheetName, sheet.headerRowNumber);
@@ -542,6 +578,17 @@ export async function processAgentInteractionWorkbook({
           identityResolver,
         });
         processedChunks += 1;
+        processedRows += rowChunk.length;
+        const ratio = processingTotalRows > 0
+          ? Math.min(processedRows / processingTotalRows, 1)
+          : 1;
+        onProgress?.({
+          stage: "processing",
+          percent: 58 + Math.round(ratio * 32),
+          processedRows,
+          totalRows: processingTotalRows,
+          message: "Processing agent interaction records.",
+        });
       },
     );
   }
