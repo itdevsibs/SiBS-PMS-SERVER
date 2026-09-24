@@ -5,6 +5,7 @@ import {
   deleteUsVisaImportBatch,
   getUsVisaImportBatchDetails,
   getUsVisaImportProgress,
+  getUsVisaImportRawData,
   getUsVisaImportSummary,
   listUsVisaImportBatchErrors,
   listUsVisaImportHistory,
@@ -98,6 +99,12 @@ router.get(
   "/imports/:batchId/errors",
   ...requireWfm,
   listUsVisaImportBatchErrors,
+);
+
+router.get(
+  "/imports/:batchId/raw-data",
+  ...requireWfm,
+  getUsVisaImportRawData,
 );
 
 router.post(
