@@ -57,11 +57,21 @@ import {
 } from "./workbookValidator.js";
 import { getUsVisaImportProcessor } from "./importProfileDispatcher.js";
 import { extractAgentOccupancyWorkbookMetadata } from "./agentOccupancy/agentOccupancyWorkbookMetadata.js";
-import { assertUsVisaTaskOrderForSource } from "../../../config/usVisaTaskOrders.js";
+import { validateEmailTaskOrderWorkbookStructure } from "./emailRawData/emailRawDataWorkbookValidator.js";
+import { updateImportProgress } from "./importProgressTracker.js";
+import {
+  assertUsVisaTaskOrder,
+  assertUsVisaTaskOrderForSource,
+} from "../../../config/usVisaTaskOrders.js";
 
 const DEFAULT_ROW_CHUNK_SIZE = 1000;
 const US_VISA_IMPORT_LOCK_NAME = "sibs:pms:us-visa:raw-import";
 const US_VISA_IMPORT_LOCK_TIMEOUT_SECONDS = 120;
+
+function reportImportProgress(progressToken, patch = {}) {
+  if (!progressToken) return null;
+  return updateImportProgress(progressToken, patch);
+}
 
 async function acquireUsVisaImportLock() {
   const connection = await pmsDb.getConnection();
@@ -631,6 +641,7 @@ async function processSheet({
   reportDateTo,
   counters,
   seenRows,
+  onChunkProcessed,
 }) {
   const headers = readHeaderRow(workbook, sheet.sheetName, sheet.headerRowNumber);
 
@@ -654,6 +665,7 @@ async function processSheet({
         counters,
         seenRows,
       });
+      onChunkProcessed?.(rowChunk.length);
     },
   );
 }
@@ -777,6 +789,7 @@ export async function importUsVisaRawWorkbook(options = {}) {
   const filePath = temporaryFile.path || options.filePath;
   let batch = null;
   const counters = createCounters();
+  const progressToken = String(options.progressToken || "").trim();
   let agentPerformance = null;
   let importLockConnection = null;
 
@@ -787,6 +800,12 @@ export async function importUsVisaRawWorkbook(options = {}) {
   }
 
   try {
+    reportImportProgress(progressToken, {
+      stage: "reading",
+      percent: 24,
+      message: "Preparing the uploaded workbook.",
+    });
+
     const fileHashStartedAt = Date.now();
     const fileHash = await calculateFileSha256(filePath);
     const fileHashMs = Date.now() - fileHashStartedAt;
@@ -798,7 +817,9 @@ export async function importUsVisaRawWorkbook(options = {}) {
     const isAgentLevel =
       String(profile.reportType || "").trim().toUpperCase() === "AGENT_LEVEL";
     const isAgentOccupancy = processor.domain === "AGENT_OCCUPANCY";
+    const isEmailRawData = processor.domain === "EMAIL_RAW_DATA";
     let occupancyTaskOrder = null;
+    let emailTaskOrder = null;
 
     if (isAgentOccupancy) {
       try {
@@ -811,6 +832,28 @@ export async function importUsVisaRawWorkbook(options = {}) {
           batch: null,
           rejected: true,
           code: error.code || "TASK_ORDER_MISMATCH",
+          message: error.message,
+          profile,
+          profileCode,
+          fileHash,
+          worksheetNames: [],
+          workbookValidation: null,
+          counters,
+        };
+      }
+    }
+
+    if (isEmailRawData) {
+      try {
+        emailTaskOrder = assertUsVisaTaskOrder(
+          options.taskOrderId,
+          "Email Raw Data imports",
+        );
+      } catch (error) {
+        return {
+          batch: null,
+          rejected: true,
+          code: error.code || "INVALID_TASK_ORDER",
           message: error.message,
           profile,
           profileCode,
@@ -857,8 +900,18 @@ export async function importUsVisaRawWorkbook(options = {}) {
     const heapBeforeWorkbookBytes = isAgentLevel
       ? process.memoryUsage().heapUsed
       : null;
+    reportImportProgress(progressToken, {
+      stage: "reading",
+      percent: 26,
+      message: "Reading workbook sheets and headers.",
+    });
     const workbookLoadStartedAt = Date.now();
     const workbook = await openWorkbook(filePath);
+    reportImportProgress(progressToken, {
+      stage: "reading",
+      percent: 30,
+      message: "Workbook loaded successfully.",
+    });
 
     if (agentPerformance) {
       agentPerformance.workbookLoadMs = Date.now() - workbookLoadStartedAt;
@@ -871,6 +924,11 @@ export async function importUsVisaRawWorkbook(options = {}) {
       options.reportDateFrom || workbookDateRange.reportDateFrom;
     const reportDateTo = options.reportDateTo || workbookDateRange.reportDateTo;
 
+    reportImportProgress(progressToken, {
+      stage: "validating",
+      percent: 34,
+      message: "Validating workbook structure and required fields.",
+    });
     const workbookValidationStartedAt = Date.now();
     const workbookValidation = validateWorkbookProfile(workbook, profileCode);
 
@@ -897,6 +955,35 @@ export async function importUsVisaRawWorkbook(options = {}) {
         counters,
       };
     }
+
+    if (isEmailRawData) {
+      const emailStructure = validateEmailTaskOrderWorkbookStructure(
+        workbookValidation,
+        emailTaskOrder?.id,
+      );
+
+      if (!emailStructure.isValid) {
+        return {
+          batch: null,
+          rejected: true,
+          code: emailStructure.errors[0]?.errorCode || "EMAIL_HEADER_STRUCTURE_MISMATCH",
+          message: emailStructure.errors[0]?.message || "Email workbook does not match the selected Task Order structure.",
+          profile,
+          profileCode,
+          fileHash,
+          worksheetNames: getWorksheetNames(workbook),
+          workbookValidation,
+          emailStructureValidation: emailStructure,
+          counters,
+        };
+      }
+    }
+
+    reportImportProgress(progressToken, {
+      stage: "validating",
+      percent: 40,
+      message: "Workbook structure validated.",
+    });
 
     let occupancyMetadata = null;
     if (isAgentOccupancy) {
@@ -946,6 +1033,14 @@ export async function importUsVisaRawWorkbook(options = {}) {
       }
     }
 
+    reportImportProgress(progressToken, {
+      stage: "processing",
+      percent: 44,
+      message: "Preparing normalized import records.",
+      processedRows: null,
+      totalRows: null,
+    });
+
     batch = await createBatch(
       getBatchCreateInput({
         profile,
@@ -956,7 +1051,7 @@ export async function importUsVisaRawWorkbook(options = {}) {
         fileHash,
         reportDateFrom,
         reportDateTo,
-        taskOrderId: occupancyTaskOrder?.id || null,
+        taskOrderId: occupancyTaskOrder?.id || emailTaskOrder?.id || null,
       }),
     );
 
@@ -977,9 +1072,14 @@ export async function importUsVisaRawWorkbook(options = {}) {
         workbookValidation,
         counters,
         chunkSize: getChunkSize(),
-        taskOrderId: occupancyTaskOrder?.id || batch.taskOrderId || null,
+        taskOrderId:
+          occupancyTaskOrder?.id ||
+          emailTaskOrder?.id ||
+          batch.taskOrderId ||
+          null,
         fileHash,
         sourceTimezone: occupancyMetadata?.sourceTimezone || null,
+        onProgress: (progress) => reportImportProgress(progressToken, progress),
       });
 
       if (agentPerformance) {
@@ -987,15 +1087,17 @@ export async function importUsVisaRawWorkbook(options = {}) {
       }
     } else {
       const seenRows = new Map();
+      const skillSheets = workbookValidation.sheets.filter((sheet) => !(
+        profileCode === IMPORT_PROFILE_CODES.FUSECOM_SKILL_STATISTICS_INBOUND &&
+        !isFusecom15MinuteSheet(sheet)
+      ));
+      const totalSkillRows = skillSheets.reduce((total, sheet) => {
+        const worksheet = workbook.getWorksheet(sheet.sheetName);
+        return total + Math.max((worksheet?.rowCount || 0) - (sheet.headerRowNumber || 1), 0);
+      }, 0);
+      let processedSkillRows = 0;
 
-      for (const sheet of workbookValidation.sheets) {
-        if (
-          profileCode === IMPORT_PROFILE_CODES.FUSECOM_SKILL_STATISTICS_INBOUND &&
-          !isFusecom15MinuteSheet(sheet)
-        ) {
-          continue;
-        }
-
+      for (const sheet of skillSheets) {
         await processSheet({
           workbook,
           batch,
@@ -1006,9 +1108,30 @@ export async function importUsVisaRawWorkbook(options = {}) {
           reportDateTo,
           counters,
           seenRows,
+          onChunkProcessed: (rowCount) => {
+            processedSkillRows += rowCount;
+            const ratio = totalSkillRows > 0
+              ? Math.min(processedSkillRows / totalSkillRows, 1)
+              : 1;
+            reportImportProgress(progressToken, {
+              stage: "processing",
+              percent: 45 + Math.round(ratio * 45),
+              processedRows: processedSkillRows,
+              totalRows: totalSkillRows,
+              message: "Processing service and queue-level records.",
+            });
+          },
         });
       }
     }
+
+    reportImportProgress(progressToken, {
+      stage: "finalizing",
+      percent: 94,
+      processedRows: counters.totalRows,
+      totalRows: counters.totalRows,
+      message: "Finalizing batch totals and import status.",
+    });
 
     const finalBatch = hasCompletedWithErrors(counters)
       ? await markBatchCompletedWithErrors(

@@ -52,6 +52,21 @@ export function getUsVisaTaskOrder(taskOrderId) {
   return id ? US_VISA_TASK_ORDERS[id] || null : null;
 }
 
+export function assertUsVisaTaskOrder(taskOrderId, contextLabel = "US Visa import") {
+  const id = normalizeUsVisaTaskOrderId(taskOrderId);
+  const taskOrder = id ? US_VISA_TASK_ORDERS[id] : null;
+
+  if (!taskOrder) {
+    const error = new Error(
+      id ? `Unknown US Visa Task Order ${id}.` : `Task Order is required for ${contextLabel}.`,
+    );
+    error.code = id ? "INVALID_TASK_ORDER" : "TASK_ORDER_REQUIRED";
+    throw error;
+  }
+
+  return taskOrder;
+}
+
 export function getAllowedUsVisaTaskOrdersForSource(sourceSystem) {
   const source = normalizeSourceSystem(sourceSystem);
   return Object.values(US_VISA_TASK_ORDERS).filter(

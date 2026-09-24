@@ -4,6 +4,7 @@ import express from "express";
 import {
   deleteUsVisaImportBatch,
   getUsVisaImportBatchDetails,
+  getUsVisaImportProgress,
   getUsVisaImportSummary,
   listUsVisaImportBatchErrors,
   listUsVisaImportHistory,
@@ -79,6 +80,12 @@ router.get(
   "/imports/summary",
   ...requireWfm,
   getUsVisaImportSummary,
+);
+
+router.get(
+  "/imports/progress/:progressToken",
+  ...requireWfm,
+  getUsVisaImportProgress,
 );
 
 router.get(

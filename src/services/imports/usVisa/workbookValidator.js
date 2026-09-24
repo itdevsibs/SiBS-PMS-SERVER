@@ -13,6 +13,7 @@ export const IMPORT_PROFILE_CODES = {
   FUSECOM_AGENT_OCCUPANCY: "FUSECOM_AGENT_OCCUPANCY",
   FUSENET_AGENT_OCCUPANCY: "FUSENET_AGENT_OCCUPANCY",
   HERODASH_AGENT_OCCUPANCY: "HERODASH_AGENT_OCCUPANCY",
+  US_VISA_EMAIL_RAW_DATA: "US_VISA_EMAIL_RAW_DATA",
 };
 
 export const WORKBOOK_VALIDATION_ERROR_CODES = {
@@ -263,6 +264,25 @@ const HERODASH_AGENT_OCCUPANCY_HEADERS = [
   "Inbound time",
 ];
 
+
+const EMAIL_RAW_DATA_COMMON_HEADERS = [
+  "(Do Not Modify) Case",
+  "(Do Not Modify) Row Checksum",
+  "(Do Not Modify) Modified On",
+  "Owner",
+  "Status",
+  "Modified By",
+  "Case Age",
+  "Created On",
+  "Resolution Date",
+  "Escalated On",
+];
+
+const EMAIL_RAW_DATA_VARIANT_HEADERS = [
+  "Case Number",
+  "Description",
+];
+
 export const WORKBOOK_PROFILE_DEFINITIONS = {
   [IMPORT_PROFILE_CODES.HERO_SKILL_STATISTICS_INBOUND]: {
     profileCode:
@@ -390,6 +410,21 @@ export const WORKBOOK_PROFILE_DEFINITIONS = {
         headerRowCandidates: [1],
         requiredHeaders: HERODASH_AGENT_OCCUPANCY_HEADERS,
         ignoredHeaders: HERODASH_AGENT_OCCUPANCY_HEADERS,
+      },
+    ],
+  },
+  [IMPORT_PROFILE_CODES.US_VISA_EMAIL_RAW_DATA]: {
+    profileCode: IMPORT_PROFILE_CODES.US_VISA_EMAIL_RAW_DATA,
+    sourceSystem: "EMAIL",
+    requiredSheets: [
+      {
+        sheetName: null,
+        sheetNameCandidates: ["Sheet1", "Email", "Email Raw Data"],
+        dataGrain: "EMAIL_CASE",
+        headerRowNumber: 1,
+        headerRowCandidates: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        requiredHeaders: EMAIL_RAW_DATA_COMMON_HEADERS,
+        ignoredHeaders: EMAIL_RAW_DATA_VARIANT_HEADERS,
       },
     ],
   },
