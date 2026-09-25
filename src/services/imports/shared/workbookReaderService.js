@@ -28,15 +28,78 @@ function isMissingFileError(error) {
   );
 }
 
+export function formatSourceValue(val) {
+  if (val === null || val === undefined) {
+    return val;
+  }
+
+  if (val instanceof Date && !Number.isNaN(val.getTime())) {
+    const year = val.getUTCFullYear();
+    if (year === 1899 || year === 1900) {
+      const epoch = Date.UTC(1899, 11, 30);
+      const totalSec = Math.round((val.getTime() - epoch) / 1000);
+      if (totalSec >= 0) {
+        const h = Math.floor(totalSec / 3600);
+        const m = Math.floor((totalSec % 3600) / 60);
+        const s = totalSec % 60;
+        return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+      }
+      return [val.getUTCHours(), val.getUTCMinutes(), val.getUTCSeconds()]
+        .map((n) => String(n).padStart(2, "0"))
+        .join(":");
+    }
+    const yyyy = val.getUTCFullYear();
+    const mm = String(val.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(val.getUTCDate()).padStart(2, "0");
+    const hh = String(val.getUTCHours()).padStart(2, "0");
+    const min = String(val.getUTCMinutes()).padStart(2, "0");
+    const ss = String(val.getUTCSeconds()).padStart(2, "0");
+
+    if (
+      val.getUTCHours() === 0 &&
+      val.getUTCMinutes() === 0 &&
+      val.getUTCSeconds() === 0 &&
+      val.getUTCMilliseconds() === 0
+    ) {
+      return `${yyyy}-${mm}-${dd}`;
+    }
+    return `${yyyy}-${mm}-${dd} ${hh}:${min}:${ss}`;
+  }
+
+  if (typeof val === "string") {
+    const match = val.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z?$/i);
+    if (match) {
+      const year = parseInt(match[1], 10);
+      if (year === 1899 || year === 1900) {
+        const d = new Date(val);
+        if (!Number.isNaN(d.getTime())) {
+          const epoch = Date.UTC(1899, 11, 30);
+          const totalSec = Math.round((d.getTime() - epoch) / 1000);
+          if (totalSec >= 0) {
+            const h = Math.floor(totalSec / 3600);
+            const m = Math.floor((totalSec % 3600) / 60);
+            const s = totalSec % 60;
+            return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+          }
+        }
+        return `${match[4]}:${match[5]}:${match[6]}`;
+      }
+      return `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}:${match[6]}`;
+    }
+  }
+
+  return val;
+}
+
 export function getCellSourceValue(cell) {
-  const value = cell?.value;
+  let value = cell?.value;
 
   if (
     value &&
     typeof value === "object" &&
     Object.prototype.hasOwnProperty.call(value, "result")
   ) {
-    return value.result;
+    value = value.result;
   }
 
   if (
@@ -55,7 +118,7 @@ export function getCellSourceValue(cell) {
     return value.richText.map((part) => part.text || "").join("");
   }
 
-  return value;
+  return formatSourceValue(value);
 }
 
 function isEmptySourceValue(value) {

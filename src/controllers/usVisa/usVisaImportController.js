@@ -8,6 +8,7 @@ import {
 import {
   WorkbookReaderError,
   WORKBOOK_READER_ERROR_CODES,
+  formatSourceValue,
 } from "../../services/imports/shared/workbookReaderService.js";
 import { pmsDb, pmsTables } from "../../config/db.js";
 import {
@@ -460,8 +461,11 @@ export async function getUsVisaImportBatchDetails(req, res) {
 
 export async function getUsVisaImportRawData(req, res) {
   try {
-    const { batchId } = req.params;
-    const batch = await findBatchByIdOrCode(batchId);
+    let rawBatchId = req.params.batchId;
+    if (typeof rawBatchId === "string" && rawBatchId.startsWith("batch-")) {
+      rawBatchId = rawBatchId.replace("batch-", "");
+    }
+    const batch = await findBatchByIdOrCode(rawBatchId);
 
     if (!batch) {
       return res.status(404).json({
@@ -471,7 +475,7 @@ export async function getUsVisaImportRawData(req, res) {
       });
     }
 
-    // 1. Get profile and check if Agent Level or Agent Occupancy
+    // 1. Get profile and check if Agent Level, Agent Occupancy, or Email Raw Data
     const [profileRows] = await pmsDb.query(
       `SELECT profile_code, profile_name, report_type FROM ${pmsTables.usVisaImportProfiles} WHERE id = ?`,
       [batch.importProfileId || batch.import_profile_id],
@@ -480,12 +484,20 @@ export async function getUsVisaImportRawData(req, res) {
     const reportType = profile.report_type || batch.importProfileReportType || "";
     const isAgentLevel = reportType === "AGENT_LEVEL";
     const isAgentOccupancy = reportType === "AGENT_OCCUPANCY";
-    const supportsSibsFilter = isAgentLevel || isAgentOccupancy;
+    const isEmailRawData =
+      reportType === "EMAIL_RAW_DATA" ||
+      profile.profile_code === "US_VISA_EMAIL_RAW_DATA" ||
+      batch.importProfileCode === "US_VISA_EMAIL_RAW_DATA";
+    const supportsSibsFilter = isAgentLevel || isAgentOccupancy || isEmailRawData;
     const mappingTable = isAgentLevel
       ? pmsTables.usVisaRawAgentInteractions
       : isAgentOccupancy
         ? pmsTables.usVisaRawAgentOccupancy
-        : null;
+        : isEmailRawData
+          ? pmsTables.usVisaRawEmailCases
+          : null;
+    const mappingStatusCol = isEmailRawData ? "modified_by_mapping_status" : "mapping_status";
+    const employeeUidCol = isEmailRawData ? "modified_by_employee_uid" : "employee_uid";
 
     // 2. Get available sheets for this batch
     const [sheetRows] = await pmsDb.query(
@@ -513,8 +525,8 @@ export async function getUsVisaImportRawData(req, res) {
         const [countsRow] = await pmsDb.query(
           `SELECT 
              COUNT(*) AS all_count,
-             SUM(CASE WHEN m.mapping_status = 'MATCHED' THEN 1 ELSE 0 END) AS sibs_count,
-             SUM(CASE WHEN m.mapping_status != 'MATCHED' OR m.mapping_status IS NULL THEN 1 ELSE 0 END) AS non_sibs_count
+             SUM(CASE WHEN m.${mappingStatusCol} = 'MATCHED' THEN 1 ELSE 0 END) AS sibs_count,
+             SUM(CASE WHEN m.${mappingStatusCol} != 'MATCHED' OR m.${mappingStatusCol} IS NULL THEN 1 ELSE 0 END) AS non_sibs_count
            FROM ${pmsTables.usVisaRawImportRows} r
            LEFT JOIN ${mappingTable} m ON m.raw_import_row_id = r.id
            WHERE r.batch_id = ? AND r.sheet_name = ?`,
@@ -542,9 +554,9 @@ export async function getUsVisaImportRawData(req, res) {
 
     if (supportsSibsFilter && mappingTable) {
       if (sibsFilter === "SIBS") {
-        countSql += ` AND m.mapping_status = 'MATCHED'`;
+        countSql += ` AND m.${mappingStatusCol} = 'MATCHED'`;
       } else if (sibsFilter === "NON_SIBS" || sibsFilter === "NON-SIBS") {
-        countSql += ` AND (m.mapping_status != 'MATCHED' OR m.mapping_status IS NULL)`;
+        countSql += ` AND (m.${mappingStatusCol} != 'MATCHED' OR m.${mappingStatusCol} IS NULL)`;
       }
     }
 
@@ -567,7 +579,7 @@ export async function getUsVisaImportRawData(req, res) {
         r.validation_status
     `;
     if (supportsSibsFilter && mappingTable) {
-      rowsSql += `, m.mapping_status, m.employee_uid`;
+      rowsSql += `, m.${mappingStatusCol} AS mapping_status, m.${employeeUidCol} AS employee_uid`;
     }
     rowsSql += `
       FROM ${pmsTables.usVisaRawImportRows} r
@@ -580,9 +592,9 @@ export async function getUsVisaImportRawData(req, res) {
 
     if (supportsSibsFilter && mappingTable) {
       if (sibsFilter === "SIBS") {
-        rowsSql += ` AND m.mapping_status = 'MATCHED'`;
+        rowsSql += ` AND m.${mappingStatusCol} = 'MATCHED'`;
       } else if (sibsFilter === "NON_SIBS" || sibsFilter === "NON-SIBS") {
-        rowsSql += ` AND (m.mapping_status != 'MATCHED' OR m.mapping_status IS NULL)`;
+        rowsSql += ` AND (m.${mappingStatusCol} != 'MATCHED' OR m.${mappingStatusCol} IS NULL)`;
       }
     }
 
@@ -622,10 +634,29 @@ export async function getUsVisaImportRawData(req, res) {
       }
     }
 
+    if (isEmailRawData) {
+      headers = headers.filter(
+        (h) => !String(h || "").trim().toLowerCase().startsWith("(do not modify)"),
+      );
+    }
+
     const rows = rawRows.map((r) => {
       let data = {};
       try {
-        data = typeof r.row_json === "string" ? JSON.parse(r.row_json) : r.row_json;
+        const parsed = typeof r.row_json === "string" ? JSON.parse(r.row_json) : r.row_json;
+        if (parsed && typeof parsed === "object") {
+          for (const [k, v] of Object.entries(parsed)) {
+            if (
+              isEmailRawData &&
+              String(k || "").trim().toLowerCase().startsWith("(do not modify)")
+            ) {
+              continue;
+            }
+            data[k] = formatSourceValue(v);
+          }
+        } else {
+          data = parsed || {};
+        }
       } catch {}
       return {
         id: r.id,
