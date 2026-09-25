@@ -116,7 +116,7 @@ function getDashboardPath(adminAccess) {
       return "/dashboard/tl";
 
     case 9:
-      return "/dashboard/wfm";
+      return "/dashboard/wfm/view-graphs";
 
     case 10:
       return "/dashboard/som";

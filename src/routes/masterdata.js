@@ -53,7 +53,7 @@ router.get("/ledger", async (req, res, next) => {
     const account = String(req.query.account || "").trim();
     const viewAll = req.query.viewAll === "true";
     const page = Math.max(Number(req.query.page) || 1, 1);
-    const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 200);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 10000);
     const offset = (page - 1) * limit;
 
     const hasFilter = filter && filter !== "all";

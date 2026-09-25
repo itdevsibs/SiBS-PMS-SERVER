@@ -8,7 +8,9 @@ import {
 import {
   WorkbookReaderError,
   WORKBOOK_READER_ERROR_CODES,
+  formatSourceValue,
 } from "../../services/imports/shared/workbookReaderService.js";
+import { pmsDb, pmsTables } from "../../config/db.js";
 import {
   completeImportProgress,
   failImportProgress,
@@ -453,6 +455,246 @@ export async function getUsVisaImportBatchDetails(req, res) {
       success: false,
       code: "IMPORT_BATCH_DETAIL_ERROR",
       message: "Unable to fetch import batch details.",
+    });
+  }
+}
+
+export async function getUsVisaImportRawData(req, res) {
+  try {
+    let rawBatchId = req.params.batchId;
+    if (typeof rawBatchId === "string" && rawBatchId.startsWith("batch-")) {
+      rawBatchId = rawBatchId.replace("batch-", "");
+    }
+    const batch = await findBatchByIdOrCode(rawBatchId);
+
+    if (!batch) {
+      return res.status(404).json({
+        success: false,
+        code: "IMPORT_BATCH_NOT_FOUND",
+        message: "Import batch was not found.",
+      });
+    }
+
+    // 1. Get profile and check if Agent Level, Agent Occupancy, or Email Raw Data
+    const [profileRows] = await pmsDb.query(
+      `SELECT profile_code, profile_name, report_type FROM ${pmsTables.usVisaImportProfiles} WHERE id = ?`,
+      [batch.importProfileId || batch.import_profile_id],
+    );
+    const profile = profileRows[0] || {};
+    const reportType = profile.report_type || batch.importProfileReportType || "";
+    const isAgentLevel = reportType === "AGENT_LEVEL";
+    const isAgentOccupancy = reportType === "AGENT_OCCUPANCY";
+    const isEmailRawData =
+      reportType === "EMAIL_RAW_DATA" ||
+      profile.profile_code === "US_VISA_EMAIL_RAW_DATA" ||
+      batch.importProfileCode === "US_VISA_EMAIL_RAW_DATA";
+    const supportsSibsFilter = isAgentLevel || isAgentOccupancy || isEmailRawData;
+    const mappingTable = isAgentLevel
+      ? pmsTables.usVisaRawAgentInteractions
+      : isAgentOccupancy
+        ? pmsTables.usVisaRawAgentOccupancy
+        : isEmailRawData
+          ? pmsTables.usVisaRawEmailCases
+          : null;
+    const mappingStatusCol = isEmailRawData ? "modified_by_mapping_status" : "mapping_status";
+    const employeeUidCol = isEmailRawData ? "modified_by_employee_uid" : "employee_uid";
+
+    // 2. Get available sheets for this batch
+    const [sheetRows] = await pmsDb.query(
+      `SELECT DISTINCT sheet_name FROM ${pmsTables.usVisaRawImportRows} WHERE batch_id = ? ORDER BY sheet_name ASC`,
+      [batch.id],
+    );
+    const sheets = sheetRows.map((r) => r.sheet_name).filter(Boolean);
+    const selectedSheet =
+      req.query.sheet && sheets.includes(req.query.sheet)
+        ? req.query.sheet
+        : sheets[0] || "Sheet1";
+
+    // 3. Pagination, Search & SIBS filter
+    const isExport = req.query.exportAll === "true" || req.query.isExport === "true";
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = isExport ? 200000 : Math.min(200, Math.max(10, parseInt(req.query.limit, 10) || 50));
+    const offset = isExport ? 0 : (page - 1) * limit;
+    const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
+    const sibsFilter = typeof req.query.sibsFilter === "string" ? req.query.sibsFilter.trim().toUpperCase() : "ALL";
+
+    // 4. SIBS & Non-SIBS breakdown counts for this sheet
+    let sibsCounts = { all: 0, sibs: 0, nonSibs: 0 };
+    if (supportsSibsFilter && mappingTable) {
+      try {
+        const [countsRow] = await pmsDb.query(
+          `SELECT 
+             COUNT(*) AS all_count,
+             SUM(CASE WHEN m.${mappingStatusCol} = 'MATCHED' THEN 1 ELSE 0 END) AS sibs_count,
+             SUM(CASE WHEN m.${mappingStatusCol} != 'MATCHED' OR m.${mappingStatusCol} IS NULL THEN 1 ELSE 0 END) AS non_sibs_count
+           FROM ${pmsTables.usVisaRawImportRows} r
+           LEFT JOIN ${mappingTable} m ON m.raw_import_row_id = r.id
+           WHERE r.batch_id = ? AND r.sheet_name = ?`,
+          [batch.id, selectedSheet],
+        );
+        if (countsRow[0]) {
+          sibsCounts = {
+            all: Number(countsRow[0].all_count) || 0,
+            sibs: Number(countsRow[0].sibs_count) || 0,
+            nonSibs: Number(countsRow[0].non_sibs_count) || 0,
+          };
+        }
+      } catch (countErr) {
+        console.warn("Could not calculate sibsCounts:", countErr?.message);
+      }
+    }
+
+    // 5. Count total matching rows
+    let countSql = `SELECT COUNT(*) AS total FROM ${pmsTables.usVisaRawImportRows} r`;
+    if (supportsSibsFilter && mappingTable) {
+      countSql += ` LEFT JOIN ${mappingTable} m ON m.raw_import_row_id = r.id`;
+    }
+    countSql += ` WHERE r.batch_id = ? AND r.sheet_name = ?`;
+    const countParams = [batch.id, selectedSheet];
+
+    if (supportsSibsFilter && mappingTable) {
+      if (sibsFilter === "SIBS") {
+        countSql += ` AND m.${mappingStatusCol} = 'MATCHED'`;
+      } else if (sibsFilter === "NON_SIBS" || sibsFilter === "NON-SIBS") {
+        countSql += ` AND (m.${mappingStatusCol} != 'MATCHED' OR m.${mappingStatusCol} IS NULL)`;
+      }
+    }
+
+    if (search) {
+      countSql += ` AND r.row_json LIKE ?`;
+      countParams.push(`%${search}%`);
+    }
+
+    const [countResult] = await pmsDb.query(countSql, countParams);
+    const totalRows = countResult[0]?.total || 0;
+    const totalPages = Math.ceil(totalRows / limit) || 1;
+
+    // 6. Query paginated raw rows
+    let rowsSql = `
+      SELECT 
+        r.id, 
+        r.sheet_name, 
+        r.excel_row_number, 
+        r.row_json, 
+        r.validation_status
+    `;
+    if (supportsSibsFilter && mappingTable) {
+      rowsSql += `, m.${mappingStatusCol} AS mapping_status, m.${employeeUidCol} AS employee_uid`;
+    }
+    rowsSql += `
+      FROM ${pmsTables.usVisaRawImportRows} r
+    `;
+    if (supportsSibsFilter && mappingTable) {
+      rowsSql += ` LEFT JOIN ${mappingTable} m ON m.raw_import_row_id = r.id`;
+    }
+    rowsSql += ` WHERE r.batch_id = ? AND r.sheet_name = ?`;
+    const rowsParams = [batch.id, selectedSheet];
+
+    if (supportsSibsFilter && mappingTable) {
+      if (sibsFilter === "SIBS") {
+        rowsSql += ` AND m.${mappingStatusCol} = 'MATCHED'`;
+      } else if (sibsFilter === "NON_SIBS" || sibsFilter === "NON-SIBS") {
+        rowsSql += ` AND (m.${mappingStatusCol} != 'MATCHED' OR m.${mappingStatusCol} IS NULL)`;
+      }
+    }
+
+    if (search) {
+      rowsSql += ` AND r.row_json LIKE ?`;
+      rowsParams.push(`%${search}%`);
+    }
+
+    rowsSql += ` ORDER BY r.excel_row_number ASC LIMIT ? OFFSET ?`;
+    rowsParams.push(limit, offset);
+
+    const [rawRows] = await pmsDb.query(rowsSql, rowsParams);
+
+    // 7. Extract headers preserving order
+    let headers = [];
+    if (rawRows.length > 0) {
+      const headerSet = new Set();
+      for (const r of rawRows) {
+        try {
+          const parsed = typeof r.row_json === "string" ? JSON.parse(r.row_json) : r.row_json;
+          if (parsed && typeof parsed === "object") {
+            Object.keys(parsed).forEach((k) => headerSet.add(k));
+          }
+        } catch {}
+      }
+      headers = Array.from(headerSet);
+    } else if (totalRows > 0) {
+      const [sample] = await pmsDb.query(
+        `SELECT row_json FROM ${pmsTables.usVisaRawImportRows} WHERE batch_id = ? AND sheet_name = ? LIMIT 1`,
+        [batch.id, selectedSheet],
+      );
+      if (sample[0]?.row_json) {
+        try {
+          const parsed = JSON.parse(sample[0].row_json);
+          headers = Object.keys(parsed);
+        } catch {}
+      }
+    }
+
+    if (isEmailRawData) {
+      headers = headers.filter(
+        (h) => !String(h || "").trim().toLowerCase().startsWith("(do not modify)"),
+      );
+    }
+
+    const rows = rawRows.map((r) => {
+      let data = {};
+      try {
+        const parsed = typeof r.row_json === "string" ? JSON.parse(r.row_json) : r.row_json;
+        if (parsed && typeof parsed === "object") {
+          for (const [k, v] of Object.entries(parsed)) {
+            if (
+              isEmailRawData &&
+              String(k || "").trim().toLowerCase().startsWith("(do not modify)")
+            ) {
+              continue;
+            }
+            data[k] = formatSourceValue(v);
+          }
+        } else {
+          data = parsed || {};
+        }
+      } catch {}
+      return {
+        id: r.id,
+        excelRowNumber: r.excel_row_number,
+        sheetName: r.sheet_name,
+        validationStatus: r.validation_status,
+        mappingStatus: r.mapping_status || null,
+        isSibs: r.mapping_status === "MATCHED",
+        employeeUid: r.employee_uid || null,
+        data,
+      };
+    });
+
+    return res.json({
+      success: true,
+      batch: pickBatchResponse(batch),
+      reportType,
+      supportsSibsFilter,
+      sibsFilter,
+      sibsCounts,
+      sheets,
+      activeSheet: selectedSheet,
+      headers,
+      pagination: {
+        page,
+        limit,
+        totalRows,
+        totalPages,
+        search,
+      },
+      rows,
+    });
+  } catch (error) {
+    console.error("GET /api/us-visa/imports/:batchId/raw-data error:", error);
+    return res.status(500).json({
+      success: false,
+      code: "GET_RAW_DATA_ERROR",
+      message: "Unable to load raw spreadsheet data.",
     });
   }
 }

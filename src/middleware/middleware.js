@@ -15,7 +15,7 @@ const ROLE_DASHBOARD_MAP = {
   6: "/dashboard/bod",
   5: "/dashboard/om",
   8: "/dashboard/tl",
-  9: "/dashboard/wfm",
+  9: "/dashboard/wfm/view-graphs",
   10: "/dashboard/som",
   11: "/dashboard/employee-master-data",
 };

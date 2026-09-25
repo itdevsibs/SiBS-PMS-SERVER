@@ -211,6 +211,11 @@ export async function getBatchById(batchId) {
 }
 
 export async function findBatchByIdOrCode(identifier) {
+  const cleanIdentifier =
+    typeof identifier === "string" && identifier.startsWith("batch-")
+      ? identifier.replace("batch-", "")
+      : identifier;
+
   const [rows] = await queryUsVisa(
     `
       SELECT
@@ -223,7 +228,7 @@ export async function findBatchByIdOrCode(identifier) {
       WHERE b.id = ? OR b.batch_code = ?
       LIMIT 1
     `,
-    [identifier, identifier],
+    [cleanIdentifier, cleanIdentifier],
   );
 
   return mapBatchRow(rows[0]);
