@@ -163,7 +163,7 @@ function appendSkillFilter({
   for (const item of skillsToProcess) {
     const key = item.toLowerCase().replace(/[\s_-]+/g, "");
 
-    if (key === "englishall" || key === "english") {
+    if (key === "englishall" || key === "english" || key === "allenglish") {
       skillClauses.push(
         "(s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?)",
       );
@@ -188,11 +188,64 @@ function appendSkillFilter({
         "(s.source_skill_name NOT LIKE ? AND (s.skill_group_name IS NULL OR s.skill_group_name NOT LIKE ?))",
       );
       skillValues.push("%English%", "%English%");
-    } else {
+    } else if (key === "nonenglishiv") {
       skillClauses.push(
-        "(s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?)",
+        "(s.source_skill_name NOT LIKE ? AND (s.skill_group_name IS NULL OR s.skill_group_name NOT LIKE ?) AND (s.source_skill_name REGEXP '(^|[^A-Za-z])IV($|[^A-Za-z])' OR s.skill_group_name REGEXP '(^|[^A-Za-z])IV($|[^A-Za-z])') AND s.source_skill_name NOT LIKE ? AND (s.skill_group_name IS NULL OR s.skill_group_name NOT LIKE ?))",
       );
-      skillValues.push(`%${item}%`, `%${item}%`);
+      skillValues.push("%English%", "%English%", "%NIV%", "%NIV%");
+    } else {
+      const clean = item.replace(/^.*?::\s*/, "").replace(/^(VCH|GSS)\s+/i, "").trim();
+      let country = "";
+      let language = "";
+      let queue = "";
+
+      const qMatch = clean.match(/\b(ACS|NIV|IV)\b/i);
+      if (qMatch) queue = qMatch[1].toUpperCase();
+
+      if (clean.includes("-")) {
+        const parts = clean.split("-");
+        country = parts[0].trim();
+        const rest = parts.slice(1).join("-").trim();
+        language = rest.replace(/\b(ACS|NIV|IV)\b/i, "").replace(/\bCALL\b/i, "").trim();
+      } else {
+        const words = clean.split(/\s+/);
+        if (words.length >= 2) {
+          country = words[0].replace(/_/g, " ").trim();
+          language = words.slice(1).join(" ").replace(/\b(ACS|NIV|IV)\b/i, "").trim();
+        }
+      }
+
+      const clauses = ["s.source_skill_name LIKE ?"];
+      const vals = [`%${item}%`];
+
+      if (country) {
+        const cPattern = `%${country.replace(/[\s_]+/g, "%")}%`;
+        const subClauses = ["s.source_skill_name LIKE ?"];
+        const subVals = [cPattern];
+
+        if (language) {
+          subClauses.push("(s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?)");
+          subVals.push(`%${language}%`, `%${language}%`);
+        }
+
+        if (queue) {
+          if (queue === "IV") {
+            subClauses.push("(s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?)");
+            subVals.push("%IV%", "%IV%");
+            subClauses.push("s.source_skill_name NOT LIKE ?");
+            subVals.push("%NIV%");
+          } else {
+            subClauses.push("(s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?)");
+            subVals.push(`%${queue}%`, `%${queue}%`);
+          }
+        }
+
+        clauses.push(`(${subClauses.join(" AND ")})`);
+        vals.push(...subVals);
+      }
+
+      skillClauses.push(`(${clauses.join(" OR ")})`);
+      skillValues.push(...vals);
     }
   }
 
@@ -497,4 +550,81 @@ export async function getDailyCallKpiRows({
       row.handle_seconds_denominator || 0,
     ),
   }));
+}
+
+export async function getDistinctSkillsByCountry() {
+  const [rows] = await pmsDb.query(`
+    SELECT DISTINCT
+      s.source_system,
+      s.country_region,
+      s.source_skill_name
+    FROM ${pmsTables.usVisaRawSkillStatistics} s
+    WHERE s.source_skill_name IS NOT NULL AND TRIM(s.source_skill_name) != ''
+    ORDER BY s.source_skill_name ASC
+  `);
+
+  const skillsByCountry = {};
+
+  for (const r of rows) {
+    const rawSkill = r.source_skill_name.trim();
+    const normalizedSkill = rawSkill
+      .replace(/\s+-\s+/, " - ")
+      .replace(/\s+/g, " ")
+      .replace(/\s+CALL\s+/i, " ")
+      .replace(/-CALL\s+/i, "- ");
+
+    let country = r.country_region ? r.country_region.trim() : "";
+    if (!country) {
+      const clean = normalizedSkill
+        .replace(/^.*?::\s*/, "")
+        .replace(/^(VCH|GSS)\s+/i, "")
+        .trim();
+      if (clean.includes("-")) {
+        country = clean.split("-")[0].trim();
+      } else {
+        const words = clean.split(/\s+/);
+        country = words[0].replace(/_/g, " ").trim();
+      }
+    }
+
+    country = country.replace(/&/g, " & ").replace(/\s+/g, " ").trim();
+    let normCountry = country
+      .split(" ")
+      .map((w) => {
+        if (w.toLowerCase() === "&" || w.toLowerCase() === "and") return "&";
+        if (w.toLowerCase() === "of") return "of";
+        return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+      })
+      .join(" ");
+
+    if (normCountry.toLowerCase() === "south korea") normCountry = "Korea";
+    if (
+      normCountry.toLowerCase() === "bosnia & herzegovina" ||
+      normCountry.toLowerCase() === "bosnia&herzegovina"
+    ) {
+      normCountry = "Bosnia and Herzegovina";
+    }
+    if (normCountry.toLowerCase() === "rep. of moldova") normCountry = "Moldova";
+
+    let displaySkill = normalizedSkill;
+    if (displaySkill.includes("-") && !displaySkill.startsWith("GSS 2.0 ::")) {
+      const parts = displaySkill.split("-");
+      displaySkill = `GSS 2.0 :: ${normCountry} - ${parts.slice(1).join("-").trim()}`;
+    }
+
+    if (!skillsByCountry[normCountry]) {
+      skillsByCountry[normCountry] = [];
+    }
+    const already = skillsByCountry[normCountry].some((s) => {
+      return (
+        s.toLowerCase().replace(/[^a-z0-9]/g, "") ===
+        displaySkill.toLowerCase().replace(/[^a-z0-9]/g, "")
+      );
+    });
+    if (!already) {
+      skillsByCountry[normCountry].push(displaySkill);
+    }
+  }
+
+  return skillsByCountry;
 }

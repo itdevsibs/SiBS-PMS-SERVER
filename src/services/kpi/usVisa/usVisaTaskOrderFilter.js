@@ -54,6 +54,62 @@ const TASK_ORDER_CONFIG = Object.freeze({
       "hongkong",
     ]),
   }),
+  TO18: Object.freeze({
+    sourceSystem: "ALL",
+    label: "NEA",
+    countries: Object.freeze([
+      "algeria",
+      "bahrain",
+      "egypt",
+      "jordan",
+      "kuwait",
+      "lebanon",
+      "morocco",
+      "oman",
+      "qatar",
+      "saudi arabia",
+      "tunisia",
+    ]),
+  }),
+  TO22: Object.freeze({
+    sourceSystem: "ALL",
+    label: "SAMI",
+    countries: Object.freeze([
+      "bangladesh",
+      "nepal",
+      "pakistan",
+      "sri lanka",
+    ]),
+  }),
+  OTHER: Object.freeze({
+    sourceSystem: "ALL",
+    label: "Other",
+    countries: Object.freeze([
+      "albania",
+      "armenia",
+      "azerbaijan",
+      "bosnia & herzegovina",
+      "bosnia and herzegovina",
+      "bosnia&herzegovina",
+      "bulgaria",
+      "croatia",
+      "cyprus",
+      "georgia",
+      "greece",
+      "israel",
+      "kosovo",
+      "lithuania",
+      "northern macedonia",
+      "poland",
+      "moldova",
+      "rep. of moldova",
+      "romania",
+      "serbia",
+      "turkiye",
+      "ukraine",
+      "united arab emirates",
+    ]),
+  }),
 });
 
 function normalizeSourceSystem(value) {
@@ -89,14 +145,17 @@ export function normalizeUsVisaTaskOrder(sourceSystem, value) {
 
     const config = TASK_ORDER_CONFIG[taskOrder];
     if (!config) {
+      if (rawList.length > 1) continue;
       throw createInvalidTaskOrderError(normalizedSourceSystem, taskOrder);
     }
 
     if (
       normalizedSourceSystem !== "US_VISA" &&
       normalizedSourceSystem !== "US VISA" &&
+      config.sourceSystem !== "ALL" &&
       config.sourceSystem !== normalizedSourceSystem
     ) {
+      if (rawList.length > 1) continue;
       throw createInvalidTaskOrderError(normalizedSourceSystem, taskOrder);
     }
 
@@ -143,6 +202,7 @@ export function getUsVisaTaskOrderLabel(taskOrder) {
   return list
     .map((to) => {
       const normalizedTo = String(to || "").trim().toUpperCase();
+      if (normalizedTo === "OTHER") return "Other";
       const config = TASK_ORDER_CONFIG[normalizedTo];
       return config ? `${normalizedTo} - ${config.label}` : normalizedTo;
     })
