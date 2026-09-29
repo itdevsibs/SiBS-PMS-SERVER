@@ -34,6 +34,18 @@ export const US_VISA_TASK_ORDERS = Object.freeze({
     sourceSystem: "FUSECOM",
     countries: ["china", "hong kong", "hongkong"],
   }),
+  TO18: freezeRecord({
+    id: "TO18",
+    label: "NEA",
+    sourceSystem: "ALL",
+    countries: ["algeria", "bahrain", "egypt", "jordan", "kuwait", "lebanon", "morocco", "oman", "qatar", "saudi arabia", "tunisia"],
+  }),
+  TO22: freezeRecord({
+    id: "TO22",
+    label: "SAMI",
+    sourceSystem: "ALL",
+    countries: ["bangladesh", "nepal", "pakistan", "sri lanka"],
+  }),
 });
 
 function normalizeSourceSystem(value) {

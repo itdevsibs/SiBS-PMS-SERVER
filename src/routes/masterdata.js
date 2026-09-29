@@ -342,11 +342,23 @@ router.get("/ledger", async (req, res, next) => {
       const isExactHeroDash =
         herodashName ? normalizeValue(herodashName) === normalizeValue(canonicalName) : false;
 
+      const msdAlias = aliases.find(
+        (a) =>
+          a.alias_type === "MSD_NAME" ||
+          a.alias_type === "MS-D_NAME" ||
+          (a.source_system === "MSD" && a.alias_type === "AGENT_NAME") ||
+          (a.source_system === "MS-D" && a.alias_type === "AGENT_NAME"),
+      );
+      const msdName = msdAlias ? msdAlias.alias_value : null;
+      const isExactMsd =
+        msdName ? normalizeValue(msdName) === normalizeValue(canonicalName) : false;
+
       const hasCustomAlias =
         Boolean(
           (fusecomName && !isExactFusecom) ||
           (fusenetName && !isExactFuseNet) ||
-          (herodashName && !isExactHeroDash),
+          (herodashName && !isExactHeroDash) ||
+          (msdName && !isExactMsd),
         );
       const hasPhoneId = Boolean(phoneId && phoneId.trim());
 
@@ -383,6 +395,14 @@ router.get("/ledger", async (req, res, next) => {
           herodash: {
             name: herodashName,
             type: herodashName ? (isExactHeroDash ? "EXACT" : "ALIAS") : null,
+          },
+          msd: {
+            name: msdName,
+            type: msdName ? (isExactMsd ? "EXACT" : "ALIAS") : null,
+          },
+          "ms-d": {
+            name: msdName,
+            type: msdName ? (isExactMsd ? "EXACT" : "ALIAS") : null,
           },
         },
       };
@@ -511,6 +531,9 @@ router.put("/ledger/:sibsId", async (req, res, next) => {
       if (herodashName !== undefined) {
         await upsertAlias("HERODASH_NAME", "HERODASH", herodashName);
       }
+      if (req.body?.msdName !== undefined) {
+        await upsertAlias("MSD_NAME", "MSD", req.body.msdName);
+      }
 
       await connection.commit();
 
@@ -526,6 +549,151 @@ router.put("/ledger/:sibsId", async (req, res, next) => {
     }
   } catch (error) {
     console.error("Failed to update tool alignment:", error);
+    next(error);
+  }
+});
+
+/**
+ * POST /api/masterdata/ledger/batch-import
+ * Batch updates or inserts tool aliases for multiple employees from an imported template.
+ */
+router.post("/ledger/batch-import", async (req, res, next) => {
+  try {
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (items.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No employee records provided for import.",
+      });
+    }
+
+    const connection = await pmsDb.getConnection();
+    try {
+      await connection.beginTransaction();
+
+      let updatedCount = 0;
+
+      for (const item of items) {
+        let sibsId = String(item.sibsId || "").trim();
+        const fullName = String(item.fullName || "").trim();
+
+        // If sibsId is missing, attempt to find gy_emp_code via canonical name
+        if (!sibsId && fullName) {
+          const [foundEmp] = await kronosDb.query(
+            `SELECT gy_emp_code FROM ${kronosTables.employee} WHERE UPPER(TRIM(gy_emp_fullname)) = ? LIMIT 1`,
+            [fullName.toUpperCase()],
+          );
+          if (foundEmp.length > 0) {
+            sibsId = String(foundEmp[0].gy_emp_code).trim();
+          }
+        }
+
+        if (!sibsId) continue;
+
+        const fusecomName = item.fusecomName !== undefined ? String(item.fusecomName).trim() : undefined;
+        const fusenetName = item.fusenetName !== undefined ? String(item.fusenetName).trim() : undefined;
+        const herodashName = item.herodashName !== undefined ? String(item.herodashName).trim() : undefined;
+        const msdName = item.msdName !== undefined ? String(item.msdName).trim() : undefined;
+
+        // Ensure at least one tool alias column was provided
+        const hasAnyColumn = [fusecomName, fusenetName, herodashName, msdName].some(
+          (v) => v !== undefined,
+        );
+        if (!hasAnyColumn) continue;
+
+        const upsertAlias = async (aliasType, sourceSystem, value) => {
+          const trimmed = String(value || "").trim();
+          const normalized = normalizeValue(trimmed);
+
+          const [existing] = await connection.query(
+            `
+              SELECT id FROM ${pmsTables.usVisaEmployeeAliases}
+              WHERE employee_uid = ? AND (alias_type = ? OR (source_system = ? AND alias_type = 'AGENT_NAME'))
+              ORDER BY id ASC
+            `,
+            [sibsId, aliasType, sourceSystem],
+          );
+
+          if (existing.length > 0) {
+            const targetId = existing[0].id;
+            if (!trimmed) {
+              await connection.query(
+                `
+                  UPDATE ${pmsTables.usVisaEmployeeAliases}
+                  SET alias_value = '',
+                      normalized_alias_value = '',
+                      is_active = 0,
+                      updated_at = CURRENT_TIMESTAMP
+                  WHERE employee_uid = ? AND (alias_type = ? OR (source_system = ? AND alias_type = 'AGENT_NAME'))
+                `,
+                [sibsId, aliasType, sourceSystem],
+              );
+            } else {
+              await connection.query(
+                `
+                  UPDATE ${pmsTables.usVisaEmployeeAliases}
+                  SET alias_value = ?,
+                      normalized_alias_value = ?,
+                      is_active = 1,
+                      updated_at = CURRENT_TIMESTAMP
+                  WHERE id = ?
+                `,
+                [trimmed, normalized, targetId],
+              );
+
+              if (existing.length > 1) {
+                await connection.query(
+                  `
+                    DELETE FROM ${pmsTables.usVisaEmployeeAliases}
+                    WHERE employee_uid = ? AND (alias_type = ? OR (source_system = ? AND alias_type = 'AGENT_NAME')) AND id != ?
+                  `,
+                  [sibsId, aliasType, sourceSystem, targetId],
+                );
+              }
+            }
+          } else if (trimmed) {
+            await connection.query(
+              `
+                INSERT INTO ${pmsTables.usVisaEmployeeAliases}
+                  (employee_uid, alias_type, source_system, alias_value, normalized_alias_value, is_active)
+                VALUES (?, ?, ?, ?, ?, 1)
+              `,
+              [sibsId, aliasType, sourceSystem, trimmed, normalized],
+            );
+          }
+        };
+
+        if (fusecomName !== undefined) {
+          await upsertAlias("FUSECOM_NAME", "FUSECOM", fusecomName);
+        }
+        if (fusenetName !== undefined) {
+          await upsertAlias("FUSENET_NAME", "FUSENET", fusenetName);
+        }
+        if (herodashName !== undefined) {
+          await upsertAlias("HERODASH_NAME", "HERODASH", herodashName);
+        }
+        if (msdName !== undefined) {
+          await upsertAlias("MSD_NAME", "MSD", msdName);
+        }
+
+        updatedCount++;
+      }
+
+      await connection.commit();
+
+      return res.json({
+        success: true,
+        count: updatedCount,
+        message: `Successfully updated tool identities for ${updatedCount} employee${updatedCount === 1 ? "" : "s"}.`,
+      });
+    } catch (err) {
+      await connection.rollback();
+      throw err;
+    } finally {
+      connection.release();
+    }
+  } catch (error) {
+    console.error("Failed to batch import tool alignment:", error);
     next(error);
   }
 });

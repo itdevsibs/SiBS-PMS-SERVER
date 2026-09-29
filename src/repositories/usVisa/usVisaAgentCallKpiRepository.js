@@ -54,23 +54,105 @@ function appendExactFilter({ conditions, values, column, value }) {
 }
 
 function appendSkillFilter({ conditions, values, skill, skillNames }) {
-  appendExactFilter({
-    conditions,
-    values,
-    column: "a.skill_name_raw",
-    value: skill,
-  });
+  const allSkills = [
+    ...(skill ? [skill] : []),
+    ...(Array.isArray(skillNames) ? skillNames : []),
+  ].filter(Boolean);
 
-  const uniqueSkillNames = [...new Set(
-    (Array.isArray(skillNames) ? skillNames : [])
-      .map((value) => normalizeText(value))
-      .filter(Boolean),
-  )];
+  if (!allSkills.length) return;
 
-  if (!uniqueSkillNames.length) return;
+  const clauses = [];
+  const clauseValues = [];
 
-  conditions.push(`a.skill_name_raw IN (${buildInPlaceholders(uniqueSkillNames)})`);
-  values.push(...uniqueSkillNames);
+  for (const item of allSkills) {
+    const key = String(item).toLowerCase().replace(/[\s_-]+/g, "");
+    if (key === "englishall" || key === "english" || key === "allenglish") {
+      clauses.push("(a.skill_name_raw LIKE ?)");
+      clauseValues.push("%English%");
+      continue;
+    } else if (key === "englishniv") {
+      clauses.push("(a.skill_name_raw LIKE ? AND a.skill_name_raw LIKE ?)");
+      clauseValues.push("%English%", "%NIV%");
+      continue;
+    } else if (key === "englishiv") {
+      clauses.push("(a.skill_name_raw LIKE ? AND (a.skill_name_raw REGEXP '(^|[^A-Za-z])IV($|[^A-Za-z])') AND a.skill_name_raw NOT LIKE ?)");
+      clauseValues.push("%English%", "%NIV%");
+      continue;
+    } else if (key === "englishacs") {
+      clauses.push("(a.skill_name_raw LIKE ? AND a.skill_name_raw LIKE ?)");
+      clauseValues.push("%English%", "%ACS%");
+      continue;
+    } else if (key === "nonenglish") {
+      clauses.push("(a.skill_name_raw NOT LIKE ?)");
+      clauseValues.push("%English%");
+      continue;
+    } else if (key === "nonenglishiv") {
+      clauses.push("(a.skill_name_raw NOT LIKE ? AND (a.skill_name_raw REGEXP '(^|[^A-Za-z])IV($|[^A-Za-z])') AND a.skill_name_raw NOT LIKE ?)");
+      clauseValues.push("%English%", "%NIV%");
+      continue;
+    }
+
+    const clean = String(item).replace(/^.*?::\s*/, "").replace(/^(VCH|GSS)\s+/i, "").trim();
+    let country = "";
+    let language = "";
+    let queue = "";
+
+    const qMatch = clean.match(/\b(ACS|NIV|IV)\b/i);
+    if (qMatch) queue = qMatch[1].toUpperCase();
+
+    if (clean.includes("-")) {
+      const parts = clean.split("-");
+      country = parts[0].trim();
+      const rest = parts.slice(1).join("-").trim();
+      language = rest.replace(/\b(ACS|NIV|IV)\b/i, "").replace(/\bCALL\b/i, "").trim();
+    } else {
+      const words = clean.split(/\s+/);
+      if (words.length >= 2) {
+        country = words[0].replace(/_/g, " ").trim();
+        language = words.slice(1).join(" ").replace(/\b(ACS|NIV|IV)\b/i, "").trim();
+      }
+    }
+
+    const itemClauses = ["a.skill_name_raw = ?", "a.skill_name_raw LIKE ?"];
+    const itemVals = [item, `%${item}%`];
+
+    if (country) {
+      const cPattern = `%${country.replace(/[\s_]+/g, "%")}%`;
+      const subClauses = ["a.skill_name_raw LIKE ?"];
+      const subVals = [cPattern];
+
+      if (language) {
+        subClauses.push("a.skill_name_raw LIKE ?");
+        subVals.push(`%${language}%`);
+      }
+
+      if (queue) {
+        if (queue === "IV") {
+          subClauses.push("a.skill_name_raw LIKE ?");
+          subVals.push("%IV%");
+          subClauses.push("a.skill_name_raw NOT LIKE ?");
+          subVals.push("%NIV%");
+        } else {
+          subClauses.push("a.skill_name_raw LIKE ?");
+          subVals.push(`%${queue}%`);
+        }
+      }
+
+      itemClauses.push(`(${subClauses.join(" AND ")})`);
+      itemVals.push(...subVals);
+    }
+
+    clauses.push(`(${itemClauses.join(" OR ")})`);
+    clauseValues.push(...itemVals);
+  }
+
+  if (clauses.length === 1) {
+    conditions.push(clauses[0]);
+    values.push(...clauseValues);
+  } else if (clauses.length > 1) {
+    conditions.push(`(${clauses.join(" OR ")})`);
+    values.push(...clauseValues);
+  }
 }
 
 function appendEmployeeFilter({ conditions, values, employeeUid, employeeUids }) {

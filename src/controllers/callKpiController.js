@@ -7,6 +7,7 @@ import {
   getSkillStatisticsByBatchId,
 } from "../repositories/usVisa/usVisaSkillStatisticsRepository.js";
 import { getWfmCallKpiDashboard } from "../services/kpi/callKpiQueryService.js";
+import { getDistinctSkillsByCountry } from "../repositories/callKpiRepository.js";
 
 const BAD_REQUEST_CODES = new Set([
   "INVALID_CUSTOM_DATE_RANGE",
@@ -41,6 +42,23 @@ export async function getWfmCallsKpi(req, res) {
       success: false,
       code: "WFM_CALL_KPI_ERROR",
       message: "Unable to fetch WFM Calls KPI data.",
+    });
+  }
+}
+
+export async function getWfmSkills(req, res) {
+  try {
+    const skillsByCountry = await getDistinctSkillsByCountry();
+    return res.json({
+      success: true,
+      data: skillsByCountry,
+    });
+  } catch (error) {
+    console.error("GET /api/wfm/kpis/skills error:", error);
+    return res.status(500).json({
+      success: false,
+      code: "WFM_SKILLS_ERROR",
+      message: "Unable to fetch WFM skills.",
     });
   }
 }
