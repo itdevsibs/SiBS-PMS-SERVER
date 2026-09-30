@@ -16,6 +16,38 @@ function normalizeValue(value) {
     .toUpperCase();
 }
 
+function formatDateForSql(val) {
+  if (val === null || val === undefined || val === "") return null;
+  if (typeof val === "number") {
+    const d = new Date(Math.round((val - 25569) * 86400 * 1000));
+    if (!isNaN(d.getTime())) {
+      return d.toISOString().split("T")[0];
+    }
+  }
+  const str = String(val).trim();
+  if (!str || str.includes("#REF!") || str.includes("#N/A")) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+  const mdy = str.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (mdy) {
+    const [, m, d, y] = mdy;
+    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+  const parsed = new Date(str);
+  if (!isNaN(parsed.getTime())) {
+    return parsed.toISOString().split("T")[0];
+  }
+  return null;
+}
+
+function cleanExcelString(val) {
+  if (val === null || val === undefined) return null;
+  const str = String(val).trim();
+  if (!str || str.includes("#REF!") || str.includes("#N/A") || str.includes("#VALUE!") || str.includes("#NAME?")) {
+    return null;
+  }
+  return str;
+}
+
 /**
  * GET /api/masterdata/accounts
  * Returns distinct account list from Kronos employees.
@@ -49,22 +81,14 @@ router.get("/accounts", async (req, res, next) => {
 router.get("/ledger", async (req, res, next) => {
   try {
     const rawSearch = String(req.query.search || "").trim();
-    const filter = String(req.query.filter || "all").toLowerCase().trim();
     const account = String(req.query.account || "").trim();
-    const viewAll = req.query.viewAll === "true";
     const page = Math.max(Number(req.query.page) || 1, 1);
     const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 10000);
     const offset = (page - 1) * limit;
 
-    const hasFilter = filter && filter !== "all";
-    const hasAccount = Boolean(account);
-    const hasSearch = Boolean(rawSearch);
-    const shouldQuery = hasSearch || hasFilter || hasAccount || viewAll;
+    const isUsVisa = !account || account.toLowerCase() === "us visa";
 
-    const isUsVisa = account.toLowerCase() === "us visa";
-
-    // If an account other than US Visa is selected, do not fetch data (US Visa only for now)
-    if (hasAccount && !isUsVisa) {
+    if (!isUsVisa) {
       return res.json({
         success: true,
         total: 0,
@@ -78,103 +102,45 @@ router.get("/ledger", async (req, res, next) => {
     const whereClauses = [];
     const queryParams = [];
 
-    // Master data ledger is strictly restricted to US Visa for now
-    whereClauses.push(`gy_emp_account = 'US Visa'`);
-
-    // Filter by aliased (employees with tool aliases registered)
-    if (filter === "aliased") {
-      const [aliasedRows] = await pmsDb.query(`
-        SELECT DISTINCT employee_uid 
-        FROM ${pmsTables.usVisaEmployeeAliases}
-        WHERE is_active = 1 AND alias_type IN ('FUSECOM_NAME', 'HERODASH_NAME', 'FUSENET_NAME', 'AGENT_NAME')
-      `);
-      const aliasedUids = aliasedRows.map((r) => r.employee_uid).filter(Boolean);
-      if (aliasedUids.length === 0) {
-        return res.json({ success: true, total: 0, data: [] });
-      }
-      const inPlaceholders = aliasedUids.map(() => "?").join(", ");
-      whereClauses.push(`gy_emp_code IN (${inPlaceholders})`);
-      queryParams.push(...aliasedUids);
-    }
-
-    // Filter by incomplete (missing PERSONAL_ID in PMS aliases)
-    if (filter === "incomplete") {
-      const [withPhoneRows] = await pmsDb.query(`
-        SELECT DISTINCT employee_uid 
-        FROM ${pmsTables.usVisaEmployeeAliases}
-        WHERE is_active = 1 AND alias_type = 'PERSONAL_ID' AND TRIM(alias_value) != ''
-      `);
-      const withPhoneUids = withPhoneRows.map((r) => r.employee_uid).filter(Boolean);
-      if (withPhoneUids.length > 0) {
-        const inPlaceholders = withPhoneUids.map(() => "?").join(", ");
-        whereClauses.push(`gy_emp_code NOT IN (${inPlaceholders})`);
-        queryParams.push(...withPhoneUids);
-      }
-    }
-
-    // Filter by unified (has PERSONAL_ID in PMS aliases)
-    if (filter === "unified") {
-      const [withPhoneRows] = await pmsDb.query(`
-        SELECT DISTINCT employee_uid 
-        FROM ${pmsTables.usVisaEmployeeAliases}
-        WHERE is_active = 1 AND alias_type = 'PERSONAL_ID' AND TRIM(alias_value) != ''
-      `);
-      const withPhoneUids = withPhoneRows.map((r) => r.employee_uid).filter(Boolean);
-      if (withPhoneUids.length === 0) {
-        return res.json({ success: true, total: 0, data: [] });
-      }
-      const inPlaceholders = withPhoneUids.map(() => "?").join(", ");
-      whereClauses.push(`gy_emp_code IN (${inPlaceholders})`);
-      queryParams.push(...withPhoneUids);
-    }
-
-    // Search filter across Kronos & PMS Aliases
-    if (hasSearch) {
+    if (rawSearch) {
       const searchPattern = `%${rawSearch}%`;
-      const [matchedAliasRows] = await pmsDb.query(
-        `
-          SELECT DISTINCT employee_uid 
-          FROM ${pmsTables.usVisaEmployeeAliases}
-          WHERE alias_value LIKE ? AND is_active = 1
-          LIMIT 50
-        `,
-        [searchPattern],
-      );
-
-      const employeeUidsFromAliases = matchedAliasRows
-        .map((r) => r.employee_uid)
-        .filter(Boolean);
-
-      if (employeeUidsFromAliases.length > 0) {
-        const inPlaceholders = employeeUidsFromAliases.map(() => "?").join(", ");
-        whereClauses.push(`(
-          gy_emp_fullname LIKE ? OR 
-          gy_emp_code LIKE ? OR 
-          gy_emp_email LIKE ? OR 
-          gy_emp_code IN (${inPlaceholders})
-        )`);
-        queryParams.push(
-          searchPattern,
-          searchPattern,
-          searchPattern,
-          ...employeeUidsFromAliases,
-        );
-      } else {
-        whereClauses.push(`(
-          gy_emp_fullname LIKE ? OR 
-          gy_emp_code LIKE ? OR 
-          gy_emp_email LIKE ?
-        )`);
-        queryParams.push(searchPattern, searchPattern, searchPattern);
+      whereClauses.push(`(
+        l.sibs_id LIKE ? OR 
+        l.kronos_name LIKE ? OR 
+        k.gy_emp_fullname LIKE ? OR 
+        l.call_novo_email LIKE ? OR 
+        l.agent_name LIKE ? OR 
+        l.fusecom_name LIKE ? OR 
+        l.fusenet_name LIKE ? OR 
+        l.herodash_name LIKE ? OR 
+        l.msd_name LIKE ? OR 
+        l.site LIKE ? OR 
+        l.status LIKE ? OR 
+        l.phase LIKE ? OR 
+        l.task_order LIKE ? OR 
+        l.team_leader LIKE ? OR 
+        l.manager LIKE ? OR 
+        l.senior_manager LIKE ?
+      )`);
+      for (let i = 0; i < 16; i++) {
+        queryParams.push(searchPattern);
       }
     }
 
-    // First, count total matching rows for pagination
-    let countQuery = `SELECT COUNT(*) AS total FROM ${kronosTables.employee}`;
+    let countQuery = `
+      SELECT COUNT(*) AS total 
+      FROM ${pmsTables.usVisaEmployeeLedger} l
+      LEFT JOIN ${kronosTables.employee} k ON (
+        TRIM(k.gy_emp_code) = TRIM(l.sibs_id)
+        OR TRIM(k.gy_emp_code) = REGEXP_REPLACE(l.sibs_id, '[^0-9]', '')
+        OR CONCAT('SIB-', TRIM(k.gy_emp_code)) = REPLACE(TRIM(l.sibs_id), ' ', '')
+        OR LOWER(TRIM(k.gy_emp_fullname)) = LOWER(TRIM(l.agent_name))
+      )
+    `;
     if (whereClauses.length > 0) {
       countQuery += ` WHERE ${whereClauses.join(" AND ")}`;
     }
-    const [countRows] = await kronosDb.query(countQuery, queryParams);
+    const [countRows] = await pmsDb.query(countQuery, queryParams);
     const totalRecords = Number(countRows[0]?.total || 0);
 
     if (totalRecords === 0) {
@@ -188,225 +154,61 @@ router.get("/ledger", async (req, res, next) => {
       });
     }
 
-    // Build main SQL query
-    let employeesQuery = `
+    let dataQuery = `
       SELECT 
-        gy_emp_id,
-        gy_emp_code,
-        gy_emp_fullname,
-        gy_emp_email,
-        gy_emp_account
-      FROM ${kronosTables.employee}
+        l.id,
+        l.sibs_id AS sibsId,
+        COALESCE(
+          NULLIF(TRIM(l.kronos_name), ''),
+          NULLIF(TRIM(k.gy_emp_fullname), '')
+        ) AS kronosName,
+        l.call_novo_email AS callNovoEmail,
+        l.agent_name AS agentName,
+        l.fusecom_name AS fusecomName,
+        l.fusenet_name AS fusenetName,
+        l.herodash_name AS herodashName,
+        l.msd_name AS msdName,
+        l.site,
+        l.status,
+        l.phase,
+        CASE
+          WHEN l.task_order LIKE '%#REF!%' THEN NULL
+          ELSE l.task_order
+        END AS taskOrder,
+        CASE
+          WHEN l.task_order_description LIKE '%#REF!%'
+            OR l.task_order_description LIKE '%#N/A%'
+            OR l.task_order_description LIKE '%#VALUE!%'
+            OR TRIM(l.task_order_description) = ''
+          THEN NULL
+          ELSE l.task_order_description
+        END AS taskOrderDescription,
+        DATE_FORMAT(l.us_visa_departure_date, '%Y-%m-%d') AS usVisaDepartureDate,
+        DATE_FORMAT(l.us_visa_join_date, '%Y-%m-%d') AS usVisaJoinDate,
+        l.team_leader AS teamLeader,
+        l.manager,
+        l.senior_manager AS seniorManager,
+        CASE
+          WHEN l.us_visa_join_date IS NOT NULL AND l.us_visa_join_date > '1990-01-01' THEN
+            CAST(DATEDIFF(COALESCE(l.us_visa_departure_date, CURRENT_DATE()), l.us_visa_join_date) AS CHAR)
+          ELSE NULL
+        END AS tenurity,
+        l.modality
+      FROM ${pmsTables.usVisaEmployeeLedger} l
+      LEFT JOIN ${kronosTables.employee} k ON (
+        TRIM(k.gy_emp_code) = TRIM(l.sibs_id)
+        OR TRIM(k.gy_emp_code) = REGEXP_REPLACE(l.sibs_id, '[^0-9]', '')
+        OR CONCAT('SIB-', TRIM(k.gy_emp_code)) = REPLACE(TRIM(l.sibs_id), ' ', '')
+        OR LOWER(TRIM(k.gy_emp_fullname)) = LOWER(TRIM(l.agent_name))
+      )
     `;
-
     if (whereClauses.length > 0) {
-      employeesQuery += ` WHERE ${whereClauses.join(" AND ")}`;
+      dataQuery += ` WHERE ${whereClauses.join(" AND ")}`;
     }
+    dataQuery += ` ORDER BY l.id ASC LIMIT ? OFFSET ?`;
+    const dataParams = [...queryParams, limit, offset];
 
-    // Sort by tool aliases if requested
-    const sortBy = String(req.query.sortBy || "").toLowerCase().trim();
-    const sortOrder = String(req.query.sortOrder || "desc").toLowerCase().trim() === "asc" ? "asc" : "desc";
-
-    const validSortTools = {
-      fusecom: { type: "FUSECOM_NAME", src: "FUSECOM" },
-      fusenet: { type: "FUSENET_NAME", src: "FUSENET" },
-      herodash: { type: "HERODASH_NAME", src: "HERODASH" },
-    };
-
-    let sortOrderByClause = "gy_emp_id DESC";
-    const sortQueryParams = [];
-
-    if (validSortTools[sortBy]) {
-      const toolCfg = validSortTools[sortBy];
-      const [toolAliasRows] = await pmsDb.query(
-        `SELECT DISTINCT employee_uid, alias_value 
-         FROM ${pmsTables.usVisaEmployeeAliases} 
-         WHERE (alias_type = ? OR (source_system = ? AND alias_type = 'AGENT_NAME')) 
-           AND is_active = 1 
-           AND TRIM(alias_value) != ''
-         ORDER BY alias_value ASC`,
-        [toolCfg.type, toolCfg.src],
-      );
-
-      const uidMap = new Map();
-      for (const row of toolAliasRows) {
-        const uidStr = String(row.employee_uid || "").trim();
-        if (uidStr && !uidMap.has(uidStr)) {
-          uidMap.set(uidStr, row.alias_value);
-        }
-      }
-      const sortedUids = Array.from(uidMap.keys());
-
-      if (sortedUids.length > 0) {
-        const inPlaceholders = sortedUids.map(() => "?").join(", ");
-        if (sortOrder === "desc") {
-          // Aliases first (0), ordered by alias name, then no-aliases (1) by gy_emp_id DESC
-          sortOrderByClause = `CASE WHEN gy_emp_code IN (${inPlaceholders}) THEN 0 ELSE 1 END ASC, FIELD(gy_emp_code, ${inPlaceholders}) ASC, gy_emp_id DESC`;
-          sortQueryParams.push(...sortedUids, ...sortedUids);
-        } else {
-          // No-aliases first (0), then aliases (1), ordered by alias name
-          sortOrderByClause = `CASE WHEN gy_emp_code IN (${inPlaceholders}) THEN 1 ELSE 0 END ASC, FIELD(gy_emp_code, ${inPlaceholders}) ASC, gy_emp_id DESC`;
-          sortQueryParams.push(...sortedUids, ...sortedUids);
-        }
-      }
-    }
-
-    employeesQuery += ` ORDER BY ${sortOrderByClause} LIMIT ? OFFSET ?`;
-    const [employees] = await kronosDb.query(employeesQuery, [
-      ...queryParams,
-      ...sortQueryParams,
-      limit,
-      offset,
-    ]);
-
-    if (employees.length === 0) {
-      return res.json({
-        success: true,
-        total: totalRecords,
-        page,
-        limit,
-        totalPages: Math.ceil(totalRecords / limit),
-        data: [],
-      });
-    }
-
-    // Fetch aliases for all returned employees
-    const empCodes = employees.map((e) => e.gy_emp_code).filter(Boolean);
-    let aliasesByEmpCode = new Map();
-
-    if (empCodes.length > 0) {
-      const inPlaceholders = empCodes.map(() => "?").join(", ");
-      const [aliasRows] = await pmsDb.query(
-        `
-          SELECT 
-            employee_uid,
-            alias_type,
-            source_system,
-            alias_value,
-            normalized_alias_value,
-            is_active
-          FROM ${pmsTables.usVisaEmployeeAliases}
-          WHERE employee_uid IN (${inPlaceholders}) AND is_active = 1
-        `,
-        empCodes,
-      );
-
-      for (const row of aliasRows) {
-        const uid = String(row.employee_uid);
-        if (!aliasesByEmpCode.has(uid)) {
-          aliasesByEmpCode.set(uid, []);
-        }
-        aliasesByEmpCode.get(uid).push(row);
-      }
-    }
-
-    // Transform each employee into the unified ledger record
-    const unifiedLedger = employees.map((emp) => {
-      const uid = String(emp.gy_emp_code);
-      const aliases = aliasesByEmpCode.get(uid) || [];
-      const canonicalName = emp.gy_emp_fullname || "";
-
-      // Look up tool-specific aliases
-      const fusecomAlias = aliases.find(
-        (a) =>
-          a.alias_type === "FUSECOM_NAME" ||
-          (a.source_system === "FUSECOM" && a.alias_type === "AGENT_NAME"),
-      );
-
-      const fusenetAlias = aliases.find(
-        (a) =>
-          a.alias_type === "FUSENET_NAME" ||
-          (a.source_system === "FUSENET" && a.alias_type === "AGENT_NAME"),
-      );
-
-      const herodashAlias = aliases.find(
-        (a) =>
-          a.alias_type === "HERODASH_NAME" ||
-          (a.source_system === "HERODASH" && a.alias_type === "AGENT_NAME"),
-      );
-
-      const phoneAlias = aliases.find((a) => a.alias_type === "PERSONAL_ID");
-      const loginAlias = aliases.find((a) => a.alias_type === "AGENT_LOGIN");
-
-      const phoneId = phoneAlias ? phoneAlias.alias_value : null;
-      const agentLogin = loginAlias ? loginAlias.alias_value : null;
-
-      const fusecomName = fusecomAlias ? fusecomAlias.alias_value : null;
-      const fusenetName = fusenetAlias ? fusenetAlias.alias_value : null;
-      const herodashName = herodashAlias ? herodashAlias.alias_value : null;
-
-      const isExactFusecom =
-        fusecomName ? normalizeValue(fusecomName) === normalizeValue(canonicalName) : false;
-      const isExactFuseNet =
-        fusenetName ? normalizeValue(fusenetName) === normalizeValue(canonicalName) : false;
-      const isExactHeroDash =
-        herodashName ? normalizeValue(herodashName) === normalizeValue(canonicalName) : false;
-
-      const msdAlias = aliases.find(
-        (a) =>
-          a.alias_type === "MSD_NAME" ||
-          a.alias_type === "MS-D_NAME" ||
-          (a.source_system === "MSD" && a.alias_type === "AGENT_NAME") ||
-          (a.source_system === "MS-D" && a.alias_type === "AGENT_NAME"),
-      );
-      const msdName = msdAlias ? msdAlias.alias_value : null;
-      const isExactMsd =
-        msdName ? normalizeValue(msdName) === normalizeValue(canonicalName) : false;
-
-      const hasCustomAlias =
-        Boolean(
-          (fusecomName && !isExactFusecom) ||
-          (fusenetName && !isExactFuseNet) ||
-          (herodashName && !isExactHeroDash) ||
-          (msdName && !isExactMsd),
-        );
-      const hasPhoneId = Boolean(phoneId && phoneId.trim());
-
-      // Dynamic Health Indicator
-      let status = "UNIFIED";
-      let statusReason = "All tools verified";
-
-      if (!hasPhoneId) {
-        status = "INCOMPLETE";
-        statusReason = "Missing Phone ID";
-      } else if (hasCustomAlias) {
-        status = "ALIASED";
-        statusReason = "Custom tool alias active";
-      }
-
-      return {
-        sibsId: emp.gy_emp_code,
-        fullName: canonicalName,
-        email: emp.gy_emp_email || "",
-        account: emp.gy_emp_account || "Unassigned",
-        phoneId: phoneId,
-        agentLogin: agentLogin,
-        status,
-        statusReason,
-        toolMappings: {
-          fusecom: {
-            name: fusecomName,
-            type: fusecomName ? (isExactFusecom ? "EXACT" : "ALIAS") : null,
-          },
-          fusenet: {
-            name: fusenetName,
-            type: fusenetName ? (isExactFuseNet ? "EXACT" : "ALIAS") : null,
-          },
-          herodash: {
-            name: herodashName,
-            type: herodashName ? (isExactHeroDash ? "EXACT" : "ALIAS") : null,
-          },
-          msd: {
-            name: msdName,
-            type: msdName ? (isExactMsd ? "EXACT" : "ALIAS") : null,
-          },
-          "ms-d": {
-            name: msdName,
-            type: msdName ? (isExactMsd ? "EXACT" : "ALIAS") : null,
-          },
-        },
-      };
-    });
+    const [rows] = await pmsDb.query(dataQuery, dataParams);
 
     return res.json({
       success: true,
@@ -414,10 +216,11 @@ router.get("/ledger", async (req, res, next) => {
       page,
       limit,
       totalPages: Math.ceil(totalRecords / limit),
-      data: unifiedLedger,
+      data: rows,
     });
+
   } catch (error) {
-    console.error("Failed to fetch master data ledger:", error);
+    console.error("Failed to fetch us_visa_employee_ledger:", error);
     next(error);
   }
 });
@@ -439,15 +242,82 @@ router.put("/ledger/:sibsId", async (req, res, next) => {
     const {
       phoneId,
       agentLogin,
+      kronosName,
+      callNovoEmail,
+      agentName,
       fusecomName,
       fusenetName,
       herodashName,
+      msdName,
+      site,
+      status,
+      phase,
+      taskOrder,
+      taskOrderDescription,
+      usVisaDepartureDate,
+      usVisaJoinDate,
+      teamLeader,
+      manager,
+      seniorManager,
+      tenurity,
+      modality,
     } = req.body || {};
 
     const connection = await pmsDb.getConnection();
     try {
       await connection.beginTransaction();
 
+      // 1. Update us_visa_employee_ledger fields if any are provided
+      const ledgerUpdates = [];
+      const ledgerParams = [];
+
+      const stringFields = [
+        { val: kronosName, col: "kronos_name" },
+        { val: callNovoEmail, col: "call_novo_email" },
+        { val: agentName, col: "agent_name" },
+        { val: fusecomName, col: "fusecom_name" },
+        { val: fusenetName, col: "fusenet_name" },
+        { val: herodashName, col: "herodash_name" },
+        { val: msdName, col: "msd_name" },
+        { val: site, col: "site" },
+        { val: status, col: "status" },
+        { val: phase, col: "phase" },
+        { val: taskOrder, col: "task_order" },
+        { val: taskOrderDescription, col: "task_order_description" },
+        { val: teamLeader, col: "team_leader" },
+        { val: manager, col: "manager" },
+        { val: seniorManager, col: "senior_manager" },
+        { val: tenurity, col: "tenurity" },
+        { val: modality, col: "modality" },
+      ];
+
+      for (const item of stringFields) {
+        if (item.val !== undefined) {
+          ledgerUpdates.push(`${item.col} = ?`);
+          ledgerParams.push(item.val !== null ? String(item.val).trim() : null);
+        }
+      }
+
+      if (usVisaDepartureDate !== undefined) {
+        ledgerUpdates.push("us_visa_departure_date = ?");
+        ledgerParams.push(formatDateForSql(usVisaDepartureDate));
+      }
+
+      if (usVisaJoinDate !== undefined) {
+        ledgerUpdates.push("us_visa_join_date = ?");
+        ledgerParams.push(formatDateForSql(usVisaJoinDate));
+      }
+
+      if (ledgerUpdates.length > 0) {
+        ledgerUpdates.push("updated_at = CURRENT_TIMESTAMP");
+        ledgerParams.push(sibsId);
+        await connection.query(
+          `UPDATE ${pmsTables.usVisaEmployeeLedger} SET ${ledgerUpdates.join(", ")} WHERE sibs_id = ?`,
+          ledgerParams
+        );
+      }
+
+      // 2. Also keep us_visa_employee_aliases in sync for telephony tools
       const upsertAlias = async (aliasType, sourceSystem, value) => {
         const trimmed = String(value || "").trim();
         const normalized = normalizeValue(trimmed);
@@ -531,15 +401,15 @@ router.put("/ledger/:sibsId", async (req, res, next) => {
       if (herodashName !== undefined) {
         await upsertAlias("HERODASH_NAME", "HERODASH", herodashName);
       }
-      if (req.body?.msdName !== undefined) {
-        await upsertAlias("MSD_NAME", "MSD", req.body.msdName);
+      if (msdName !== undefined) {
+        await upsertAlias("MSD_NAME", "MSD", msdName);
       }
 
       await connection.commit();
 
       return res.json({
         success: true,
-        message: `Successfully aligned tool identities for SIBS ID ${sibsId}.`,
+        message: `Successfully updated employee record for SIBS ID ${sibsId}.`,
       });
     } catch (err) {
       await connection.rollback();
@@ -548,7 +418,7 @@ router.put("/ledger/:sibsId", async (req, res, next) => {
       connection.release();
     }
   } catch (error) {
-    console.error("Failed to update tool alignment:", error);
+    console.error("Failed to update employee record:", error);
     next(error);
   }
 });
@@ -694,6 +564,141 @@ router.post("/ledger/batch-import", async (req, res, next) => {
     }
   } catch (error) {
     console.error("Failed to batch import tool alignment:", error);
+    next(error);
+  }
+});
+
+
+/**
+ * POST /api/masterdata/ledger/import-us-visa
+ * Imports full 20-column records into us_visa_employee_ledger in pms_db
+ */
+router.post("/ledger/import-us-visa", async (req, res, next) => {
+  try {
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (items.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No employee records provided for import.",
+      });
+    }
+
+    const connection = await pmsDb.getConnection();
+    try {
+      await connection.beginTransaction();
+
+      let upsertedCount = 0;
+
+      for (const item of items) {
+        const sibsId = String(item.sibsId || item.sibs_id || "").trim();
+        if (!sibsId) continue;
+
+        const kronosName = item.kronosName ?? item.kronos_name ?? null;
+        const callNovoEmail = item.callNovoEmail ?? item.call_novo_email ?? null;
+        const agentName = item.agentName ?? item.agent_name ?? null;
+        const fusecomName = item.fusecomName ?? item.fusecom_name ?? null;
+        const fusenetName = item.fusenetName ?? item.fusenet_name ?? null;
+        const herodashName = item.herodashName ?? item.herodash_name ?? null;
+        const msdName = item.msdName ?? item.msd_name ?? null;
+        const site = item.site ?? null;
+        const status = item.status ?? null;
+        const phase = item.phase ?? null;
+        const taskOrder = cleanExcelString(item.taskOrder ?? item.task_order);
+        const taskOrderDescription = cleanExcelString(item.taskOrderDescription ?? item.task_order_description);
+        const usVisaDepartureDate = formatDateForSql(item.usVisaDepartureDate ?? item.us_visa_departure_date);
+        const usVisaJoinDate = formatDateForSql(item.usVisaJoinDate ?? item.us_visa_join_date);
+        const teamLeader = item.teamLeader ?? item.team_leader ?? null;
+        const manager = item.manager ?? null;
+        const seniorManager = item.seniorManager ?? item.senior_manager ?? null;
+        const tenurity = item.tenurity ?? null;
+        const modality = item.modality ?? null;
+
+        await connection.query(
+          `
+            INSERT INTO ${pmsTables.usVisaEmployeeLedger} (
+              sibs_id, kronos_name, call_novo_email, agent_name, fusecom_name,
+              fusenet_name, herodash_name, msd_name, site, status, phase,
+              task_order, task_order_description, us_visa_departure_date,
+              us_visa_join_date, team_leader, manager, senior_manager,
+              tenurity, modality
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+              kronos_name = VALUES(kronos_name),
+              call_novo_email = VALUES(call_novo_email),
+              agent_name = VALUES(agent_name),
+              fusecom_name = VALUES(fusecom_name),
+              fusenet_name = VALUES(fusenet_name),
+              herodash_name = VALUES(herodash_name),
+              msd_name = VALUES(msd_name),
+              site = VALUES(site),
+              status = VALUES(status),
+              phase = VALUES(phase),
+              task_order = VALUES(task_order),
+              task_order_description = VALUES(task_order_description),
+              us_visa_departure_date = VALUES(us_visa_departure_date),
+              us_visa_join_date = VALUES(us_visa_join_date),
+              team_leader = VALUES(team_leader),
+              manager = VALUES(manager),
+              senior_manager = VALUES(senior_manager),
+              tenurity = VALUES(tenurity),
+              modality = VALUES(modality),
+              updated_at = CURRENT_TIMESTAMP
+          `,
+          [
+            sibsId,
+            kronosName,
+            callNovoEmail,
+            agentName,
+            fusecomName,
+            fusenetName,
+            herodashName,
+            msdName,
+            site,
+            status,
+            phase,
+            taskOrder,
+            taskOrderDescription,
+            usVisaDepartureDate,
+            usVisaJoinDate,
+            teamLeader,
+            manager,
+            seniorManager,
+            tenurity,
+            modality,
+          ],
+        );
+        upsertedCount++;
+      }
+
+      // Auto-fill any empty or missing kronos_name from gy_employee under kronos_testdb
+      await connection.query(`
+        UPDATE ${pmsTables.usVisaEmployeeLedger} l
+        JOIN ${kronosTables.employee} k ON (
+          TRIM(k.gy_emp_code) = TRIM(l.sibs_id)
+          OR TRIM(k.gy_emp_code) = REGEXP_REPLACE(l.sibs_id, '[^0-9]', '')
+          OR CONCAT('SIB-', TRIM(k.gy_emp_code)) = REPLACE(TRIM(l.sibs_id), ' ', '')
+          OR LOWER(TRIM(k.gy_emp_fullname)) = LOWER(TRIM(l.agent_name))
+        )
+        SET l.kronos_name = TRIM(k.gy_emp_fullname)
+        WHERE (l.kronos_name IS NULL OR TRIM(l.kronos_name) = '' OR l.kronos_name = '—')
+          AND NULLIF(TRIM(k.gy_emp_fullname), '') IS NOT NULL
+      `);
+
+      await connection.commit();
+
+      return res.json({
+        success: true,
+        count: upsertedCount,
+        message: `Successfully saved ${upsertedCount} employee records into us_visa_employee_ledger.`,
+      });
+    } catch (err) {
+      await connection.rollback();
+      throw err;
+    } finally {
+      connection.release();
+    }
+  } catch (error) {
+    console.error("Failed to import us_visa_employee_ledger:", error);
     next(error);
   }
 });
