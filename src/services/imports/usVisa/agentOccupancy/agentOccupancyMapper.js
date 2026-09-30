@@ -223,12 +223,18 @@ export function mapAgentOccupancyRow(sourceRow = {}, _headers = [], options = {}
 
 export function mapAgentOccupancyIdentity(sourceRow = {}, headers = [], options = {}) {
   const result = mapAgentOccupancyRow(sourceRow, headers, options).mappedRow;
+
+  // Occupancy Personal ID and Agent Login are source-system identifiers, not
+  // SiBS employee identities. Preserve them on the canonical/audit row, but
+  // do not use them for employee resolution. Occupancy identity resolution is
+  // intentionally name-based against the source-specific employee-ledger
+  // column (FuseCom/FuseNet/HeroDash).
   return {
     sourceSystem: result.source_system,
-    personalId: result.personal_id,
-    agentLogin: result.agent_login,
+    personalId: null,
+    agentLogin: null,
     agentName: result.agent_name_raw,
-    sourceAgentKey: result.source_agent_key,
+    sourceAgentKey: result.agent_name_raw,
   };
 }
 

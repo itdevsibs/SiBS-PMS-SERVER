@@ -1,4 +1,4 @@
-// Resolves Agent Level source identities to existing PMS/Kronos employee identities.
+// Resolves Agent Level, Agent Occupancy, and Email identities through the US Visa employee ledger.
 import {
   findEmployeeAliasCandidates,
   findEmployeeAliasCandidatesBulk,
@@ -25,6 +25,7 @@ const SOURCE_ALIAS_TYPES = Object.freeze({
   FUSECOM: "FUSECOM_NAME",
   FUSENET: "FUSENET_NAME",
   HERODASH: "HERODASH_NAME",
+  EMAIL: "MSD_NAME",
 });
 
 function normalizeIdentityPart(value) {

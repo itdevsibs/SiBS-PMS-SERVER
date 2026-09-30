@@ -188,12 +188,15 @@ export function prepareAgentOccupancyRow({
     fileHash,
     sourceTimezone,
   });
+  // Occupancy Personal ID and Agent Login are retained as source/audit data
+  // only. They are not SiBS employee identifiers. Resolve the employee using
+  // Agent Name against the source-specific employee-ledger name column.
   const identity = {
     sourceSystem: mapped.mappedRow.source_system,
-    personalId: mapped.mappedRow.personal_id,
-    agentLogin: mapped.mappedRow.agent_login,
+    personalId: null,
+    agentLogin: null,
     agentName: mapped.mappedRow.agent_name_raw,
-    sourceAgentKey: mapped.mappedRow.source_agent_key,
+    sourceAgentKey: mapped.mappedRow.agent_name_raw,
   };
   const identityResult = identityResolver.resolve(identity);
   const scopedRow = applyOccupancyIdentityAndScope(

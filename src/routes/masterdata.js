@@ -9,11 +9,11 @@ import {
 
 const router = Router();
 
-function normalizeValue(value) {
+function normalizeSibsId(value) {
   return String(value || "")
     .trim()
-    .replace(/\s+/g, " ")
-    .toUpperCase();
+    .replace(/^SIB-\s*/i, "")
+    .trim();
 }
 
 function formatDateForSql(val) {
@@ -71,8 +71,8 @@ router.get("/accounts", async (req, res, next) => {
 /**
  * GET /api/masterdata/ledger
  * Query params:
- *   - search: string (matches SIBS ID, name, email, or any tool alias)
- *   - filter: string ('all' | 'incomplete' | 'aliased' | 'unified')
+ *   - search: string (matches SIBS ID, name, email, or any tool identity)
+ *   - filter: string ('all' | 'incomplete' | 'aligned' | 'unified')
  *   - account: string (filter by account / campaign)
  *   - viewAll: boolean ('true' to view without search query)
  *   - limit: number (default 50)
@@ -132,8 +132,6 @@ router.get("/ledger", async (req, res, next) => {
       FROM ${pmsTables.usVisaEmployeeLedger} l
       LEFT JOIN ${kronosTables.employee} k ON (
         TRIM(k.gy_emp_code) = TRIM(l.sibs_id)
-        OR TRIM(k.gy_emp_code) = REGEXP_REPLACE(l.sibs_id, '[^0-9]', '')
-        OR CONCAT('SIB-', TRIM(k.gy_emp_code)) = REPLACE(TRIM(l.sibs_id), ' ', '')
         OR LOWER(TRIM(k.gy_emp_fullname)) = LOWER(TRIM(l.agent_name))
       )
     `;
@@ -197,8 +195,6 @@ router.get("/ledger", async (req, res, next) => {
       FROM ${pmsTables.usVisaEmployeeLedger} l
       LEFT JOIN ${kronosTables.employee} k ON (
         TRIM(k.gy_emp_code) = TRIM(l.sibs_id)
-        OR TRIM(k.gy_emp_code) = REGEXP_REPLACE(l.sibs_id, '[^0-9]', '')
-        OR CONCAT('SIB-', TRIM(k.gy_emp_code)) = REPLACE(TRIM(l.sibs_id), ' ', '')
         OR LOWER(TRIM(k.gy_emp_fullname)) = LOWER(TRIM(l.agent_name))
       )
     `;
@@ -227,11 +223,11 @@ router.get("/ledger", async (req, res, next) => {
 
 /**
  * PUT /api/masterdata/ledger/:sibsId
- * Updates or sets tool aliases and Phone/Login for an employee.
+ * Updates employee and source-tool identity fields directly in the ledger.
  */
 router.put("/ledger/:sibsId", async (req, res, next) => {
   try {
-    const sibsId = String(req.params.sibsId || "").trim();
+    const sibsId = normalizeSibsId(req.params.sibsId);
     if (!sibsId) {
       return res.status(400).json({
         success: false,
@@ -240,8 +236,6 @@ router.put("/ledger/:sibsId", async (req, res, next) => {
     }
 
     const {
-      phoneId,
-      agentLogin,
       kronosName,
       callNovoEmail,
       agentName,
@@ -317,93 +311,7 @@ router.put("/ledger/:sibsId", async (req, res, next) => {
         );
       }
 
-      // 2. Also keep us_visa_employee_aliases in sync for telephony tools
-      const upsertAlias = async (aliasType, sourceSystem, value) => {
-        const trimmed = String(value || "").trim();
-        const normalized = normalizeValue(trimmed);
-
-        // Check if an alias record already exists for this employee, tool type, and source
-        const [existing] = await connection.query(
-          `
-            SELECT id FROM ${pmsTables.usVisaEmployeeAliases}
-            WHERE employee_uid = ? AND alias_type = ? AND source_system = ?
-            ORDER BY id ASC
-          `,
-          [sibsId, aliasType, sourceSystem],
-        );
-
-        if (existing.length > 0) {
-          const targetId = existing[0].id;
-
-          if (!trimmed) {
-            // Deactivate and clear the existing record in-place
-            await connection.query(
-              `
-                UPDATE ${pmsTables.usVisaEmployeeAliases}
-                SET alias_value = '',
-                    normalized_alias_value = '',
-                    is_active = 0,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-              `,
-              [targetId],
-            );
-          } else {
-            // Update the existing record in-place (no new row, no auto-increment)
-            await connection.query(
-              `
-                UPDATE ${pmsTables.usVisaEmployeeAliases}
-                SET alias_value = ?,
-                    normalized_alias_value = ?,
-                    is_active = 1,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-              `,
-              [trimmed, normalized, targetId],
-            );
-          }
-
-          // Clean up any extraneous duplicate rows if they exist
-          if (existing.length > 1) {
-            await connection.query(
-              `
-                DELETE FROM ${pmsTables.usVisaEmployeeAliases}
-                WHERE employee_uid = ? AND alias_type = ? AND source_system = ? AND id != ?
-              `,
-              [sibsId, aliasType, sourceSystem, targetId],
-            );
-          }
-        } else if (trimmed) {
-          // Only insert if no record exists yet and a value is supplied
-          await connection.query(
-            `
-              INSERT INTO ${pmsTables.usVisaEmployeeAliases}
-                (employee_uid, alias_type, source_system, alias_value, normalized_alias_value, is_active)
-              VALUES (?, ?, ?, ?, ?, 1)
-            `,
-            [sibsId, aliasType, sourceSystem, trimmed, normalized],
-          );
-        }
-      };
-
-      if (phoneId !== undefined) {
-        await upsertAlias("PERSONAL_ID", "GLOBAL", phoneId);
-      }
-      if (agentLogin !== undefined) {
-        await upsertAlias("AGENT_LOGIN", "GLOBAL", agentLogin);
-      }
-      if (fusecomName !== undefined) {
-        await upsertAlias("FUSECOM_NAME", "FUSECOM", fusecomName);
-      }
-      if (fusenetName !== undefined) {
-        await upsertAlias("FUSENET_NAME", "FUSENET", fusenetName);
-      }
-      if (herodashName !== undefined) {
-        await upsertAlias("HERODASH_NAME", "HERODASH", herodashName);
-      }
-      if (msdName !== undefined) {
-        await upsertAlias("MSD_NAME", "MSD", msdName);
-      }
+      // Employee ledger is now the single source of truth for tool identities.
 
       await connection.commit();
 
@@ -425,7 +333,7 @@ router.put("/ledger/:sibsId", async (req, res, next) => {
 
 /**
  * POST /api/masterdata/ledger/batch-import
- * Batch updates or inserts tool aliases for multiple employees from an imported template.
+ * Batch updates source-tool identity fields directly in the employee ledger.
  */
 router.post("/ledger/batch-import", async (req, res, next) => {
   try {
@@ -444,109 +352,55 @@ router.post("/ledger/batch-import", async (req, res, next) => {
       let updatedCount = 0;
 
       for (const item of items) {
-        let sibsId = String(item.sibsId || "").trim();
+        let sibsId = normalizeSibsId(item.sibsId);
         const fullName = String(item.fullName || "").trim();
 
-        // If sibsId is missing, attempt to find gy_emp_code via canonical name
+        // If SIBS ID is missing, resolve the canonical numeric employee code.
         if (!sibsId && fullName) {
           const [foundEmp] = await kronosDb.query(
             `SELECT gy_emp_code FROM ${kronosTables.employee} WHERE UPPER(TRIM(gy_emp_fullname)) = ? LIMIT 1`,
             [fullName.toUpperCase()],
           );
           if (foundEmp.length > 0) {
-            sibsId = String(foundEmp[0].gy_emp_code).trim();
+            sibsId = normalizeSibsId(foundEmp[0].gy_emp_code);
           }
         }
 
         if (!sibsId) continue;
 
-        const fusecomName = item.fusecomName !== undefined ? String(item.fusecomName).trim() : undefined;
-        const fusenetName = item.fusenetName !== undefined ? String(item.fusenetName).trim() : undefined;
-        const herodashName = item.herodashName !== undefined ? String(item.herodashName).trim() : undefined;
-        const msdName = item.msdName !== undefined ? String(item.msdName).trim() : undefined;
+        const fusecomName = item.fusecomName !== undefined ? String(item.fusecomName || "").trim() : undefined;
+        const fusenetName = item.fusenetName !== undefined ? String(item.fusenetName || "").trim() : undefined;
+        const herodashName = item.herodashName !== undefined ? String(item.herodashName || "").trim() : undefined;
+        const msdName = item.msdName !== undefined ? String(item.msdName || "").trim() : undefined;
 
-        // Ensure at least one tool alias column was provided
-        const hasAnyColumn = [fusecomName, fusenetName, herodashName, msdName].some(
-          (v) => v !== undefined,
-        );
-        if (!hasAnyColumn) continue;
-
-        const upsertAlias = async (aliasType, sourceSystem, value) => {
-          const trimmed = String(value || "").trim();
-          const normalized = normalizeValue(trimmed);
-
-          const [existing] = await connection.query(
-            `
-              SELECT id FROM ${pmsTables.usVisaEmployeeAliases}
-              WHERE employee_uid = ? AND (alias_type = ? OR (source_system = ? AND alias_type = 'AGENT_NAME'))
-              ORDER BY id ASC
-            `,
-            [sibsId, aliasType, sourceSystem],
-          );
-
-          if (existing.length > 0) {
-            const targetId = existing[0].id;
-            if (!trimmed) {
-              await connection.query(
-                `
-                  UPDATE ${pmsTables.usVisaEmployeeAliases}
-                  SET alias_value = '',
-                      normalized_alias_value = '',
-                      is_active = 0,
-                      updated_at = CURRENT_TIMESTAMP
-                  WHERE employee_uid = ? AND (alias_type = ? OR (source_system = ? AND alias_type = 'AGENT_NAME'))
-                `,
-                [sibsId, aliasType, sourceSystem],
-              );
-            } else {
-              await connection.query(
-                `
-                  UPDATE ${pmsTables.usVisaEmployeeAliases}
-                  SET alias_value = ?,
-                      normalized_alias_value = ?,
-                      is_active = 1,
-                      updated_at = CURRENT_TIMESTAMP
-                  WHERE id = ?
-                `,
-                [trimmed, normalized, targetId],
-              );
-
-              if (existing.length > 1) {
-                await connection.query(
-                  `
-                    DELETE FROM ${pmsTables.usVisaEmployeeAliases}
-                    WHERE employee_uid = ? AND (alias_type = ? OR (source_system = ? AND alias_type = 'AGENT_NAME')) AND id != ?
-                  `,
-                  [sibsId, aliasType, sourceSystem, targetId],
-                );
-              }
-            }
-          } else if (trimmed) {
-            await connection.query(
-              `
-                INSERT INTO ${pmsTables.usVisaEmployeeAliases}
-                  (employee_uid, alias_type, source_system, alias_value, normalized_alias_value, is_active)
-                VALUES (?, ?, ?, ?, ?, 1)
-              `,
-              [sibsId, aliasType, sourceSystem, trimmed, normalized],
-            );
-          }
+        const updates = [];
+        const params = [];
+        const addUpdate = (column, value) => {
+          if (value === undefined) return;
+          updates.push(`${column} = ?`);
+          params.push(value || null);
         };
 
-        if (fusecomName !== undefined) {
-          await upsertAlias("FUSECOM_NAME", "FUSECOM", fusecomName);
-        }
-        if (fusenetName !== undefined) {
-          await upsertAlias("FUSENET_NAME", "FUSENET", fusenetName);
-        }
-        if (herodashName !== undefined) {
-          await upsertAlias("HERODASH_NAME", "HERODASH", herodashName);
-        }
-        if (msdName !== undefined) {
-          await upsertAlias("MSD_NAME", "MSD", msdName);
-        }
+        addUpdate("fusecom_name", fusecomName);
+        addUpdate("fusenet_name", fusenetName);
+        addUpdate("herodash_name", herodashName);
+        addUpdate("msd_name", msdName);
 
-        updatedCount++;
+        if (!updates.length) continue;
+
+        const [result] = await connection.query(
+          `
+            UPDATE ${pmsTables.usVisaEmployeeLedger}
+            SET ${updates.join(", ")},
+                updated_at = CURRENT_TIMESTAMP
+            WHERE sibs_id = ?
+          `,
+          [...params, sibsId],
+        );
+
+        if (result.affectedRows > 0) {
+          updatedCount++;
+        }
       }
 
       await connection.commit();
@@ -554,7 +408,7 @@ router.post("/ledger/batch-import", async (req, res, next) => {
       return res.json({
         success: true,
         count: updatedCount,
-        message: `Successfully updated tool identities for ${updatedCount} employee${updatedCount === 1 ? "" : "s"}.`,
+        message: `Successfully updated ledger tool identities for ${updatedCount} employee${updatedCount === 1 ? "" : "s"}.`,
       });
     } catch (err) {
       await connection.rollback();
@@ -563,7 +417,7 @@ router.post("/ledger/batch-import", async (req, res, next) => {
       connection.release();
     }
   } catch (error) {
-    console.error("Failed to batch import tool alignment:", error);
+    console.error("Failed to batch import ledger tool alignment:", error);
     next(error);
   }
 });
@@ -590,7 +444,7 @@ router.post("/ledger/import-us-visa", async (req, res, next) => {
       let upsertedCount = 0;
 
       for (const item of items) {
-        const sibsId = String(item.sibsId || item.sibs_id || "").trim();
+        const sibsId = normalizeSibsId(item.sibsId || item.sibs_id);
         if (!sibsId) continue;
 
         const kronosName = item.kronosName ?? item.kronos_name ?? null;
@@ -675,8 +529,6 @@ router.post("/ledger/import-us-visa", async (req, res, next) => {
         UPDATE ${pmsTables.usVisaEmployeeLedger} l
         JOIN ${kronosTables.employee} k ON (
           TRIM(k.gy_emp_code) = TRIM(l.sibs_id)
-          OR TRIM(k.gy_emp_code) = REGEXP_REPLACE(l.sibs_id, '[^0-9]', '')
-          OR CONCAT('SIB-', TRIM(k.gy_emp_code)) = REPLACE(TRIM(l.sibs_id), ' ', '')
           OR LOWER(TRIM(k.gy_emp_fullname)) = LOWER(TRIM(l.agent_name))
         )
         SET l.kronos_name = TRIM(k.gy_emp_fullname)
