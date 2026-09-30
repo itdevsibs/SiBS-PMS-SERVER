@@ -10,6 +10,7 @@ import {
   getWfmCallsKpi,
   getWfmSkills,
 } from "../controllers/callKpiController.js";
+import { getWfmEmailsKpi } from "../controllers/emailKpiController.js";
 import authMiddleware from "../middleware/authMiddleware.js";
 import { requireRole } from "../middleware/roleMiddleware.js";
 
@@ -60,6 +61,12 @@ router.get(
   "/kpis/skills",
   ...requireWfmGraphViewer,
   getWfmSkills,
+);
+
+router.get(
+  "/kpis/emails",
+  ...requireWfmGraphViewer,
+  getWfmEmailsKpi,
 );
 
 export default router;

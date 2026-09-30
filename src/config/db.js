@@ -140,6 +140,10 @@ export const pmsTables = {
     PMS_DB_NAME,
     "us_visa_raw_email_cases",
   ),
+  usVisaCountryHolidays: dbTable(
+    PMS_DB_NAME,
+    "us_visa_country_holidays",
+  ),
   usVisaEmployeeAliases: dbTable(PMS_DB_NAME, "us_visa_employee_aliases"),
   usVisaEmployeeLedger: dbTable(PMS_DB_NAME, "us_visa_employee_ledger"),
   usVisaEmployeeScopeAssignments: dbTable(
