@@ -144,8 +144,15 @@ export const pmsTables = {
     PMS_DB_NAME,
     "us_visa_country_holidays",
   ),
-  usVisaEmployeeLedger: dbTable(PMS_DB_NAME, "us_visa_employee_ledger"),
-  wfmHistoryLogs: dbTable(PMS_DB_NAME, "wfm_history_logs"),
+  usVisaEmployeeLedger: dbTable(
+    PMS_DB_NAME, "us_visa_employee_ledger"
+  ),
+  usVisaQualityAudits: dbTable(
+    PMS_DB_NAME, "us_visa_quality_audits"
+  ),
+  wfmHistoryLogs: dbTable(
+    PMS_DB_NAME, "wfm_history_logs"
+  ),
 };
 
 // ============================================================

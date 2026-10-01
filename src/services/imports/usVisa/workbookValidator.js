@@ -14,6 +14,7 @@ export const IMPORT_PROFILE_CODES = {
   FUSENET_AGENT_OCCUPANCY: "FUSENET_AGENT_OCCUPANCY",
   HERODASH_AGENT_OCCUPANCY: "HERODASH_AGENT_OCCUPANCY",
   US_VISA_EMAIL_RAW_DATA: "US_VISA_EMAIL_RAW_DATA",
+  US_VISA_QUALITY_AUDIT: "US_VISA_QUALITY_AUDIT",
 };
 
 export const WORKBOOK_VALIDATION_ERROR_CODES = {
@@ -283,6 +284,27 @@ const EMAIL_RAW_DATA_VARIANT_HEADERS = [
   "Description",
 ];
 
+
+const QUALITY_AUDIT_REQUIRED_HEADERS = [
+  "Auditor's Name",
+  "Audit Date",
+  "Agent Name",
+  "SiBS - ID",
+  "Audit Type",
+  "Transaction Date",
+  "Phase",
+  "LOB",
+  "Call/Case ID",
+  "Category",
+  "Sub Category",
+  "Country",
+  "Task Order",
+  "Total Audit Score (%)",
+  "Audit Week",
+  "Audit Month",
+  "Audit Year",
+];
+
 export const WORKBOOK_PROFILE_DEFINITIONS = {
   [IMPORT_PROFILE_CODES.HERO_SKILL_STATISTICS_INBOUND]: {
     profileCode:
@@ -425,6 +447,22 @@ export const WORKBOOK_PROFILE_DEFINITIONS = {
         headerRowCandidates: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
         requiredHeaders: EMAIL_RAW_DATA_COMMON_HEADERS,
         ignoredHeaders: EMAIL_RAW_DATA_VARIANT_HEADERS,
+      },
+    ],
+  },
+  [IMPORT_PROFILE_CODES.US_VISA_QUALITY_AUDIT]: {
+    profileCode: IMPORT_PROFILE_CODES.US_VISA_QUALITY_AUDIT,
+    sourceSystem: "QUALITY_AUDIT",
+    requiredSheets: [
+      {
+        sheetName: "NewDB1",
+        sheetNameCandidates: ["NewDB1"],
+        dataGrain: "QUALITY_AUDIT",
+        headerRowNumber: 1,
+        headerRowCandidates: [1],
+        requiredHeaders: QUALITY_AUDIT_REQUIRED_HEADERS,
+        ignoredHeaders: [],
+        allowUnknownHeaders: true,
       },
     ],
   },
@@ -689,7 +727,7 @@ function validateSheetHeaders(workbook, rule) {
     const isIgnoredHeader =
       ignoredHeaderMap.has(normalizedSourceHeader);
 
-    if (!isRequiredHeader && !isIgnoredHeader) {
+    if (!isRequiredHeader && !isIgnoredHeader && !rule.allowUnknownHeaders) {
       warnings.push(
         createValidationIssue({
           severity: "WARNING",

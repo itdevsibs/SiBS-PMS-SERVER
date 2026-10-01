@@ -3,7 +3,7 @@ import {
   findScopeAssignmentsByEmployeeUid,
   findScopeAssignmentsByOperationsManagerUid,
   findScopeAssignmentsByTeamLeaderUid,
-} from "../../repositories/usVisa/usVisaEmployeeScopeRepository.js";
+} from "../../../repositories/usVisa/usVisaEmployeeScopeRepository.js";
 
 export const US_VISA_ORG_ROLES = Object.freeze({
   AGENT: "AGENT",

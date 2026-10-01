@@ -235,15 +235,32 @@ export async function findBatchByIdOrCode(identifier) {
 }
 
 export async function deleteBatchById(batchId) {
-  const [result] = await queryUsVisa(
-    `
-      DELETE FROM ${pmsTables.usVisaImportBatches}
-      WHERE id = ?
-    `,
-    [batchId],
-  );
+  const connection = await pmsDb.getConnection();
 
-  return result.affectedRows > 0;
+  try {
+    await connection.beginTransaction();
+    try {
+      await connection.query(
+        `DELETE FROM ${pmsTables.usVisaQualityAudits} WHERE batch_id = ?`,
+        [batchId],
+      );
+    } catch (error) {
+      // Keep legacy batch deletion usable during rolling deployments where the
+      // QA migration may not have been applied yet.
+      if (error?.code !== "ER_NO_SUCH_TABLE") throw error;
+    }
+    const [result] = await connection.query(
+      `DELETE FROM ${pmsTables.usVisaImportBatches} WHERE id = ?`,
+      [batchId],
+    );
+    await connection.commit();
+    return result.affectedRows > 0;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
 }
 
 export async function getImportSummary(options = {}) {
