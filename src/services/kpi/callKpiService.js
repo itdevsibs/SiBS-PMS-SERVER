@@ -154,9 +154,28 @@ export function addCallKpiPeriod(date, period, amount = 1) {
 
 export function seedCallKpiReferencePeriodBuckets(
   bucketMap,
-  { period, dateFrom, referenceDate, createAccumulator = emptyAccumulator },
+  { period, dateFrom, dateTo, referenceDate, createAccumulator = emptyAccumulator },
 ) {
-  if (period === "custom" || !referenceDate) return;
+  if (period === "custom") {
+    if (!dateFrom || !dateTo) return;
+    const start = parseCallKpiDateOnly(dateFrom);
+    const end = parseCallKpiDateOnly(dateTo);
+    if (!start || !end || start > end) return;
+
+    let cursor = start;
+    let count = 0;
+    while (cursor <= end && count < 366) {
+      const bucket = getCallKpiPeriodBucket(cursor, period);
+      bucketMap.set(bucket.key, createAccumulator(bucket));
+      const next = new Date(cursor.getTime());
+      next.setUTCDate(next.getUTCDate() + 1);
+      cursor = next;
+      count += 1;
+    }
+    return;
+  }
+
+  if (!referenceDate) return;
 
   const start = parseCallKpiDateOnly(dateFrom);
   if (!start) return;
@@ -303,6 +322,7 @@ export function buildWfmCallKpiDashboard({
   seedCallKpiReferencePeriodBuckets(bucketMap, {
     period: normalizedPeriod,
     dateFrom,
+    dateTo,
     referenceDate,
   });
 
