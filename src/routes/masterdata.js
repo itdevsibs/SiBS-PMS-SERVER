@@ -69,11 +69,36 @@ router.get("/accounts", async (req, res, next) => {
 });
 
 /**
+ * GET /api/masterdata/task-orders
+ * Returns distinct task orders from us_visa_employee_ledger.
+ */
+router.get("/task-orders", async (req, res, next) => {
+  try {
+    const [rows] = await pmsDb.query(`
+      SELECT DISTINCT TRIM(task_order) AS taskOrder
+      FROM ${pmsTables.usVisaEmployeeLedger}
+      WHERE task_order IS NOT NULL 
+        AND TRIM(task_order) != '' 
+        AND task_order NOT LIKE '%#REF!%'
+        AND LOWER(TRIM(task_order)) NOT LIKE '%operations manager%'
+        AND LOWER(TRIM(task_order)) NOT IN ('om', '- om', 'operations manager', '- operations manager')
+      ORDER BY taskOrder ASC
+    `);
+    const taskOrders = rows.map((r) => r.taskOrder).filter(Boolean);
+    return res.json({ success: true, taskOrders });
+  } catch (err) {
+    console.error("Failed to fetch task orders:", err);
+    next(err);
+  }
+});
+
+/**
  * GET /api/masterdata/ledger
  * Query params:
  *   - search: string (matches SIBS ID, name, email, or any tool identity)
  *   - filter: string ('all' | 'incomplete' | 'aligned' | 'unified')
  *   - account: string (filter by account / campaign)
+ *   - taskOrder: string (filter by task order)
  *   - viewAll: boolean ('true' to view without search query)
  *   - limit: number (default 50)
  *   - offset: number (default 0)
@@ -82,6 +107,7 @@ router.get("/ledger", async (req, res, next) => {
   try {
     const rawSearch = String(req.query.search || "").trim();
     const account = String(req.query.account || "").trim();
+    const taskOrder = String(req.query.taskOrder || "").trim();
     const page = Math.max(Number(req.query.page) || 1, 1);
     const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 10000);
     const offset = (page - 1) * limit;
@@ -101,6 +127,11 @@ router.get("/ledger", async (req, res, next) => {
 
     const whereClauses = [];
     const queryParams = [];
+
+    if (taskOrder && taskOrder !== "All Task Orders") {
+      whereClauses.push("TRIM(l.task_order) = ?");
+      queryParams.push(taskOrder);
+    }
 
     if (rawSearch) {
       const searchPattern = `%${rawSearch}%`;
@@ -457,7 +488,13 @@ router.post("/ledger/import-us-visa", async (req, res, next) => {
         const site = item.site ?? null;
         const status = item.status ?? null;
         const phase = item.phase ?? null;
-        const taskOrder = cleanExcelString(item.taskOrder ?? item.task_order);
+        const rawTaskOrder = cleanExcelString(item.taskOrder ?? item.task_order);
+        const taskOrder =
+          rawTaskOrder &&
+          (rawTaskOrder.toLowerCase().includes("operations manager") ||
+            /^\s*[-–—]?\s*om\s*$/i.test(rawTaskOrder))
+            ? null
+            : rawTaskOrder;
         const taskOrderDescription = cleanExcelString(item.taskOrderDescription ?? item.task_order_description);
         const usVisaDepartureDate = formatDateForSql(item.usVisaDepartureDate ?? item.us_visa_departure_date);
         const usVisaJoinDate = formatDateForSql(item.usVisaJoinDate ?? item.us_visa_join_date);

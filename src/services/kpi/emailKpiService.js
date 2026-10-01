@@ -97,8 +97,27 @@ function buildHolidayMap(holidays = []) {
   return byCountry;
 }
 
-function seedReferenceBuckets(bucketMap, { period, dateFrom, referenceDate }) {
-  if (period === "custom" || !referenceDate) return;
+function seedReferenceBuckets(bucketMap, { period, dateFrom, dateTo, referenceDate }) {
+  if (period === "custom") {
+    if (!dateFrom || !dateTo) return;
+    const start = parseCallKpiDateOnly(dateFrom);
+    const end = parseCallKpiDateOnly(dateTo);
+    if (!start || !end || start > end) return;
+
+    let cursor = start;
+    let count = 0;
+    while (cursor <= end && count < 366) {
+      const bucket = getCallKpiPeriodBucket(cursor, period);
+      bucketMap.set(bucket.key, emptyAccumulator(bucket));
+      const next = new Date(cursor.getTime());
+      next.setUTCDate(next.getUTCDate() + 1);
+      cursor = next;
+      count += 1;
+    }
+    return;
+  }
+
+  if (!referenceDate) return;
   const start = parseCallKpiDateOnly(dateFrom);
   if (!start) return;
 
@@ -136,6 +155,7 @@ export function buildWfmEmailKpiDashboard({
   seedReferenceBuckets(bucketMap, {
     period: normalizedPeriod,
     dateFrom,
+    dateTo,
     referenceDate,
   });
 
