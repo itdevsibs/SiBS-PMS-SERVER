@@ -2,12 +2,14 @@
 import { processAgentInteractionWorkbook } from "./agentInteractions/agentInteractionImportProcessor.js";
 import { processAgentOccupancyWorkbook } from "./agentOccupancy/agentOccupancyImportProcessor.js";
 import { processEmailRawDataWorkbook } from "./emailRawData/emailRawDataImportProcessor.js";
+import { processQualityAuditWorkbook } from "./qualityAudit/qualityAuditImportProcessor.js";
 
 export const US_VISA_IMPORT_REPORT_TYPES = Object.freeze({
   SKILL_STATISTICS: "SKILL_STATISTICS",
   AGENT_LEVEL: "AGENT_LEVEL",
   AGENT_OCCUPANCY: "AGENT_OCCUPANCY",
   EMAIL_RAW_DATA: "EMAIL_RAW_DATA",
+  QUALITY_AUDIT: "QUALITY_AUDIT",
 });
 
 const PROCESSORS_BY_REPORT_TYPE = Object.freeze({
@@ -27,6 +29,12 @@ const PROCESSORS_BY_REPORT_TYPE = Object.freeze({
     domain: "EMAIL_RAW_DATA",
     fileType: "XLSX",
     processWorkbook: processEmailRawDataWorkbook,
+    processCsv: null,
+  },
+  [US_VISA_IMPORT_REPORT_TYPES.QUALITY_AUDIT]: {
+    domain: "QUALITY_AUDIT",
+    fileType: "XLSX",
+    processWorkbook: processQualityAuditWorkbook,
     processCsv: null,
   },
 });

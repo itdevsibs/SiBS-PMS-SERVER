@@ -135,6 +135,7 @@ export function getFatalMessage(result = {}) {
   const isFusenet = /fusenet/i.test(profileCode);
   const isOccupancy = /occupancy/i.test(profileCode);
   const isAgentLevel = /agent/i.test(profileCode) && !isOccupancy;
+  const isQualityAudit = /quality/i.test(profileCode);
   const profileLabel = result.profile?.profileName || profileCode || "selected";
 
   if (result.message && result.code) {
@@ -159,6 +160,9 @@ export function getFatalMessage(result = {}) {
       firstError.errorCode === "MISSING_REQUIRED_COLUMN" ||
       firstError.errorCode === "MISSING_REQUIRED_HEADER"
     ) {
+      if (isQualityAudit) {
+        return "Only the US Visa Quality Audit workbook (.xlsx) with the NewDB1 sheet and required QA columns is allowed for this card.";
+      }
       if (isOccupancy) {
         if (isHerodash) {
           return "Only HeroDash Agent Occupancy (.xlsx) files are allowed for this card. The selected file is missing required HeroDash Occupancy sheets or column headers.";
@@ -475,7 +479,7 @@ export async function getUsVisaImportRawData(req, res) {
       });
     }
 
-    // 1. Get profile and check if Agent Level, Agent Occupancy, or Email Raw Data
+    // 1. Get profile and check if Agent Level, Agent Occupancy, Email Raw Data, or Quality Audit
     const [profileRows] = await pmsDb.query(
       `SELECT profile_code, profile_name, report_type FROM ${pmsTables.usVisaImportProfiles} WHERE id = ?`,
       [batch.importProfileId || batch.import_profile_id],
@@ -488,15 +492,26 @@ export async function getUsVisaImportRawData(req, res) {
       reportType === "EMAIL_RAW_DATA" ||
       profile.profile_code === "US_VISA_EMAIL_RAW_DATA" ||
       batch.importProfileCode === "US_VISA_EMAIL_RAW_DATA";
-    const supportsSibsFilter = isAgentLevel || isAgentOccupancy || isEmailRawData;
+    const isQualityAudit =
+      reportType === "QUALITY_AUDIT" ||
+      profile.profile_code === "US_VISA_QUALITY_AUDIT" ||
+      batch.importProfileCode === "US_VISA_QUALITY_AUDIT";
+    const supportsSibsFilter =
+      isAgentLevel || isAgentOccupancy || isEmailRawData || isQualityAudit;
     const mappingTable = isAgentLevel
       ? pmsTables.usVisaRawAgentInteractions
       : isAgentOccupancy
         ? pmsTables.usVisaRawAgentOccupancy
         : isEmailRawData
           ? pmsTables.usVisaRawEmailCases
-          : null;
-    const mappingStatusCol = isEmailRawData ? "modified_by_mapping_status" : "mapping_status";
+          : isQualityAudit
+            ? pmsTables.usVisaQualityAudits
+            : null;
+    const mappingStatusCol = isEmailRawData
+      ? "modified_by_mapping_status"
+      : isQualityAudit
+        ? "employee_mapping_status"
+        : "mapping_status";
     const employeeUidCol = isEmailRawData ? "modified_by_employee_uid" : "employee_uid";
 
     // 2. Get available sheets for this batch

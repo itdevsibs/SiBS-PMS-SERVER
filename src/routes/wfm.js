@@ -11,6 +11,7 @@ import {
   getWfmSkills,
 } from "../controllers/callKpiController.js";
 import { getWfmEmailsKpi } from "../controllers/emailKpiController.js";
+import { getWfmQualityAuditKpi } from "../controllers/qualityAuditKpiController.js";
 import { getTaskOrderLedger } from "../controllers/taskOrderLedgerController.js";
 import authMiddleware from "../middleware/authMiddleware.js";
 import { requireRole } from "../middleware/roleMiddleware.js";
@@ -68,6 +69,12 @@ router.get(
   "/kpis/emails",
   ...requireWfmGraphViewer,
   getWfmEmailsKpi,
+);
+
+router.get(
+  "/kpis/quality-audit",
+  ...requireWfmGraphViewer,
+  getWfmQualityAuditKpi,
 );
 
 router.get(
