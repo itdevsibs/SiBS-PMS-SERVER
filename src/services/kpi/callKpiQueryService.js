@@ -114,9 +114,9 @@ export async function getWfmCallKpiDashboard(query = {}) {
 
   const grainLookupRange = isCustomRange || isLegacyManualRange
     ? {
-        dateFrom: requestedDateFrom,
-        dateTo: requestedDateTo,
-      }
+      dateFrom: requestedDateFrom,
+      dateTo: requestedDateTo,
+    }
     : {};
 
   const rawGrains = await listAvailableCallKpiDataGrains({

@@ -13,6 +13,9 @@ function emptyAccumulator(bucket = {}) {
     qaTransactions: 0,
     scoreTotal: 0,
     scoredTransactions: 0,
+    callAudits: 0,
+    caseAudits: 0,
+    agentUids: new Set(),
   };
 }
 
@@ -28,6 +31,16 @@ function addRow(accumulator, row) {
     accumulator.scoreTotal += score;
     accumulator.scoredTransactions += 1;
   }
+  const lobLower = String(row.lob || "").trim().toLowerCase();
+  if (lobLower === "call") {
+    accumulator.callAudits += 1;
+  } else if (lobLower === "case" || lobLower === "email") {
+    accumulator.caseAudits += 1;
+  }
+  const uid = row.employeeUid || row.agentNameRaw;
+  if (uid) {
+    accumulator.agentUids.add(String(uid).trim().toLowerCase());
+  }
 }
 
 function finalize(accumulator) {
@@ -38,6 +51,9 @@ function finalize(accumulator) {
     qaTransactions: accumulator.qaTransactions,
     qaScorePct: round(average * 100, 2),
     scoredTransactions: accumulator.scoredTransactions,
+    callAudits: accumulator.callAudits,
+    caseAudits: accumulator.caseAudits,
+    auditedAgents: accumulator.agentUids ? accumulator.agentUids.size : 0,
   };
 }
 
