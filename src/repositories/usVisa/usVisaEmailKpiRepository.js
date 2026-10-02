@@ -62,12 +62,12 @@ export async function getEmailKpiRows({
   appendTaskOrderFilter(conditions, values, taskOrder);
 
   if (dateFrom) {
-    conditions.push("DATE(e.created_on) >= ?");
-    values.push(dateFrom);
+    conditions.push("e.created_on >= ?");
+    values.push(`${dateFrom} 00:00:00`);
   }
   if (dateTo) {
-    conditions.push("DATE(e.created_on) <= ?");
-    values.push(dateTo);
+    conditions.push("e.created_on <= ?");
+    values.push(`${dateTo} 23:59:59`);
   }
 
   const [rows] = await pmsDb.query(

@@ -135,8 +135,8 @@ test("resolves six weekly periods from the selected reference date", () => {
   });
 
   assert.deepEqual(result, {
-    dateFrom: "2026-06-22",
-    dateTo: "2026-07-31",
+    dateFrom: "2026-07-27",
+    dateTo: "2026-09-06",
     referenceDate: "2026-07-31",
   });
 });
@@ -150,8 +150,8 @@ test("resolves six monthly, quarterly, and annual periods", () => {
       period: "monthly",
     }),
     {
-      dateFrom: "2026-02-01",
-      dateTo: "2026-07-31",
+      dateFrom: "2026-07-01",
+      dateTo: "2026-12-31",
       referenceDate: "2026-07-31",
     },
   );
@@ -164,8 +164,8 @@ test("resolves six monthly, quarterly, and annual periods", () => {
       period: "quarterly",
     }),
     {
-      dateFrom: "2025-04-01",
-      dateTo: "2026-07-31",
+      dateFrom: "2026-07-01",
+      dateTo: "2027-12-31",
       referenceDate: "2026-07-31",
     },
   );
@@ -178,8 +178,8 @@ test("resolves six monthly, quarterly, and annual periods", () => {
       period: "annually",
     }),
     {
-      dateFrom: "2021-01-01",
-      dateTo: "2026-07-31",
+      dateFrom: "2026-01-01",
+      dateTo: "2031-12-31",
       referenceDate: "2026-07-31",
     },
   );
@@ -193,8 +193,8 @@ test("latest/default range uses the latest available date as the reference date"
       period: "weekly",
     }),
     {
-      dateFrom: "2026-06-22",
-      dateTo: "2026-07-31",
+      dateFrom: "2026-07-27",
+      dateTo: "2026-09-06",
     },
   );
 });
@@ -240,8 +240,8 @@ test("keeps the full six-week comparison window even when stored data starts lat
   });
 
   assert.deepEqual(result, {
-    dateFrom: "2026-06-22",
-    dateTo: "2026-07-31",
+    dateFrom: "2026-07-27",
+    dateTo: "2026-09-06",
     referenceDate: "2026-07-31",
   });
 });
@@ -261,19 +261,19 @@ test("returns six weekly chart buckets and zero-fills weeks without rows", () =>
     period: "weekly",
     dataGrain: "SKILL_DAY",
     sourceSystem: "FUSECOM",
-    dateFrom: "2026-06-22",
-    dateTo: "2026-07-31",
+    dateFrom: "2026-07-27",
+    dateTo: "2026-09-06",
     referenceDate: "2026-07-31",
   });
 
   assert.equal(result.series.length, 6);
   assert.deepEqual(
     result.series.map((item) => item.label),
-    ["Week 26", "Week 27", "Week 28", "Week 29", "Week 30", "Week 31"],
+    ["Week 31", "Week 32", "Week 33", "Week 34", "Week 35", "Week 36"],
   );
   assert.deepEqual(
     result.series.map((item) => item.callsOffered),
-    [0, 0, 0, 0, 0, 100],
+    [100, 0, 0, 0, 0, 0],
   );
 });
 

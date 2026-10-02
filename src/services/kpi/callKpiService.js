@@ -269,21 +269,30 @@ export function resolveCallKpiDateRange({
 
   if (normalizedPeriod === "monthly") {
     start.setUTCDate(1);
-    start.setUTCMonth(start.getUTCMonth() - 5);
   } else if (normalizedPeriod === "quarterly") {
     start.setUTCMonth(Math.floor(start.getUTCMonth() / 3) * 3, 1);
-    start.setUTCMonth(start.getUTCMonth() - 15);
   } else if (normalizedPeriod === "annually") {
     start.setUTCMonth(0, 1);
-    start.setUTCFullYear(start.getUTCFullYear() - 5);
   } else {
     const isoDay = start.getUTCDay() || 7;
-    start.setUTCDate(start.getUTCDate() - (isoDay - 1) - (5 * 7));
+    start.setUTCDate(start.getUTCDate() - (isoDay - 1));
+  }
+
+  const end = new Date(start.getTime());
+  if (normalizedPeriod === "monthly") {
+    end.setUTCMonth(end.getUTCMonth() + 6, 0);
+  } else if (normalizedPeriod === "quarterly") {
+    end.setUTCMonth(end.getUTCMonth() + 18, 0);
+  } else if (normalizedPeriod === "annually") {
+    end.setUTCFullYear(end.getUTCFullYear() + 5);
+    end.setUTCMonth(11, 31);
+  } else {
+    end.setUTCDate(end.getUTCDate() + (6 * 7) - 1);
   }
 
   return {
     dateFrom: formatCallKpiDateOnly(start),
-    dateTo: formatCallKpiDateOnly(selectedReference),
+    dateTo: formatCallKpiDateOnly(end),
     referenceDate: formatCallKpiDateOnly(selectedReference),
   };
 }

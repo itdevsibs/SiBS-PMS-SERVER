@@ -115,7 +115,9 @@ export async function getQualityAuditKpiRows({
         q.country_raw,
         q.country_code,
         q.lob,
-        q.audit_type
+        q.audit_type,
+        q.employee_uid,
+        q.agent_name_raw
       FROM ${pmsTables.usVisaQualityAudits} q
       INNER JOIN ${pmsTables.usVisaImportBatches} b ON b.id = q.batch_id
       WHERE ${conditions.join("\n        AND ")}
@@ -133,6 +135,8 @@ export async function getQualityAuditKpiRows({
     countryCode: row.country_code,
     lob: row.lob,
     auditType: row.audit_type,
+    employeeUid: row.employee_uid,
+    agentNameRaw: row.agent_name_raw,
   }));
 }
 
