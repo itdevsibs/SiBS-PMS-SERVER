@@ -29,7 +29,6 @@ const INSERT_COLUMNS = [
   "source_audit_week",
   "source_audit_month",
   "source_audit_year",
-  "row_identity_hash",
   "row_content_hash",
 ];
 
@@ -71,7 +70,6 @@ function getValues(row = {}) {
     nullable(row.source_audit_week),
     nullable(row.source_audit_month),
     nullable(row.source_audit_year),
-    row.rowIdentityHash,
     row.rowContentHash,
   ];
 }
@@ -92,9 +90,16 @@ export async function findQualityAuditsByIdentityHashes(hashes = []) {
   if (!unique.length) return [];
   const [rows] = await pmsDb.query(
     `
-      SELECT id, batch_id, raw_import_row_id, row_identity_hash, row_content_hash
-      FROM ${pmsTables.usVisaQualityAudits}
-      WHERE row_identity_hash IN (${placeholders(unique)})
+      SELECT
+        qa.id,
+        qa.batch_id,
+        qa.raw_import_row_id,
+        rr.row_identity_hash,
+        qa.row_content_hash
+      FROM ${pmsTables.usVisaQualityAudits} qa
+      INNER JOIN ${pmsTables.usVisaRawImportRows} rr
+        ON rr.id = qa.raw_import_row_id
+      WHERE rr.row_identity_hash IN (${placeholders(unique)})
     `,
     unique,
   );

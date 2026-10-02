@@ -29,6 +29,21 @@ import {
   listImportErrorsByBatchId,
 } from "../../repositories/usVisa/usVisaImportErrorRepository.js";
 
+function parseJsonValue(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "object") return value;
+
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
 function pickBatchResponse(batch = {}) {
   return {
     id: batch.id,
@@ -576,7 +591,7 @@ export async function getUsVisaImportRawData(req, res) {
     }
 
     if (search) {
-      countSql += ` AND r.row_json LIKE ?`;
+      countSql += ` AND CAST(r.row_json AS CHAR) LIKE ?`;
       countParams.push(`%${search}%`);
     }
 
@@ -614,7 +629,7 @@ export async function getUsVisaImportRawData(req, res) {
     }
 
     if (search) {
-      rowsSql += ` AND r.row_json LIKE ?`;
+      rowsSql += ` AND CAST(r.row_json AS CHAR) LIKE ?`;
       rowsParams.push(`%${search}%`);
     }
 
@@ -629,7 +644,7 @@ export async function getUsVisaImportRawData(req, res) {
       const headerSet = new Set();
       for (const r of rawRows) {
         try {
-          const parsed = typeof r.row_json === "string" ? JSON.parse(r.row_json) : r.row_json;
+          const parsed = parseJsonValue(r.row_json);
           if (parsed && typeof parsed === "object") {
             Object.keys(parsed).forEach((k) => headerSet.add(k));
           }
@@ -643,7 +658,7 @@ export async function getUsVisaImportRawData(req, res) {
       );
       if (sample[0]?.row_json) {
         try {
-          const parsed = JSON.parse(sample[0].row_json);
+          const parsed = parseJsonValue(sample[0].row_json);
           headers = Object.keys(parsed);
         } catch {}
       }
@@ -658,7 +673,7 @@ export async function getUsVisaImportRawData(req, res) {
     const rows = rawRows.map((r) => {
       let data = {};
       try {
-        const parsed = typeof r.row_json === "string" ? JSON.parse(r.row_json) : r.row_json;
+        const parsed = parseJsonValue(r.row_json);
         if (parsed && typeof parsed === "object") {
           for (const [k, v] of Object.entries(parsed)) {
             if (

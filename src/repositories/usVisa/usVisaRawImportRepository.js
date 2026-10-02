@@ -5,6 +5,21 @@ function serializeJson(value) {
   return JSON.stringify(value ?? {});
 }
 
+function parseJsonValue(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "object") return value;
+
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
 function mapRawImportRow(row) {
   if (!row) return null;
 
@@ -14,7 +29,7 @@ function mapRawImportRow(row) {
     sheetName: row.sheet_name,
     excelRowNumber: row.excel_row_number,
     dataGrain: row.data_grain,
-    rowJson: row.row_json ? JSON.parse(row.row_json) : null,
+    rowJson: parseJsonValue(row.row_json),
     rowIdentityHash: row.row_identity_hash,
     rowHash: row.row_identity_hash,
     validationStatus: row.validation_status,
