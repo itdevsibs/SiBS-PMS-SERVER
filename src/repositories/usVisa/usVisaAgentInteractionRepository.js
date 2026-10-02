@@ -48,6 +48,21 @@ function buildInPlaceholders(values = []) {
   return values.map(() => "?").join(", ");
 }
 
+function parseJsonValue(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "object") return value;
+
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
 function mapAgentInteractionRow(row) {
   if (!row) return null;
 
@@ -84,7 +99,7 @@ function mapAgentInteractionRow(row) {
     handleSeconds: row.handle_seconds,
     holdCount: row.hold_count,
     disconnectIndicator: row.disconnect_indicator,
-    rowJson: row.raw_row_json ? JSON.parse(row.raw_row_json) : null,
+    rowJson: parseJsonValue(row.raw_row_json),
     rowIdentityHash: row.row_identity_hash,
     rowContentHash: row.row_content_hash,
     createdAt: row.created_at,

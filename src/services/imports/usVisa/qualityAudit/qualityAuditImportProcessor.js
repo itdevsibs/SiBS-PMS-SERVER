@@ -139,7 +139,6 @@ function buildCanonicalRow(row, batch, profile) {
     importProfileId: profile.id,
     sourceRowNumber: row.excelRowNumber,
     ...canonical,
-    rowIdentityHash: row.rowHash,
     rowContentHash: row.contentHash,
   };
 }
