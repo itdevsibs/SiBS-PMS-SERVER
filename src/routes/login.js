@@ -4,6 +4,8 @@ import crypto from "crypto";
 import express from "express";
 
 import { kronosDb, kronosTables } from "../config/db.js";
+import authMiddleware from "../middleware/authMiddleware.js";
+import { requireRole } from "../middleware/roleMiddleware.js";
 
 const router = express.Router();
 
@@ -56,7 +58,11 @@ function isPasswordMatch(password, storedPassword) {
 }
 
 // Searches Kronos users and employees for the admin Add User Access modal.
-router.get("/employees/search", async (req, res) => {
+router.get(
+  "/employees/search",
+  authMiddleware,
+  requireRole([7]),
+  async (req, res) => {
   try {
     const search = String(req.query?.q || "").trim();
 
@@ -193,7 +199,8 @@ router.get("/employees/search", async (req, res) => {
       message: "Unable to search employees",
     });
   }
-});
+  },
+);
 
 router.post("/user", async (req, res) => {
   try {
