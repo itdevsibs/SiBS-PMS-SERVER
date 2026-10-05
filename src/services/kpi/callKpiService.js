@@ -265,29 +265,25 @@ export function resolveCallKpiDateRange({
   }
 
   const normalizedPeriod = normalizeCallKpiPeriod(period);
-  const start = new Date(selectedReference.getTime());
+  let start;
+  let end;
 
   if (normalizedPeriod === "monthly") {
-    start.setUTCDate(1);
+    end = new Date(Date.UTC(selectedReference.getUTCFullYear(), selectedReference.getUTCMonth() + 1, 0));
+    start = new Date(Date.UTC(selectedReference.getUTCFullYear(), selectedReference.getUTCMonth() - 5, 1));
   } else if (normalizedPeriod === "quarterly") {
-    start.setUTCMonth(Math.floor(start.getUTCMonth() / 3) * 3, 1);
+    const qMonth = Math.floor(selectedReference.getUTCMonth() / 3) * 3;
+    end = new Date(Date.UTC(selectedReference.getUTCFullYear(), qMonth + 3, 0));
+    start = new Date(Date.UTC(selectedReference.getUTCFullYear(), qMonth - 15, 1));
   } else if (normalizedPeriod === "annually") {
-    start.setUTCMonth(0, 1);
+    end = new Date(Date.UTC(selectedReference.getUTCFullYear(), 11, 31));
+    start = new Date(Date.UTC(selectedReference.getUTCFullYear() - 5, 0, 1));
   } else {
-    const isoDay = start.getUTCDay() || 7;
-    start.setUTCDate(start.getUTCDate() - (isoDay - 1));
-  }
-
-  const end = new Date(start.getTime());
-  if (normalizedPeriod === "monthly") {
-    end.setUTCMonth(end.getUTCMonth() + 6, 0);
-  } else if (normalizedPeriod === "quarterly") {
-    end.setUTCMonth(end.getUTCMonth() + 18, 0);
-  } else if (normalizedPeriod === "annually") {
-    end.setUTCFullYear(end.getUTCFullYear() + 5);
-    end.setUTCMonth(11, 31);
-  } else {
-    end.setUTCDate(end.getUTCDate() + (6 * 7) - 1);
+    const isoDay = selectedReference.getUTCDay() || 7;
+    end = new Date(selectedReference.getTime());
+    end.setUTCDate(end.getUTCDate() + (7 - isoDay));
+    start = new Date(end.getTime());
+    start.setUTCDate(start.getUTCDate() - (6 * 7 - 1));
   }
 
   return {

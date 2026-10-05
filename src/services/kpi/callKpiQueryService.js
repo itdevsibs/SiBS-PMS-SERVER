@@ -69,7 +69,9 @@ function validateReferenceDate(value) {
 function isOutsideBounds(date, bounds = {}) {
   if (!date) return false;
   if (bounds.minDate && date < bounds.minDate) return true;
-  if (bounds.maxDate && date > bounds.maxDate) return true;
+  const today = new Date().toISOString().slice(0, 10);
+  const maxAllowed = bounds.maxDate && bounds.maxDate > today ? bounds.maxDate : today;
+  if (maxAllowed && date > maxAllowed) return true;
   return false;
 }
 

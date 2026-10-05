@@ -81,6 +81,26 @@ function createRepository(rows = ROWS) {
 }
 
 function filterRows(rows, options = {}) {
+  const skillList = (options.skill ? (Array.isArray(options.skill) ? options.skill : String(options.skill).split(",")) : [])
+    .map((s) => String(s || "").trim().toLowerCase())
+    .filter(Boolean);
+  const countrySkillList = (Array.isArray(options.skillNames) ? options.skillNames : [])
+    .map((s) => String(s || "").trim().toLowerCase())
+    .filter(Boolean);
+
+  let targetSkills = [];
+  if (skillList.length > 0) {
+    if (countrySkillList.length > 0) {
+      const countrySet = new Set(countrySkillList);
+      const matching = skillList.filter((s) => countrySet.has(s));
+      targetSkills = matching.length ? matching : skillList;
+    } else {
+      targetSkills = skillList;
+    }
+  } else if (countrySkillList.length > 0) {
+    targetSkills = countrySkillList;
+  }
+
   return rows.filter((row) => {
     if (options.dateFrom && row.productionDate < options.dateFrom) return false;
     if (options.dateTo && row.productionDate > options.dateTo) return false;
@@ -92,7 +112,9 @@ function filterRows(rows, options = {}) {
     ) {
       return false;
     }
-    if (options.skill && row.skillName !== options.skill) return false;
+    if (targetSkills.length && !targetSkills.includes(String(row.skillName || "").trim().toLowerCase())) {
+      return false;
+    }
     if (options.taskOrder && row.taskOrderId !== options.taskOrder) return false;
     return true;
   });
@@ -209,4 +231,62 @@ test("empty Agent KPI result does not represent unsupported metrics as zero", as
   assert.equal(dashboard.summary.serviceLevel, null);
   assert.equal(dashboard.summary.serviceLevelStatus, "NOT_CALCULABLE");
   assert.equal(dashboard.series.length, 6);
+});
+
+test("Agent KPI supports multi-skill filtering and aggregates metrics correctly", async () => {
+  const dashboard = await getUsVisaAgentCallKpiDashboard(
+    {
+      period: "custom",
+      dateFrom: "2026-08-01",
+      dateTo: "2026-08-31",
+      skill: ["English NIV", "English IV"],
+    },
+    {
+      repository: createRepository(),
+    },
+  );
+
+  // Both English NIV (2 handled) + English IV (1 handled) = 3 handled
+  assert.equal(dashboard.summary.interactionCount, 4);
+  assert.equal(dashboard.summary.handledCalls, 3);
+  assert.equal(dashboard.summary.answeredCalls, 3);
+  assert.equal(dashboard.summary.totalHandleSeconds, 1020);
+});
+
+test("Agent KPI single skill selection within country does not swallow skill filter", async () => {
+  const dashboard = await getUsVisaAgentCallKpiDashboard(
+    {
+      period: "custom",
+      dateFrom: "2026-08-01",
+      dateTo: "2026-08-31",
+      skill: "English IV",
+    },
+    {
+      repository: createRepository(),
+    },
+  );
+
+  // Only English IV (1 handled)
+  assert.equal(dashboard.summary.interactionCount, 1);
+  assert.equal(dashboard.summary.handledCalls, 1);
+  assert.equal(dashboard.summary.averageHandleSeconds, 420);
+});
+
+test("Agent KPI returns zeroed calls when skill is __NONE__ (no check)", async () => {
+  const dashboard = await getUsVisaAgentCallKpiDashboard(
+    {
+      period: "weekly",
+      referenceDate: "2026-08-10",
+      skill: "__NONE__",
+    },
+    {
+      repository: createRepository(),
+    },
+  );
+
+  assert.equal(dashboard.summary.handledCalls, 0);
+  assert.equal(dashboard.summary.interactionCount, 0);
+  assert.equal(dashboard.summary.averageHandleSeconds, null);
+  assert.equal(dashboard.series.length, 6);
+  assert.equal(dashboard.series.every((b) => b.handledCalls === 0), true);
 });
