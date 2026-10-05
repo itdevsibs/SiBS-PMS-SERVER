@@ -87,7 +87,9 @@ function throwInvalidDateRange() {
 function isOutsideBounds(date, bounds = {}) {
   if (!date) return false;
   if (bounds.minDate && date < bounds.minDate) return true;
-  if (bounds.maxDate && date > bounds.maxDate) return true;
+  const today = new Date().toISOString().slice(0, 10);
+  const maxAllowed = bounds.maxDate && bounds.maxDate > today ? bounds.maxDate : today;
+  if (maxAllowed && date > maxAllowed) return true;
   return false;
 }
 
@@ -296,8 +298,14 @@ export async function getUsVisaAgentCallKpiDashboard(query = {}, options = {}) {
   const requestedDateFrom = normalizeDate(query.from || query.dateFrom);
   const requestedDateTo = normalizeDate(query.to || query.dateTo);
   const employeeUid = String(query.employeeUid || query.employee || "").trim() || null;
-  const skill = String(query.skill || "").trim() || null;
-  const country = String(query.country || "").trim() || null;
+  const rawSkill = query.skill;
+  const skill = Array.isArray(rawSkill)
+    ? rawSkill.map((s) => String(s || "").trim()).filter(Boolean).join(",")
+    : (String(rawSkill || "").trim() || null);
+  const rawCountry = query.country;
+  const country = Array.isArray(rawCountry)
+    ? rawCountry.map((c) => String(c || "").trim()).filter(Boolean).join(",")
+    : (String(rawCountry || "").trim() || null);
   const taskOrder = String(query.taskOrder || "").trim() || null;
   const includeFilterOptions =
     query.includeFilterOptions === true ||
@@ -341,8 +349,8 @@ export async function getUsVisaAgentCallKpiDashboard(query = {}, options = {}) {
     sourceSystem,
     employeeUid,
     employeeUids,
-    skill,
-    skillNames: effectiveSkillNames,
+    skill: skill === "__NONE__" ? null : skill,
+    skillNames: country === "__NONE__" ? undefined : effectiveSkillNames,
     taskOrder,
   });
 
@@ -389,7 +397,8 @@ export async function getUsVisaAgentCallKpiDashboard(query = {}, options = {}) {
     throwInvalidDateRange();
   }
 
-  const rows = bounds.maxDate
+  const isNoneSelected = skill === "__NONE__" || country === "__NONE__";
+  const rows = (!isNoneSelected && bounds.maxDate)
     ? await repository.getAgentCallKpiRows({
       sourceSystem,
       employeeUid,

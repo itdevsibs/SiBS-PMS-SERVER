@@ -174,16 +174,20 @@ export function buildUsVisaAgentFilterOptions(rows = []) {
 }
 
 export function getUsVisaAgentSkillsForCountry(availableFilters = {}, country = "") {
-  const normalizedCountry = normalizeComparison(country);
+  const countryList = (Array.isArray(country) ? country : String(country || "").split(","))
+    .map(normalizeComparison)
+    .filter(Boolean);
 
-  if (!normalizedCountry) {
+  if (!countryList.length) {
     return [...new Set((availableFilters.skills || []).map(cleanText).filter(Boolean))]
       .sort((a, b) => a.localeCompare(b));
   }
 
+  const countrySet = new Set(countryList);
+
   return [...new Set(
     (availableFilters.skillCountryPairs || [])
-      .filter((pair) => normalizeComparison(pair?.country) === normalizedCountry)
+      .filter((pair) => countrySet.has(normalizeComparison(pair?.country)))
       .map((pair) => cleanText(pair?.skillName))
       .filter(Boolean),
   )].sort((a, b) => a.localeCompare(b));

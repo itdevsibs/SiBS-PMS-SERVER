@@ -75,12 +75,8 @@ export async function getWfmQualityAuditKpiDashboard(query = {}) {
     dateTo = requestedDateTo || defaults.dateTo;
   } else {
     rangeMode = "reference";
-    const defaultReference =
-      requestedReferenceDate ||
-      (bounds.maxDate && bounds.maxDate > "2026-07-31" && bounds.minDate <= "2026-07-31"
-        ? "2026-07-31"
-        : bounds.maxDate);
-    const selectedReference = defaultReference;
+    const today = new Date().toISOString().slice(0, 10);
+    const selectedReference = requestedReferenceDate || today;
     const resolved = resolveCallKpiDateRange({
       minDate: bounds.minDate,
       maxDate: bounds.maxDate,

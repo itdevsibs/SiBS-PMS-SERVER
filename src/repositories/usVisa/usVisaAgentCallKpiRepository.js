@@ -54,17 +54,33 @@ function appendExactFilter({ conditions, values, column, value }) {
 }
 
 function appendSkillFilter({ conditions, values, skill, skillNames }) {
-  const allSkills = [
-    ...(skill ? [skill] : []),
-    ...(Array.isArray(skillNames) ? skillNames : []),
-  ].filter(Boolean);
+  let targetSkills = [];
 
-  if (!allSkills.length) return;
+  const rawSkillList = (skill ? (Array.isArray(skill) ? skill : String(skill).split(",")) : [])
+    .map((s) => String(s || "").trim())
+    .filter(Boolean);
+  const rawNamesList = (Array.isArray(skillNames) ? skillNames : [])
+    .map((s) => String(s || "").trim())
+    .filter(Boolean);
+
+  if (rawSkillList.length > 0) {
+    if (rawNamesList.length > 0) {
+      const namesLower = new Set(rawNamesList.map((s) => s.toLowerCase()));
+      const matching = rawSkillList.filter((s) => namesLower.has(s.toLowerCase()));
+      targetSkills = matching.length ? matching : rawSkillList;
+    } else {
+      targetSkills = rawSkillList;
+    }
+  } else if (rawNamesList.length > 0) {
+    targetSkills = rawNamesList;
+  }
+
+  if (!targetSkills.length) return;
 
   const clauses = [];
   const clauseValues = [];
 
-  for (const item of allSkills) {
+  for (const item of targetSkills) {
     const key = String(item).toLowerCase().replace(/[\s_-]+/g, "");
     if (key === "englishall" || key === "english" || key === "allenglish") {
       clauses.push("(a.skill_name_raw LIKE ?)");
