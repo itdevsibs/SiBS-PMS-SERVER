@@ -2,8 +2,17 @@
 import express from "express";
 
 import { kronosDb, kronosTables } from "../config/db.js";
+import authMiddleware from "../middleware/authMiddleware.js";
+import { requireRole } from "../middleware/roleMiddleware.js";
 
 const router = express.Router();
+
+// Employee directory/list data is restricted to the same roles that can view
+// the Employee Ledger. Direct API calls must not bypass frontend permissions.
+router.use(
+  authMiddleware,
+  requireRole([6, 7, 9, 10, 11]),
+);
 
 function normalizeLimit(value) {
   if (String(value || "").toLowerCase() === "all") {
