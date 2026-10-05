@@ -15,8 +15,12 @@ import employeeRoutes from "./routes/employees.js";
 import sampleRoutes from "./routes/sample.js";
 import usVisaImportRoutes from "./routes/usVisa/usVisaImports.js";
 import userRoutes from "./routes/users.js";
-import wfmRoutes from "./routes/wfm.js";
+import performanceRoutes from "./routes/performance.js";
+import historyRoutes from "./routes/history.js";
+import taskOrderRoutes from "./routes/task-orders.js";
 import masterdataRoutes from "./routes/masterdata.js";
+import loginRoutes from "./routes/login.js";
+import superAdminRoutes from "./routes/super-admin.js";
 
 const app = express();
 
@@ -252,11 +256,45 @@ app.use(
 );
 
 /*
-  WFM imported raw data metadata
+  Shared performance reporting. Public API paths stay under /api/wfm
+  for client compatibility while server responsibilities are separated.
 */
 app.use(
   "/api/wfm",
-  wfmRoutes
+  performanceRoutes
+);
+
+/*
+  WFM-only operational history.
+*/
+app.use(
+  "/api/wfm",
+  historyRoutes
+);
+
+/*
+  WFM-only Task Order Ledger.
+*/
+app.use(
+  "/api/wfm",
+  taskOrderRoutes
+);
+
+
+/*
+  Super Admin employee search / legacy helper routes.
+*/
+app.use(
+  "/api/login",
+  loginRoutes
+);
+
+/*
+  Super Admin interface access management.
+*/
+app.use(
+  "/api/super-admin",
+  superAdminRoutes
 );
 
 /*

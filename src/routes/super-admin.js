@@ -3,7 +3,15 @@ import express from "express";
 import fs from "fs/promises";
 import path from "path";
 
+import authMiddleware from "../middleware/authMiddleware.js";
+import { requireRole } from "../middleware/roleMiddleware.js";
+
 const router = express.Router();
+
+router.use(
+  authMiddleware,
+  requireRole([7]),
+);
 
 const USER_INTERFACES = [
   "Work Force Management",

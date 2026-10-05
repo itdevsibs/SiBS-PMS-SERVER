@@ -6,8 +6,16 @@ import {
   pmsDb,
   pmsTables,
 } from "../config/db.js";
+import authMiddleware from "../middleware/authMiddleware.js";
+import { requireRole } from "../middleware/roleMiddleware.js";
 
 const router = Router();
+
+// Employee Ledger / Master Data is shared only by approved management roles.
+router.use(
+  authMiddleware,
+  requireRole([6, 7, 9, 10, 11]),
+);
 
 function normalizeSibsId(value) {
   return String(value || "")
