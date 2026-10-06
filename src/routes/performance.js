@@ -7,6 +7,7 @@ import {
 } from "../controllers/callKpiController.js";
 import { getWfmEmailsKpi } from "../controllers/emailKpiController.js";
 import { getWfmQualityAuditKpi } from "../controllers/qualityAuditKpiController.js";
+import { getWfmOccupancyKpi } from "../controllers/occupancyKpiController.js";
 import authMiddleware from "../middleware/authMiddleware.js";
 import { requireRole } from "../middleware/roleMiddleware.js";
 
@@ -39,6 +40,12 @@ router.get(
   "/kpis/quality-audit",
   ...requirePerformanceViewer,
   getWfmQualityAuditKpi,
+);
+
+router.get(
+  "/kpis/occupancy",
+  ...requirePerformanceViewer,
+  getWfmOccupancyKpi,
 );
 
 export default router;
