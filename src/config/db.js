@@ -162,6 +162,8 @@ export const pmsTables = {
 
 export const hrisTables = {
   assignedAccounts: dbTable(HRIS_DB_NAME, "assigned_accounts"),
+  sibsAccounts: dbTable(HRIS_DB_NAME, "sibs_accounts"),
+  sibsDepartments: dbTable(HRIS_DB_NAME, "sibs_departments"),
 };
 
 // ============================================================

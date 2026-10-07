@@ -83,6 +83,8 @@ export async function getAgentOccupancyKpiRows({
         ao.hold_seconds,
         ao.wrapup_seconds,
         ao.after_call_seconds,
+        ao.email_seconds,
+        ao.chatting_seconds,
         ao.available_idle_seconds
       FROM ${pmsTables.usVisaRawAgentOccupancy} ao
       INNER JOIN ${pmsTables.usVisaImportBatches} b ON b.id = ao.batch_id

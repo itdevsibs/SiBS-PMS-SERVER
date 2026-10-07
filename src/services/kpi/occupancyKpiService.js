@@ -25,8 +25,10 @@ function emptyAccumulator(bucket = {}) {
     label: bucket.label || "Summary",
     talkSeconds: 0,
     holdSeconds: 0,
+    afterCallSeconds: 0,
     wrapupSeconds: 0,
-    acwSeconds: 0,
+    emailSeconds: 0,
+    chattingSeconds: 0,
     availableSeconds: 0,
     matchedEmployeeUids: new Set(),
   };
@@ -40,14 +42,18 @@ function addRow(accumulator, row = {}) {
   // STEP 2: Normalize the time fields. If missing, treat as 0.
   const talk = toFiniteNumber(row.talking_seconds);
   const hold = toFiniteNumber(row.hold_seconds);
+  const afterCall = toFiniteNumber(row.after_call_seconds);
   const wrap = toFiniteNumber(row.wrapup_seconds);
-  const acw = toFiniteNumber(row.after_call_seconds);
+  const email = toFiniteNumber(row.email_seconds);
+  const chatting = toFiniteNumber(row.chatting_seconds);
   const avail = toFiniteNumber(row.available_idle_seconds);
 
   accumulator.talkSeconds += talk;
   accumulator.holdSeconds += hold;
+  accumulator.afterCallSeconds += afterCall;
   accumulator.wrapupSeconds += wrap;
-  accumulator.acwSeconds += acw;
+  accumulator.emailSeconds += email;
+  accumulator.chattingSeconds += chatting;
   accumulator.availableSeconds += avail;
 
   // STEP 5: Actual Headcount = COUNT(DISTINCT matched SiBS employee)
@@ -62,23 +68,30 @@ function addRow(accumulator, row = {}) {
 }
 
 /**
- * STEP 4: Calculate Occupancy %
- * Formula: SUM(Talk + Hold + Wrap Up + ACW) / (SUM(Talk + Hold + Wrap Up + ACW) + SUM(Available Time)) * 100
- * If denominator is 0, return 0%.
+ * Calculate Occupancy % using the approved contract definition:
+ *
+ * Total Work Time = Talking + Hold + After Call + Wrap Up + Email + Chatting
+ * Productive Time (Total Logged-in Time) = Total Work Time + Idle Time
+ * Occupancy % = Total Work Time / Productive Time * 100
+ *
+ * Missing source duration fields are treated as 0. If Productive Time is 0,
+ * Occupancy is returned as 0% instead of NaN/Infinity.
  * STEP 8, 9, 12: Other fields remain null / blank.
  */
 function finalize(accumulator) {
-  const totalHandlingTime =
+  const totalWorkTime =
     accumulator.talkSeconds +
     accumulator.holdSeconds +
+    accumulator.afterCallSeconds +
     accumulator.wrapupSeconds +
-    accumulator.acwSeconds;
+    accumulator.emailSeconds +
+    accumulator.chattingSeconds;
 
-  const totalOccupiedAndAvail = totalHandlingTime + accumulator.availableSeconds;
+  const productiveTime = totalWorkTime + accumulator.availableSeconds;
 
   const occupancyPct =
-    totalOccupiedAndAvail > 0
-      ? round((totalHandlingTime / totalOccupiedAndAvail) * 100, 2)
+    productiveTime > 0
+      ? round((totalWorkTime / productiveTime) * 100, 2)
       : 0;
 
   const actualHeadcount = accumulator.matchedEmployeeUids.size;
@@ -87,7 +100,13 @@ function finalize(accumulator) {
     // Authorized calculated metrics
     occupancyPct,
     actualHeadcount,
-    totalHandlingTime: round(totalHandlingTime, 0),
+    // New contract-aligned names.
+    totalWorkTime: round(totalWorkTime, 0),
+    productiveTime: round(productiveTime, 0),
+    idleSeconds: round(accumulator.availableSeconds, 0),
+
+    // Backward-compatible aliases for existing API consumers.
+    totalHandlingTime: round(totalWorkTime, 0),
     availableSeconds: round(accumulator.availableSeconds, 0),
 
     // Must remain null / blank per STEP 8, 9, 12 until authoritative data is available

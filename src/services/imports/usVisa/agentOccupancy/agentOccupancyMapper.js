@@ -172,7 +172,8 @@ function mapFuseRow(sourceRow, profileCode, options) {
   mappedRow.agent_name_raw = toStringValue(getValue(sourceRow, "Agent Name")).value;
   mappedRow.agent_login = toStringValue(getValue(sourceRow, "Agent Login")).value;
   mappedRow.personal_id = toStringValue(getValue(sourceRow, "Personal ID")).value;
-  mappedRow.source_agent_key = mappedRow.agent_login || mappedRow.personal_id || mappedRow.agent_name_raw;
+  // Occupancy employee identity is name-based. Keep login/personal ID only for audit.
+  mappedRow.source_agent_key = mappedRow.agent_name_raw;
 
   for (const [sourceHeader, targetField] of Object.entries(COUNT_FIELDS)) {
     addConvertedValue({ mappedRow, conversionErrors, targetField, sourceHeader, rawValue: getValue(sourceRow, sourceHeader), converter: toIntegerValue });
@@ -194,10 +195,13 @@ function mapHeroDashRow(sourceRow, options) {
 
   const mappedAgentName = toStringValue(getValue(sourceRow, "Agent Name")).value;
   const agentLogin = toStringValue(getValue(sourceRow, "Agent login")).value;
-  mappedRow.agent_name_raw = mappedAgentName || agentLogin;
+  // Do not substitute Agent Login when Agent Name is missing. Occupancy
+  // matching must remain name-based so the source-specific alias and Kronos
+  // name fallback both receive the actual agent name from the download.
+  mappedRow.agent_name_raw = mappedAgentName;
   mappedRow.agent_login = agentLogin;
   mappedRow.personal_id = toStringValue(getValue(sourceRow, "Personal ID")).value;
-  mappedRow.source_agent_key = agentLogin || mappedAgentName;
+  mappedRow.source_agent_key = mappedAgentName;
 
   addConvertedValue({ mappedRow, conversionErrors, targetField: "answered_sessions", sourceHeader: "Answered call", rawValue: getValue(sourceRow, "Answered call"), converter: toIntegerValue });
   addConvertedValue({ mappedRow, conversionErrors, targetField: "avg_calls_per_hour", sourceHeader: "AVG calls/hour", rawValue: getValue(sourceRow, "AVG calls/hour"), converter: toDecimalValue });

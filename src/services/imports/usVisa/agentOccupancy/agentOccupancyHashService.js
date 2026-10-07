@@ -71,7 +71,9 @@ function hash(parts) {
 }
 
 export function buildAgentOccupancyIdentityParts(row = {}) {
-  const sourceAgentKey = row.source_agent_key || row.agent_login || row.personal_id || row.agent_name_raw;
+  // Occupancy business identity is name-based. Agent Login and Personal ID
+  // are audit-only fields and must not become the employee identity fallback.
+  const sourceAgentKey = row.source_agent_key || row.agent_name_raw;
   const taskOrderId = row.task_order_id || row.source_task_order;
 
   if (row.data_grain === "AGENT_OCCUPANCY_PERIOD") {
