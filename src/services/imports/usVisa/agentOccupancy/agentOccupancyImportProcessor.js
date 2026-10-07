@@ -18,6 +18,7 @@ import {
   reconcileClassificationsWithStoredRows,
 } from "../importChunkClassifier.js";
 import {
+  AGENT_IDENTITY_MATCH_MODES,
   AGENT_MAPPING_STATUSES,
   createAgentIdentityCacheKey,
   createBulkAgentIdentityResolver,
@@ -445,7 +446,12 @@ export async function processAgentOccupancyWorkbook({
     async (rowChunk) => {
       for (const sourceRow of rowChunk) {
         const identity = mapAgentOccupancyIdentity(sourceRow, [], mappingOptions);
-        identitiesByKey.set(createAgentIdentityCacheKey(identity), identity);
+        identitiesByKey.set(
+          createAgentIdentityCacheKey(identity, {
+            matchMode: AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY,
+          }),
+          identity,
+        );
       }
       identityRowsScanned += rowChunk.length;
       const ratio = totalRows > 0 ? Math.min(identityRowsScanned / totalRows, 1) : 1;
@@ -461,6 +467,7 @@ export async function processAgentOccupancyWorkbook({
 
   const identityResolver = await dependencies.createBulkAgentIdentityResolver(
     [...identitiesByKey.values()],
+    { matchMode: AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY },
   );
   const matchedEmployeeUids = [];
   for (const identity of identitiesByKey.values()) {

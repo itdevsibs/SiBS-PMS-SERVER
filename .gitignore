@@ -35,3 +35,7 @@ sibs-pms-server.env
 /uploads
 
 *.log
+
+# Kronos API runtime authentication
+# Contains server-side JWT state - never commit
+config/kronosapi.json

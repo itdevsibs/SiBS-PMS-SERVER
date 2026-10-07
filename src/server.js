@@ -21,6 +21,11 @@ import taskOrderRoutes from "./routes/task-orders.js";
 import masterdataRoutes from "./routes/masterdata.js";
 import loginRoutes from "./routes/login.js";
 import superAdminRoutes from "./routes/super-admin.js";
+import kronosRoutes from "./routes/kronos.js";
+import {
+  initializeKronosTokenService,
+  stopKronosTokenService,
+} from "./services/kronos/kronosTokenService.js";
 
 const app = express();
 
@@ -280,6 +285,15 @@ app.use(
   taskOrderRoutes
 );
 
+/*
+  Kronos server-to-server integration (Phase 1).
+  Routes are protected and never expose the Kronos service JWT.
+*/
+app.use(
+  "/api/kronos",
+  kronosRoutes
+);
+
 
 /*
   Super Admin employee search / legacy helper routes.
@@ -412,6 +426,10 @@ const startServer =
       */
       await testDbConnections();
 
+      // Initialize the server-only Kronos JWT cache/scheduler.
+      // A temporary Kronos outage must not prevent PMS from starting.
+      await initializeKronosTokenService();
+
       server.on("error", (error) => {
         if (error.code === "EADDRINUSE") {
           console.error(
@@ -433,12 +451,14 @@ const startServer =
       );
 
       const gracefulShutdown = () => {
+        stopKronosTokenService();
         server.close(() => {
           process.exit(0);
         });
       };
 
       process.once("SIGUSR2", () => {
+        stopKronosTokenService();
         server.close(() => {
           process.kill(process.pid, "SIGUSR2");
         });

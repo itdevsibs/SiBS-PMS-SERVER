@@ -242,14 +242,36 @@ const COMMON_AGENT_OCCUPANCY_HEADERS = [
 
 const FUSE_AGENT_OCCUPANCY_REQUIRED_HEADERS = [
   "Date/Time",
-  "Agent Name",
-  "Agent Login",
+  ["Agent Name", "Agent name", "Agent"],
   "Logged Time",
   "Productive Login",
 ];
 
-const HERODASH_AGENT_OCCUPANCY_HEADERS = [
+const HERODASH_AGENT_OCCUPANCY_REQUIRED_HEADERS = [
+  ["Agent Name", "Agent name", "Agent"],
+  "Productive login",
+  "Available / Idle time",
+  "Lunch time",
+  "In Training time",
+  "Break time",
+  "Answered call",
+  "AVG calls/hour",
+  "AVG talking time (sec)",
+  "Wrap-up time",
+  "Ringing time",
+  "Talking time",
+  "Hold time",
+  "Inbound time",
+];
+
+const HERODASH_AGENT_OCCUPANCY_IGNORED_HEADERS = [
   "Agent login",
+  "Agent Login",
+  "Login",
+  "Agent Name",
+  "Agent name",
+  "Agent",
+  "Personal ID",
   "Productive login",
   "Available / Idle time",
   "Lunch time",
@@ -430,8 +452,8 @@ export const WORKBOOK_PROFILE_DEFINITIONS = {
         dataGrain: "AGENT_OCCUPANCY_PERIOD",
         headerRowNumber: 1,
         headerRowCandidates: [1],
-        requiredHeaders: HERODASH_AGENT_OCCUPANCY_HEADERS,
-        ignoredHeaders: HERODASH_AGENT_OCCUPANCY_HEADERS,
+        requiredHeaders: HERODASH_AGENT_OCCUPANCY_REQUIRED_HEADERS,
+        ignoredHeaders: HERODASH_AGENT_OCCUPANCY_IGNORED_HEADERS,
       },
     ],
   },
@@ -517,9 +539,12 @@ function getHeaderMatchCount(
     ),
   );
 
-  return rule.requiredHeaders.filter((header) =>
-    sourceHeaderSet.has(normalizeHeader(header)),
-  ).length;
+  return rule.requiredHeaders.filter((header) => {
+    const alternatives = Array.isArray(header) ? header : [header];
+    return alternatives.some((alternative) =>
+      sourceHeaderSet.has(normalizeHeader(alternative)),
+    );
+  }).length;
 }
 
 function findBestHeaderRowNumber(

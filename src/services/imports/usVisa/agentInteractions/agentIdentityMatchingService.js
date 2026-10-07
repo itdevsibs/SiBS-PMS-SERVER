@@ -21,6 +21,11 @@ export const AGENT_MAPPING_METHODS = Object.freeze({
   EXACT_AGENT_NAME: "EXACT_AGENT_NAME",
 });
 
+export const AGENT_IDENTITY_MATCH_MODES = Object.freeze({
+  DEFAULT: "DEFAULT",
+  AGENT_NAME_ONLY: "AGENT_NAME_ONLY",
+});
+
 const SOURCE_ALIAS_TYPES = Object.freeze({
   FUSECOM: "FUSECOM_NAME",
   FUSENET: "FUSENET_NAME",
@@ -35,14 +40,29 @@ function normalizeIdentityPart(value) {
     .toUpperCase();
 }
 
-export function createAgentIdentityCacheKey(identity = {}) {
-  return [
-    identity.sourceSystem,
-    identity.personalId,
-    identity.agentLogin,
-    identity.agentName,
-    identity.sourceAgentKey,
-  ]
+function normalizeMatchMode(value) {
+  return value === AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY
+    ? AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY
+    : AGENT_IDENTITY_MATCH_MODES.DEFAULT;
+}
+
+export function createAgentIdentityCacheKey(identity = {}, options = {}) {
+  const matchMode = normalizeMatchMode(options.matchMode ?? identity.matchMode);
+  const keyParts = matchMode === AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY
+    ? [
+      identity.sourceSystem,
+      identity.agentName,
+      identity.sourceAgentKey,
+    ]
+    : [
+      identity.sourceSystem,
+      identity.personalId,
+      identity.agentLogin,
+      identity.agentName,
+      identity.sourceAgentKey,
+    ];
+
+  return [matchMode, ...keyParts]
     .map(normalizeIdentityPart)
     .join("\u001f");
 }
@@ -126,26 +146,29 @@ export async function matchAgentIdentity({
     ...options.repository,
   };
   const normalizedSourceSystem = normalizeEmployeeIdentity(sourceSystem);
+  const matchMode = normalizeMatchMode(options.matchMode);
 
-  const personalIdMatch = await tryAliasMatch({
-    aliasType: "PERSONAL_ID",
-    sourceSystem: normalizedSourceSystem || null,
-    aliasValue: personalId,
-    method: AGENT_MAPPING_METHODS.PERSONAL_ID,
-    repository,
-  });
+  if (matchMode !== AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY) {
+    const personalIdMatch = await tryAliasMatch({
+      aliasType: "PERSONAL_ID",
+      sourceSystem: normalizedSourceSystem || null,
+      aliasValue: personalId,
+      method: AGENT_MAPPING_METHODS.PERSONAL_ID,
+      repository,
+    });
 
-  if (personalIdMatch) return personalIdMatch;
+    if (personalIdMatch) return personalIdMatch;
 
-  const loginMatch = await tryAliasMatch({
-    aliasType: "AGENT_LOGIN",
-    sourceSystem: normalizedSourceSystem || null,
-    aliasValue: agentLogin,
-    method: AGENT_MAPPING_METHODS.AGENT_LOGIN,
-    repository,
-  });
+    const loginMatch = await tryAliasMatch({
+      aliasType: "AGENT_LOGIN",
+      sourceSystem: normalizedSourceSystem || null,
+      aliasValue: agentLogin,
+      method: AGENT_MAPPING_METHODS.AGENT_LOGIN,
+      repository,
+    });
 
-  if (loginMatch) return loginMatch;
+    if (loginMatch) return loginMatch;
+  }
 
   const sourceAliasType = SOURCE_ALIAS_TYPES[normalizedSourceSystem];
   const sourceAliasValue = agentName || sourceAgentKey;
@@ -273,32 +296,34 @@ function indexBulkNameCandidates(rows = []) {
   return byName;
 }
 
-function getAliasResolution(identity, aliasIndex) {
+function getAliasResolution(identity, aliasIndex, matchMode) {
   const sourceSystem = normalizeEmployeeIdentity(identity.sourceSystem);
 
-  const personalIdMatch = resultFromCandidates(
-    getBulkAliasCandidates(
-      aliasIndex,
-      "PERSONAL_ID",
-      sourceSystem,
-      identity.personalId,
-    ),
-    AGENT_MAPPING_METHODS.PERSONAL_ID,
-  );
+  if (matchMode !== AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY) {
+    const personalIdMatch = resultFromCandidates(
+      getBulkAliasCandidates(
+        aliasIndex,
+        "PERSONAL_ID",
+        sourceSystem,
+        identity.personalId,
+      ),
+      AGENT_MAPPING_METHODS.PERSONAL_ID,
+    );
 
-  if (personalIdMatch) return personalIdMatch;
+    if (personalIdMatch) return personalIdMatch;
 
-  const loginMatch = resultFromCandidates(
-    getBulkAliasCandidates(
-      aliasIndex,
-      "AGENT_LOGIN",
-      sourceSystem,
-      identity.agentLogin,
-    ),
-    AGENT_MAPPING_METHODS.AGENT_LOGIN,
-  );
+    const loginMatch = resultFromCandidates(
+      getBulkAliasCandidates(
+        aliasIndex,
+        "AGENT_LOGIN",
+        sourceSystem,
+        identity.agentLogin,
+      ),
+      AGENT_MAPPING_METHODS.AGENT_LOGIN,
+    );
 
-  if (loginMatch) return loginMatch;
+    if (loginMatch) return loginMatch;
+  }
 
   const sourceAliasType = SOURCE_ALIAS_TYPES[sourceSystem];
   const sourceAliasValue = identity.agentName || identity.sourceAgentKey;
@@ -338,28 +363,35 @@ export async function createBulkAgentIdentityResolver(
     findEmployeesByExactNormalizedNames,
     ...options.repository,
   };
+  const matchMode = normalizeMatchMode(options.matchMode);
   const identitiesByKey = new Map();
 
   for (const identity of identities) {
-    identitiesByKey.set(createAgentIdentityCacheKey(identity), identity);
+    identitiesByKey.set(
+      createAgentIdentityCacheKey(identity, { matchMode }),
+      identity,
+    );
   }
 
   const aliasLookupsByKey = new Map();
 
   for (const identity of identitiesByKey.values()) {
     const sourceSystem = normalizeEmployeeIdentity(identity.sourceSystem);
-    addAliasLookup(
-      aliasLookupsByKey,
-      "PERSONAL_ID",
-      sourceSystem,
-      identity.personalId,
-    );
-    addAliasLookup(
-      aliasLookupsByKey,
-      "AGENT_LOGIN",
-      sourceSystem,
-      identity.agentLogin,
-    );
+
+    if (matchMode !== AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY) {
+      addAliasLookup(
+        aliasLookupsByKey,
+        "PERSONAL_ID",
+        sourceSystem,
+        identity.personalId,
+      );
+      addAliasLookup(
+        aliasLookupsByKey,
+        "AGENT_LOGIN",
+        sourceSystem,
+        identity.agentLogin,
+      );
+    }
 
     const sourceAliasType = SOURCE_ALIAS_TYPES[sourceSystem];
 
@@ -389,7 +421,7 @@ export async function createBulkAgentIdentityResolver(
   const unresolvedIdentities = [];
 
   for (const [key, identity] of identitiesByKey.entries()) {
-    const aliasResolution = getAliasResolution(identity, aliasIndex);
+    const aliasResolution = getAliasResolution(identity, aliasIndex, matchMode);
 
     if (aliasResolution) {
       resolvedByKey.set(key, aliasResolution);
@@ -434,6 +466,7 @@ export async function createBulkAgentIdentityResolver(
     },
 
     stats: {
+      matchMode,
       uniqueIdentities: identitiesByKey.size,
       aliasLookupCount: aliasLookups.length,
       aliasCandidateRows: aliasRows.length,
@@ -442,7 +475,7 @@ export async function createBulkAgentIdentityResolver(
     },
 
     resolve(identity = {}) {
-      const key = createAgentIdentityCacheKey(identity);
+      const key = createAgentIdentityCacheKey(identity, { matchMode });
       const result = resolvedByKey.get(key);
 
       if (!result) {
