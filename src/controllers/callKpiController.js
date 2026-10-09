@@ -21,10 +21,12 @@ const BAD_REQUEST_CODES = new Set([
 
 export async function getCallsReport(req, res) {
   try {
-    const { dateFrom, dateTo, country } = req.query;
+    const { date, dateFrom, dateTo, country } = req.query;
+    const effectiveDateFrom = dateFrom || date || undefined;
+    const effectiveDateTo = dateTo || date || undefined;
     const data = await getCallsReportData({
-      dateFrom: dateFrom || undefined,
-      dateTo: dateTo || undefined,
+      dateFrom: effectiveDateFrom,
+      dateTo: effectiveDateTo,
       country: country || undefined,
     });
 
