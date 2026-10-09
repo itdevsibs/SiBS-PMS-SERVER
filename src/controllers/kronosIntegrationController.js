@@ -71,6 +71,7 @@ function buildQueryParams(req) {
   return {
     accountId: req.query.accountId,
     gyEmpCode: req.query.gyEmpCode || req.query.gy_emp_code || null,
+    search: req.query.search || req.query.employee || req.query.query || null,
     dateFrom: req.query.dateFrom || req.query.date_from || null,
     dateTo: req.query.dateTo || req.query.date_to || null,
     page: req.query.page,

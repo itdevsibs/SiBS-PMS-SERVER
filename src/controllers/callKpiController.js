@@ -7,7 +7,10 @@ import {
   getSkillStatisticsByBatchId,
 } from "../repositories/usVisa/usVisaSkillStatisticsRepository.js";
 import { getWfmCallKpiDashboard } from "../services/kpi/callKpiQueryService.js";
-import { getDistinctSkillsByCountry } from "../repositories/callKpiRepository.js";
+import {
+  getDistinctSkillsByCountry,
+  getCallsReportData,
+} from "../repositories/callKpiRepository.js";
 
 const BAD_REQUEST_CODES = new Set([
   "INVALID_CUSTOM_DATE_RANGE",
@@ -15,6 +18,29 @@ const BAD_REQUEST_CODES = new Set([
   "INVALID_REFERENCE_DATE",
   "INVALID_TASK_ORDER",
 ]);
+
+export async function getCallsReport(req, res) {
+  try {
+    const { dateFrom, dateTo, country } = req.query;
+    const data = await getCallsReportData({
+      dateFrom: dateFrom || undefined,
+      dateTo: dateTo || undefined,
+      country: country || undefined,
+    });
+
+    return res.json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    console.error("GET /api/wfm/kpis/calls-report error:", error);
+    return res.status(500).json({
+      success: false,
+      code: "CALLS_REPORT_ERROR",
+      message: "Unable to fetch Calls Report data.",
+    });
+  }
+}
 
 export async function getWfmCallsKpi(req, res) {
   try {

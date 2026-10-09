@@ -47,10 +47,14 @@ function extractPagination(payload, requestedPage, requestedLimit) {
   };
 }
 
-function buildRemoteParams({ scope, gyEmpCode, dateFrom, dateTo, page, limit }) {
+function buildRemoteParams({ scope, gyEmpCode, search, dateFrom, dateTo, page, limit }) {
+  const searchTerm = String(search || gyEmpCode || "").trim().replace(/^SIB-\s*/i, "").trim();
+  const isPureNumericId = /^\d+$/.test(searchTerm);
+
   return {
     account_id: scope.kronosMapping.kronosAccountId,
-    gy_emp_code: gyEmpCode || undefined,
+    gy_emp_code: gyEmpCode ? String(gyEmpCode).trim().replace(/^SIB-\s*/i, "").trim() : (isPureNumericId ? searchTerm : undefined),
+    search: searchTerm || undefined,
     date_from: dateFrom || undefined,
     date_to: dateTo || undefined,
     page: normalizePage(page),
@@ -60,28 +64,30 @@ function buildRemoteParams({ scope, gyEmpCode, dateFrom, dateTo, page, limit }) 
 
 function validateDateRange(dateFrom, dateTo) {
   const normalizedDateFrom = normalizeDate(dateFrom);
-  const normalizedDateTo = normalizeDate(dateTo);
+  const normalizedDateTo = normalizeDate(dateTo) || normalizedDateFrom;
+  const finalDateFrom = normalizedDateFrom || normalizedDateTo;
 
-  if (!normalizedDateFrom || !normalizedDateTo) {
-    const error = new Error("dateFrom and dateTo are required in YYYY-MM-DD format.");
+  if (!finalDateFrom || !normalizedDateTo) {
+    const error = new Error("date or date range is required in YYYY-MM-DD format.");
     error.code = "KRONOS_LIVE_DATE_RANGE_REQUIRED";
     error.status = 400;
     throw error;
   }
 
-  if (normalizedDateFrom > normalizedDateTo) {
+  if (finalDateFrom > normalizedDateTo) {
     const error = new Error("dateFrom cannot be later than dateTo.");
     error.code = "KRONOS_LIVE_DATE_RANGE_INVALID";
     error.status = 400;
     throw error;
   }
 
-  return { dateFrom: normalizedDateFrom, dateTo: normalizedDateTo };
+  return { dateFrom: finalDateFrom, dateTo: normalizedDateTo };
 }
 
 async function fetchEndpointPreview(endpoint, {
   accountId,
   gyEmpCode,
+  search,
   dateFrom,
   dateTo,
   page = 1,
@@ -91,6 +97,7 @@ async function fetchEndpointPreview(endpoint, {
   const params = buildRemoteParams({
     scope,
     gyEmpCode,
+    search,
     dateFrom: normalizeDate(dateFrom),
     dateTo: normalizeDate(dateTo),
     page,
@@ -123,6 +130,7 @@ export function previewEmployeeTrackerHistory(params) {
 async function fetchAllAttendancePages({
   scope,
   gyEmpCode,
+  search,
   dateFrom,
   dateTo,
   limit = 100,
@@ -136,6 +144,7 @@ async function fetchAllAttendancePages({
     const params = buildRemoteParams({
       scope,
       gyEmpCode,
+      search,
       dateFrom,
       dateTo,
       page,
@@ -172,6 +181,7 @@ async function fetchAllAttendancePages({
 export async function getLiveAttendance({
   accountId,
   gyEmpCode = null,
+  search = null,
   dateFrom,
   dateTo,
   page = 1,
@@ -186,6 +196,7 @@ export async function getLiveAttendance({
   const remoteRows = await fetchAllAttendancePages({
     scope,
     gyEmpCode,
+    search,
     dateFrom: range.dateFrom,
     dateTo: range.dateTo,
   });
@@ -220,8 +231,11 @@ export async function getLiveAttendance({
       return {
         ...row,
         hrisAccountId: scope.accountId,
+        accountName: scope.accountName,
         kronosAccountId: scope.kronosMapping.kronosAccountId,
+        kronosAccountName: scope.kronosMapping.kronosAccountName || scope.accountName,
         departmentId: scope.departmentId,
+        departmentName: scope.departmentName,
         employeeLedgerId: ledger?.ledgerId || null,
         employeeMappingStatus: ledger ? "MATCHED_LEDGER" : "UNMATCHED_LEDGER",
         taskOrderId: ledger?.taskOrderId || null,
