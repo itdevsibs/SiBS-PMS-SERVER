@@ -25,9 +25,9 @@ export const kronosApiConfig = Object.freeze({
     employeeCode: String(
       process.env.KRONOS_ATTENDANCE_EMPLOYEE_CODE_FIELD || "gy_emp_code",
     ).trim(),
-    workDate: String(process.env.KRONOS_ATTENDANCE_WORK_DATE_FIELD || "").trim(),
-    firstLogin: String(process.env.KRONOS_ATTENDANCE_LOGIN_FIELD || "").trim(),
-    lastLogoff: String(process.env.KRONOS_ATTENDANCE_LOGOFF_FIELD || "").trim(),
+    workDate: String(process.env.KRONOS_ATTENDANCE_WORK_DATE_FIELD || "gy_tracker_date").trim(),
+    firstLogin: String(process.env.KRONOS_ATTENDANCE_LOGIN_FIELD || "gy_tracker_login").trim(),
+    lastLogoff: String(process.env.KRONOS_ATTENDANCE_LOGOFF_FIELD || "gy_tracker_logout").trim(),
   }),
 });
 

@@ -81,11 +81,20 @@ function getPagination(payload = {}) {
   };
 }
 
+let cachedAccounts = null;
+let cachedAccountsTimestamp = 0;
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 /**
  * Fetches the authoritative Kronos account directory live.
  * Nothing is persisted in PMS. The raw account collection is cursor-paginated.
  */
-export async function fetchLiveKronosAccounts() {
+export async function fetchLiveKronosAccounts({ forceRefresh = false } = {}) {
+  const now = Date.now();
+  if (!forceRefresh && cachedAccounts && now - cachedAccountsTimestamp < CACHE_TTL_MS) {
+    return cachedAccounts;
+  }
+
   const accountsById = new Map();
   let afterId = 0;
   let pageCount = 0;
@@ -140,9 +149,12 @@ export async function fetchLiveKronosAccounts() {
     throw error;
   }
 
-  return Array.from(accountsById.values()).sort((a, b) =>
+  const result = Array.from(accountsById.values()).sort((a, b) =>
     a.kronosAccountName.localeCompare(b.kronosAccountName),
   );
+  cachedAccounts = result;
+  cachedAccountsTimestamp = Date.now();
+  return result;
 }
 
 export function resolveKronosAccountByName(hrisAccount, kronosAccounts = []) {

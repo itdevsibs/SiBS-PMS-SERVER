@@ -628,3 +628,174 @@ export async function getDistinctSkillsByCountry() {
 
   return skillsByCountry;
 }
+
+export function parseSkillCountryAndLanguage(skillName = "", countryRegion = null) {
+  const clean = String(skillName || "")
+    .replace(/^.*?::\s*/, "")
+    .replace(/^(VCH|GSS)\s+/i, "")
+    .trim();
+
+  let country = countryRegion ? String(countryRegion).trim() : "";
+  let language = "";
+  let skill = "NIV";
+
+  // Extract skill suffix (ACS, IV, NIV)
+  const skillMatch = clean.match(/\b(ACS|NIV|IV)\b/i);
+  if (skillMatch) {
+    skill = skillMatch[1].toUpperCase();
+  }
+
+  if (clean.includes(" - ")) {
+    const parts = clean.split(" - ");
+    if (!country) country = parts[0].trim();
+    const rest = parts.slice(1).join(" - ").trim();
+    language = rest.replace(/\b(ACS|NIV|IV)\b/gi, "").replace(/\bCALL\b/gi, "").trim();
+  } else if (clean.includes("-")) {
+    const parts = clean.split("-");
+    if (!country) country = parts[0].trim();
+    const rest = parts.slice(1).join("-").trim();
+    language = rest.replace(/\b(ACS|NIV|IV)\b/gi, "").replace(/\bCALL\b/gi, "").trim();
+  } else {
+    const words = clean.split(/\s+/);
+    if (!country && words.length >= 2) country = words[0];
+    language = words.slice(1).join(" ").replace(/\b(ACS|NIV|IV)\b/gi, "").replace(/\bCALL\b/gi, "").trim();
+  }
+
+  if (country) {
+    country = country.replace(/&/g, " & ").replace(/\s+/g, " ").trim();
+    country = country
+      .split(" ")
+      .map((w) => {
+        if (w.toLowerCase() === "&" || w.toLowerCase() === "and") return "&";
+        if (w.toLowerCase() === "of") return "of";
+        return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+      })
+      .join(" ");
+
+    if (country.toLowerCase() === "south korea") country = "Korea";
+    if (country.toLowerCase() === "rep. of moldova") country = "Moldova";
+  }
+
+  return {
+    country: country || "Other",
+    language: language || "English",
+    skill: skill || "NIV",
+  };
+}
+
+export async function getCallsReportData({
+  dateFrom,
+  dateTo,
+  country,
+} = {}) {
+  const conditions = [
+    "s.production_date IS NOT NULL",
+    "b.status = ?",
+  ];
+  const values = [COMPLETED_BATCH_STATUS];
+
+  if (dateFrom) {
+    conditions.push("DATE(s.production_date) >= ?");
+    values.push(dateFrom);
+  }
+  if (dateTo) {
+    conditions.push("DATE(s.production_date) <= ?");
+    values.push(dateTo);
+  }
+  if (country && country !== "All Countries") {
+    appendCountryFilter({
+      conditions,
+      values,
+      sourceSystem: "US_VISA",
+      country,
+    });
+  }
+
+  const [rawRows] = await pmsDb.query(
+    `
+      SELECT
+        s.source_skill_name,
+        s.country_region,
+        SUM(COALESCE(s.calls_offered, 0)) AS calls_received,
+        SUM(COALESCE(s.calls_handled, 0)) AS calls_answered,
+        SUM(COALESCE(s.calls_abandoned, 0)) AS calls_abandoned,
+        SUM(COALESCE(s.abandoned_outside_slt, 0)) AS calls_abandoned_after_sl,
+        SUM(COALESCE(s.handled_within_slt, 0)) AS calls_answered_within_sl,
+        SUM(COALESCE(s.calls_handled, 0) * COALESCE(s.avg_handle_seconds, 0)) AS total_handle_seconds
+      FROM ${pmsTables.usVisaRawSkillStatistics} s
+      INNER JOIN ${pmsTables.usVisaImportBatches} b
+        ON b.id = s.batch_id
+      WHERE ${conditions.join("\n        AND ")}
+      GROUP BY s.source_skill_name, s.country_region
+    `,
+    values,
+  );
+
+  // Group by Country, Language, and Skill
+  const grouped = new Map();
+
+  for (const row of rawRows) {
+    const { country: parsedCountry, language: parsedLanguage, skill: parsedSkill } = parseSkillCountryAndLanguage(
+      row.source_skill_name,
+      row.country_region,
+    );
+    const key = `${parsedCountry}|${parsedLanguage}|${parsedSkill}`;
+
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        country: parsedCountry,
+        language: parsedLanguage,
+        skill: parsedSkill,
+        callsReceived: 0,
+        callsAnswered: 0,
+        callsAbandoned: 0,
+        callsAbandonedAfterSl: 0,
+        callsAnsweredWithinSl: 0,
+        totalHandleSeconds: 0,
+      });
+    }
+
+    const item = grouped.get(key);
+    item.callsReceived += Number(row.calls_received || 0);
+    item.callsAnswered += Number(row.calls_answered || 0);
+    item.callsAbandoned += Number(row.calls_abandoned || 0);
+    item.callsAbandonedAfterSl += Number(row.calls_abandoned_after_sl || 0);
+    item.callsAnsweredWithinSl += Number(row.calls_answered_within_sl || 0);
+    item.totalHandleSeconds += Number(row.total_handle_seconds || 0);
+  }
+
+  const result = Array.from(grouped.values()).map((item) => {
+    const ahtSeconds = item.callsAnswered > 0 ? Math.round(item.totalHandleSeconds / item.callsAnswered) : 0;
+    const ahtMinutes = Math.floor(ahtSeconds / 60);
+    const ahtRemainder = ahtSeconds % 60;
+    const ahtFormatted = `${String(ahtMinutes).padStart(2, "0")}:${String(ahtRemainder).padStart(2, "0")}`;
+
+    const abandonedRate = item.callsReceived > 0
+      ? (item.callsAbandoned / item.callsReceived) * 100
+      : 0;
+
+    const slRate = item.callsReceived > 0
+      ? (item.callsAnsweredWithinSl / item.callsReceived) * 100
+      : 0;
+
+    return {
+      country: item.country,
+      language: item.language,
+      skill: item.skill,
+      callsReceived: item.callsReceived,
+      callsAnswered: item.callsAnswered,
+      callsAbandoned: item.callsAbandoned,
+      callsAbandonedAfterSl: item.callsAbandonedAfterSl,
+      callsAnsweredWithinSl: item.callsAnsweredWithinSl,
+      ahtSeconds,
+      aht: ahtFormatted,
+      abandonedRate: `${abandonedRate.toFixed(2)}%`,
+      abandonedRateNum: abandonedRate,
+      sl: `${slRate.toFixed(2)}%`,
+      slNum: slRate,
+    };
+  });
+
+  return result.sort((a, b) => a.country.localeCompare(b.country) || a.language.localeCompare(b.language) || a.skill.localeCompare(b.skill));
+}
+

@@ -2,6 +2,7 @@
 import express from "express";
 
 import {
+  getCallsReport,
   getWfmCallsKpi,
   getWfmSkills,
 } from "../controllers/callKpiController.js";
@@ -17,6 +18,12 @@ const requirePerformanceViewer = [
   authMiddleware,
   requireRole([5, 6, 7, 8, 9, 10]),
 ];
+
+router.get(
+  "/kpis/calls-report",
+  ...requirePerformanceViewer,
+  getCallsReport,
+);
 
 router.get(
   "/kpis/calls",
