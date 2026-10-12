@@ -261,11 +261,11 @@ app.use(
 );
 
 /*
-  Shared performance reporting. Public API paths stay under /api/wfm
-  for client compatibility while server responsibilities are separated.
+  Shared performance reporting.
+  KPI endpoints are exposed directly under /api/kpis.
 */
 app.use(
-  "/api/wfm",
+  "/api",
   performanceRoutes
 );
 

@@ -48,12 +48,20 @@ function extractPagination(payload, requestedPage, requestedLimit) {
 }
 
 function buildRemoteParams({ scope, gyEmpCode, search, dateFrom, dateTo, page, limit }) {
-  const searchTerm = String(search || gyEmpCode || "").trim().replace(/^SIB-\s*/i, "").trim();
-  const isPureNumericId = /^\d+$/.test(searchTerm);
+  const normalizedGyEmpCode = String(gyEmpCode || "")
+    .trim()
+    .replace(/^SIB-\s*/i, "")
+    .trim();
+  const searchTerm = String(search || "")
+    .trim()
+    .replace(/^SIB-\s*/i, "")
+    .trim();
+  const isPureNumericSearch = /^\d+$/.test(searchTerm);
 
   return {
     account_id: scope.kronosMapping.kronosAccountId,
-    gy_emp_code: gyEmpCode ? String(gyEmpCode).trim().replace(/^SIB-\s*/i, "").trim() : (isPureNumericId ? searchTerm : undefined),
+    gy_emp_code:
+      normalizedGyEmpCode || (isPureNumericSearch ? searchTerm : undefined),
     search: searchTerm || undefined,
     date_from: dateFrom || undefined,
     date_to: dateTo || undefined,
@@ -82,6 +90,83 @@ function validateDateRange(dateFrom, dateTo) {
   }
 
   return { dateFrom: finalDateFrom, dateTo: normalizedDateTo };
+}
+
+const TARGETED_ATTENDANCE_CONCURRENCY = 3;
+const ACCOUNT_PAGE_CONCURRENCY = 3;
+const ATTENDANCE_MAX_ATTEMPTS = 2;
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableAttendanceError(error) {
+  const status = Number(error?.status || 0);
+  return (
+    error?.code === "KRONOS_API_TIMEOUT" ||
+    status === 429 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504
+  );
+}
+
+function shouldFallbackFromTargetedError(error) {
+  const status = Number(error?.status || 0);
+  return (
+    error?.code === "KRONOS_API_TIMEOUT" ||
+    error?.code === "KRONOS_REQUEST_FAILED" ||
+    status === 400 ||
+    status === 422 ||
+    status >= 500
+  );
+}
+
+async function fetchAttendancePageWithRetry({
+  scope,
+  gyEmpCode,
+  search,
+  dateFrom,
+  dateTo,
+  page,
+  limit,
+  maxAttempts = ATTENDANCE_MAX_ATTEMPTS,
+}) {
+  const params = buildRemoteParams({
+    scope,
+    gyEmpCode,
+    search,
+    dateFrom,
+    dateTo,
+    page,
+    limit,
+  });
+
+  let lastError = null;
+  let attempts = 0;
+
+  while (attempts < Math.max(1, maxAttempts)) {
+    attempts += 1;
+    try {
+      const payload = await getKronosApiResponse(ATTENDANCE_ENDPOINT, { params });
+      return {
+        payload,
+        rows: extractRows(payload),
+        pagination: extractPagination(payload, params.page, params.limit),
+        requestCount: attempts,
+      };
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableAttendanceError(error) || attempts >= maxAttempts) break;
+      await delay(250 * attempts);
+    }
+  }
+
+  if (lastError && typeof lastError === "object") {
+    lastError.requestCount = attempts;
+  }
+  throw lastError;
 }
 
 async function fetchEndpointPreview(endpoint, {
@@ -127,7 +212,7 @@ export function previewEmployeeTrackerHistory(params) {
   return fetchEndpointPreview(TRACKER_HISTORY_ENDPOINT, params);
 }
 
-async function fetchAllAttendancePages({
+async function fetchAttendancePages({
   scope,
   gyEmpCode,
   search,
@@ -139,9 +224,10 @@ async function fetchAllAttendancePages({
   const allRows = [];
   let page = 1;
   let totalPages = null;
+  let requestCount = 0;
 
   while (page <= maxPages) {
-    const params = buildRemoteParams({
+    const result = await fetchAttendancePageWithRetry({
       scope,
       gyEmpCode,
       search,
@@ -150,11 +236,10 @@ async function fetchAllAttendancePages({
       page,
       limit,
     });
-    const payload = await getKronosApiResponse(ATTENDANCE_ENDPOINT, { params });
-    const rows = extractRows(payload);
-    allRows.push(...rows);
+    requestCount += result.requestCount;
+    allRows.push(...result.rows);
 
-    const pagination = extractPagination(payload, page, params.limit);
+    const pagination = result.pagination;
     if (pagination.totalPages > 0) totalPages = pagination.totalPages;
 
     const hasNext =
@@ -162,9 +247,9 @@ async function fetchAllAttendancePages({
         ? Boolean(pagination.hasNextPage)
         : totalPages != null
           ? page < totalPages
-          : rows.length >= params.limit;
+          : result.rows.length >= pagination.limit;
 
-    if (!hasNext || rows.length === 0) break;
+    if (!hasNext || result.rows.length === 0) break;
     page += 1;
   }
 
@@ -175,24 +260,363 @@ async function fetchAllAttendancePages({
     throw error;
   }
 
-  return allRows;
+  return { rows: allRows, requestCount };
 }
 
-export async function getLiveAttendance({
+async function fetchAccountAttendancePagesParallel({
+  scope,
+  dateFrom,
+  dateTo,
+  limit = 100,
+  maxPages = 2000,
+  concurrency = ACCOUNT_PAGE_CONCURRENCY,
+}) {
+  const first = await fetchAttendancePageWithRetry({
+    scope,
+    gyEmpCode: null,
+    search: null,
+    dateFrom,
+    dateTo,
+    page: 1,
+    limit,
+  });
+
+  let requestCount = first.requestCount;
+  const rows = [...first.rows];
+  const totalPages = Number(first.pagination.totalPages || 0);
+
+  if (totalPages > maxPages) {
+    const error = new Error(`Kronos live attendance fetch exceeded ${maxPages} pages.`);
+    error.code = "KRONOS_LIVE_PAGE_LIMIT_EXCEEDED";
+    error.status = 409;
+    throw error;
+  }
+
+  if (totalPages > 1) {
+    const pageNumbers = Array.from({ length: totalPages - 1 }, (_, index) => index + 2);
+    const remaining = await mapWithConcurrency(
+      pageNumbers,
+      concurrency,
+      (page) =>
+        fetchAttendancePageWithRetry({
+          scope,
+          gyEmpCode: null,
+          search: null,
+          dateFrom,
+          dateTo,
+          page,
+          limit,
+        }),
+    );
+
+    for (const result of remaining) {
+      requestCount += result.requestCount;
+      rows.push(...result.rows);
+    }
+
+    return { rows, requestCount };
+  }
+
+  if (first.pagination.hasNextPage == null && first.rows.length >= first.pagination.limit) {
+    return fetchAttendancePages({
+      scope,
+      gyEmpCode: null,
+      search: null,
+      dateFrom,
+      dateTo,
+      limit,
+      maxPages,
+    });
+  }
+
+  return { rows, requestCount };
+}
+
+async function fetchAllAttendancePages(options) {
+  const result = await fetchAttendancePages(options);
+  return result.rows;
+}
+
+function normalizeEmployeeRange(item = {}, fallbackRange = {}) {
+  const gyEmpCode = normalizeEmployeeUid(item.gyEmpCode || item.employeeUid || item.sibsId);
+  if (!gyEmpCode) return null;
+
+  const dateFrom = normalizeDate(item.dateFrom) || fallbackRange.dateFrom;
+  const dateTo = normalizeDate(item.dateTo) || fallbackRange.dateTo || dateFrom;
+  if (!dateFrom || !dateTo || dateFrom > dateTo) return null;
+
+  const requiredDates = Array.isArray(item.requiredDates)
+    ? [...new Set(item.requiredDates.map(normalizeDate).filter(Boolean))]
+    : [];
+
+  return { gyEmpCode, dateFrom, dateTo, requiredDates };
+}
+
+function mergeEmployeeRanges(items = [], fallbackRange = {}) {
+  const byEmployee = new Map();
+
+  for (const rawItem of items) {
+    const item = normalizeEmployeeRange(rawItem, fallbackRange);
+    if (!item) continue;
+
+    const existing = byEmployee.get(item.gyEmpCode);
+    if (!existing) {
+      byEmployee.set(item.gyEmpCode, {
+        ...item,
+        requiredDates: new Set(item.requiredDates),
+      });
+      continue;
+    }
+
+    if (item.dateFrom < existing.dateFrom) existing.dateFrom = item.dateFrom;
+    if (item.dateTo > existing.dateTo) existing.dateTo = item.dateTo;
+    for (const date of item.requiredDates) existing.requiredDates.add(date);
+  }
+
+  return [...byEmployee.values()].map((item) => ({
+    ...item,
+    requiredDates: [...item.requiredDates],
+  }));
+}
+
+async function mapWithConcurrency(items, concurrency, worker) {
+  if (!items.length) return [];
+
+  const safeConcurrency = Math.max(1, Math.min(Number(concurrency) || 8, 16));
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  async function runWorker() {
+    while (true) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      if (currentIndex >= items.length) return;
+      results[currentIndex] = await worker(items[currentIndex], currentIndex);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(safeConcurrency, items.length) }, () => runWorker()),
+  );
+  return results;
+}
+
+/**
+ * Optimized attendance fetch for Utilization only.
+ *
+ * Instead of downloading every attendance row for the whole account/date range,
+ * this function requests only the employees already present in the Occupancy KPI
+ * dataset. Requests are executed with bounded concurrency and each employee is
+ * independently paginated so first-login/last-logoff remain complete.
+ */
+export async function getTargetedAttendanceShiftRows({
+  accountId,
+  employeeRanges = [],
+  dateFrom,
+  dateTo,
+  concurrency = TARGETED_ATTENDANCE_CONCURRENCY,
+}) {
+  const range = validateDateRange(dateFrom, dateTo);
+  const scope = await resolveCallCenterOperationsAccountScope(accountId);
+  const targets = mergeEmployeeRanges(employeeRanges, range);
+
+  if (!targets.length) {
+    return {
+      scope,
+      range,
+      sourceEndpoint: ATTENDANCE_ENDPOINT,
+      sourceRows: 0,
+      normalizedRows: 0,
+      completeShiftRows: 0,
+      incompleteShiftRows: 0,
+      matchedEmployeeLedgerRows: 0,
+      fieldConfiguration: getAttendanceFieldConfiguration([]),
+      discoveredFields: [],
+      rows: [],
+      storageMode: "LIVE_ONLY",
+      fetchMode: "TARGETED_EMPLOYEE",
+      targetedEmployeeCount: 0,
+      remoteRequestCount: 0,
+      fallbackReason: null,
+    };
+  }
+
+  let remoteRows = [];
+  let remoteRequestCount = 0;
+  let fetchMode = "TARGETED_EMPLOYEE";
+  let fallbackReason = null;
+
+  const fallbackToAccountRange = async (error) => {
+    fallbackReason = {
+      code: error?.code || "KRONOS_TARGETED_FETCH_FAILED",
+      status: Number(error?.status || 0) || null,
+    };
+    fetchMode = "ACCOUNT_RANGE_FALLBACK";
+    const fallback = await fetchAccountAttendancePagesParallel({
+      scope,
+      dateFrom: range.dateFrom,
+      dateTo: range.dateTo,
+    });
+    remoteRequestCount += fallback.requestCount;
+    return fallback.rows;
+  };
+
+  // Probe a single employee first. If the deployed Kronos optimized view rejects
+  // gy_emp_code with HTTP 500, do not launch dozens of identical failing calls.
+  const firstTarget = targets[0];
+  try {
+    const firstResult = await fetchAttendancePages({
+      scope,
+      gyEmpCode: firstTarget.gyEmpCode,
+      search: null,
+      dateFrom: firstTarget.dateFrom,
+      dateTo: firstTarget.dateTo,
+    });
+    remoteRequestCount += firstResult.requestCount;
+
+    const remainingResults = await mapWithConcurrency(
+      targets.slice(1),
+      concurrency,
+      async (target) => {
+        try {
+          const result = await fetchAttendancePages({
+            scope,
+            gyEmpCode: target.gyEmpCode,
+            search: null,
+            dateFrom: target.dateFrom,
+            dateTo: target.dateTo,
+          });
+          return { ...result, error: null };
+        } catch (error) {
+          return {
+            rows: [],
+            requestCount: Number(error?.requestCount || 0),
+            error,
+          };
+        }
+      },
+    );
+
+    remoteRequestCount += remainingResults.reduce(
+      (sum, result) => sum + Number(result.requestCount || 0),
+      0,
+    );
+
+    const failedTarget = remainingResults.find((result) => result.error);
+    if (failedTarget) {
+      if (!shouldFallbackFromTargetedError(failedTarget.error)) {
+        throw failedTarget.error;
+      }
+      remoteRows = await fallbackToAccountRange(failedTarget.error);
+    } else {
+      remoteRows = [firstResult.rows, ...remainingResults.map((result) => result.rows)].flat();
+    }
+  } catch (error) {
+    remoteRequestCount += Number(error?.requestCount || 0);
+    if (!shouldFallbackFromTargetedError(error)) throw error;
+    remoteRows = await fallbackToAccountRange(error);
+  }
+
+  if (!remoteRows.length) {
+    return {
+      scope,
+      range,
+      sourceEndpoint: ATTENDANCE_ENDPOINT,
+      sourceRows: 0,
+      normalizedRows: 0,
+      completeShiftRows: 0,
+      incompleteShiftRows: 0,
+      matchedEmployeeLedgerRows: 0,
+      fieldConfiguration: getAttendanceFieldConfiguration([]),
+      discoveredFields: [],
+      rows: [],
+      storageMode: "LIVE_ONLY",
+      fetchMode,
+      targetedEmployeeCount: targets.length,
+      remoteRequestCount,
+      fallbackReason,
+    };
+  }
+
+  const fieldConfiguration = getAttendanceFieldConfiguration(remoteRows);
+  const normalizedRows = normalizeKronosAttendanceRows(remoteRows, { fieldConfiguration });
+  const requestedDayKeys = new Set();
+  for (const target of targets) {
+    for (const workDate of target.requiredDates) {
+      requestedDayKeys.add(`${normalizeEmployeeUid(target.gyEmpCode)}|${workDate}`);
+    }
+  }
+
+  const filteredRows = requestedDayKeys.size
+    ? normalizedRows.filter((row) =>
+        requestedDayKeys.has(`${normalizeEmployeeUid(row.employeeUid)}|${row.workDate}`),
+      )
+    : normalizedRows;
+
+  const employeeLedgers = await findEmployeeLedgersByGyEmpCodes(
+    targets.map((target) => target.gyEmpCode),
+  );
+  const ledgerByUid = new Map(
+    employeeLedgers.map((ledger) => [normalizeEmployeeUid(ledger.employeeUid), ledger]),
+  );
+
+  const rows = filteredRows
+    .map((row) => {
+      const uid = normalizeEmployeeUid(row.employeeUid);
+      const ledger = ledgerByUid.get(uid) || null;
+
+      return {
+        ...row,
+        hrisAccountId: scope.accountId,
+        accountName: scope.accountName,
+        kronosAccountId: scope.kronosMapping.kronosAccountId,
+        kronosAccountName: scope.kronosMapping.kronosAccountName || scope.accountName,
+        departmentId: scope.departmentId,
+        departmentName: scope.departmentName,
+        employeeLedgerId: ledger?.ledgerId || null,
+        employeeMappingStatus: ledger ? "MATCHED_LEDGER" : "UNMATCHED_LEDGER",
+        taskOrderId: ledger?.taskOrderId || null,
+      };
+    })
+    .sort((a, b) => {
+      if (a.workDate !== b.workDate) return String(b.workDate).localeCompare(String(a.workDate));
+      return String(a.employeeUid).localeCompare(String(b.employeeUid));
+    });
+
+  return {
+    scope,
+    range,
+    sourceEndpoint: ATTENDANCE_ENDPOINT,
+    sourceRows: remoteRows.length,
+    normalizedRows: rows.length,
+    completeShiftRows: rows.filter((row) => row.shiftStatus === "COMPLETE").length,
+    incompleteShiftRows: rows.filter((row) => row.shiftStatus !== "COMPLETE").length,
+    matchedEmployeeLedgerRows: rows.filter(
+      (row) => row.employeeMappingStatus === "MATCHED_LEDGER",
+    ).length,
+    fieldConfiguration,
+    discoveredFields: discoverKronosResponseFields(remoteRows),
+    rows,
+    storageMode: "LIVE_ONLY",
+    fetchMode,
+    targetedEmployeeCount: targets.length,
+    remoteRequestCount,
+    fallbackReason,
+  };
+}
+
+export async function getLiveAttendanceShiftRows({
   accountId,
   gyEmpCode = null,
   search = null,
   dateFrom,
   dateTo,
-  page = 1,
-  limit = 50,
 }) {
   const range = validateDateRange(dateFrom, dateTo);
   const scope = await resolveCallCenterOperationsAccountScope(accountId);
 
-  // Live-fetch every page for the selected account/date range so that first-login
-  // and last-logoff are computed across the complete source result, not a single
-  // remote page. Nothing from Kronos is persisted locally.
+  // Always fetch the complete selected account/date range. Utilization requires
+  // the true first login and last logoff across the full live source result.
   const remoteRows = await fetchAllAttendancePages({
     scope,
     gyEmpCode,
@@ -210,23 +634,10 @@ export async function getLiveAttendance({
     employeeLedgers.map((ledger) => [normalizeEmployeeUid(ledger.employeeUid), ledger]),
   );
 
-  const occupancyMatches = await findOccupancyDailyMatches({
-    employeeUids: normalizedRows.map((row) => row.employeeUid),
-    dateFrom: range.dateFrom,
-    dateTo: range.dateTo,
-  });
-  const occupancyByKey = new Map(
-    occupancyMatches.map((match) => [
-      `${normalizeEmployeeUid(match.employeeUid)}|${match.productionDate}`,
-      match,
-    ]),
-  );
-
-  const joinedRows = normalizedRows
+  const rows = normalizedRows
     .map((row) => {
       const uid = normalizeEmployeeUid(row.employeeUid);
       const ledger = ledgerByUid.get(uid) || null;
-      const occupancy = occupancyByKey.get(`${uid}|${row.workDate}`) || null;
 
       return {
         ...row,
@@ -239,15 +650,71 @@ export async function getLiveAttendance({
         employeeLedgerId: ledger?.ledgerId || null,
         employeeMappingStatus: ledger ? "MATCHED_LEDGER" : "UNMATCHED_LEDGER",
         taskOrderId: ledger?.taskOrderId || null,
-        occupancyRowCount: occupancy?.occupancyRowCount || 0,
-        occupancyDataMatched: Boolean(occupancy?.occupancyRowCount),
-        occupancy,
       };
     })
     .sort((a, b) => {
       if (a.workDate !== b.workDate) return String(b.workDate).localeCompare(String(a.workDate));
       return String(a.employeeUid).localeCompare(String(b.employeeUid));
     });
+
+  return {
+    scope,
+    range,
+    sourceEndpoint: ATTENDANCE_ENDPOINT,
+    sourceRows: remoteRows.length,
+    normalizedRows: rows.length,
+    completeShiftRows: rows.filter((row) => row.shiftStatus === "COMPLETE").length,
+    incompleteShiftRows: rows.filter((row) => row.shiftStatus !== "COMPLETE").length,
+    matchedEmployeeLedgerRows: rows.filter(
+      (row) => row.employeeMappingStatus === "MATCHED_LEDGER",
+    ).length,
+    fieldConfiguration,
+    discoveredFields: discoverKronosResponseFields(remoteRows),
+    rows,
+    storageMode: "LIVE_ONLY",
+  };
+}
+
+export async function getLiveAttendance({
+  accountId,
+  gyEmpCode = null,
+  search = null,
+  dateFrom,
+  dateTo,
+  page = 1,
+  limit = 50,
+}) {
+  const dataset = await getLiveAttendanceShiftRows({
+    accountId,
+    gyEmpCode,
+    search,
+    dateFrom,
+    dateTo,
+  });
+
+  const occupancyMatches = await findOccupancyDailyMatches({
+    employeeUids: dataset.rows.map((row) => row.employeeUid),
+    dateFrom: dataset.range.dateFrom,
+    dateTo: dataset.range.dateTo,
+  });
+  const occupancyByKey = new Map(
+    occupancyMatches.map((match) => [
+      `${normalizeEmployeeUid(match.employeeUid)}|${match.productionDate}`,
+      match,
+    ]),
+  );
+
+  const joinedRows = dataset.rows.map((row) => {
+    const uid = normalizeEmployeeUid(row.employeeUid);
+    const occupancy = occupancyByKey.get(`${uid}|${row.workDate}`) || null;
+
+    return {
+      ...row,
+      occupancyRowCount: occupancy?.occupancyRowCount || 0,
+      occupancyDataMatched: Boolean(occupancy?.occupancyRowCount),
+      occupancy,
+    };
+  });
 
   const safePage = normalizePage(page);
   const safeLimit = normalizeLimit(limit, 50);
@@ -257,18 +724,16 @@ export async function getLiveAttendance({
   const data = joinedRows.slice(offset, offset + safeLimit);
 
   return {
-    scope,
-    sourceEndpoint: ATTENDANCE_ENDPOINT,
-    sourceRows: remoteRows.length,
+    scope: dataset.scope,
+    sourceEndpoint: dataset.sourceEndpoint,
+    sourceRows: dataset.sourceRows,
     normalizedRows: total,
-    completeShiftRows: joinedRows.filter((row) => row.shiftStatus === "COMPLETE").length,
-    incompleteShiftRows: joinedRows.filter((row) => row.shiftStatus !== "COMPLETE").length,
-    matchedEmployeeLedgerRows: joinedRows.filter(
-      (row) => row.employeeMappingStatus === "MATCHED_LEDGER",
-    ).length,
+    completeShiftRows: dataset.completeShiftRows,
+    incompleteShiftRows: dataset.incompleteShiftRows,
+    matchedEmployeeLedgerRows: dataset.matchedEmployeeLedgerRows,
     occupancyMatchedRows: joinedRows.filter((row) => row.occupancyDataMatched).length,
-    fieldConfiguration,
-    discoveredFields: discoverKronosResponseFields(remoteRows),
+    fieldConfiguration: dataset.fieldConfiguration,
+    discoveredFields: dataset.discoveredFields,
     data,
     pagination: {
       currentPage: safePage,
