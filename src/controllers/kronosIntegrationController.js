@@ -81,7 +81,7 @@ function buildQueryParams(req) {
 
 export async function getKronosAttendancePreview(req, res) {
   try {
-    const result = await previewEmployeeAttendance(buildQueryParams(req));
+    const result = await getLiveAttendance(buildQueryParams(req));
     return res.json({
       success: true,
       data: {

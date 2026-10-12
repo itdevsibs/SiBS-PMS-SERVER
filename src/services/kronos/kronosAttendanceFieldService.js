@@ -185,6 +185,57 @@ const LOGOUT_CANDIDATES = [
   "logout",
 ];
 
+const SCHEDULE_IN_CANDIDATES = [
+  "gy_sched_login",
+  "sched_login",
+  "schedule_in",
+  "schedule_login",
+  "sched_in",
+  "shift_start",
+  "schedule_start",
+];
+
+const SCHEDULE_OUT_CANDIDATES = [
+  "gy_sched_logout",
+  "sched_logout",
+  "schedule_out",
+  "schedule_logoff",
+  "sched_out",
+  "shift_end",
+  "schedule_end",
+];
+
+const OT_HOURS_CANDIDATES = [
+  "gy_tracker_ot",
+  "tracker_ot",
+  "ot_hours",
+  "ot_hrs",
+  "overtime_hours",
+  "overtime",
+  "ot",
+];
+
+const TOTAL_HOURS_CANDIDATES = [
+  "gy_tracker_wh",
+  "tracker_wh",
+  "gy_tracker_ath",
+  "tracker_ath",
+  "total_hours",
+  "work_hours",
+  "work_hrs",
+  "wh",
+  "total_hrs",
+];
+
+const STATUS_CANDIDATES = [
+  "gy_tracker_status",
+  "tracker_status",
+  "attendance_status",
+  "shift_status",
+  "status",
+  "gy_sched_mode",
+];
+
 export function getAttendanceFieldConfiguration(rows = []) {
   const fields = kronosApiConfig.attendanceFields;
 
@@ -204,21 +255,44 @@ export function getAttendanceFieldConfiguration(rows = []) {
   const workDate = resolveField(fields.workDate, WORK_DATE_CANDIDATES);
   const firstLogin = resolveField(fields.firstLogin, LOGIN_CANDIDATES);
   const lastLogoff = resolveField(fields.lastLogoff, LOGOUT_CANDIDATES);
+  const scheduleIn = resolveField(fields.scheduleIn, SCHEDULE_IN_CANDIDATES);
+  const scheduleOut = resolveField(fields.scheduleOut, SCHEDULE_OUT_CANDIDATES);
+  const otHours = resolveField(fields.otHours, OT_HOURS_CANDIDATES);
+  const totalHours = resolveField(fields.totalHours, TOTAL_HOURS_CANDIDATES);
+  const status = resolveField(fields.status, STATUS_CANDIDATES);
 
   return {
     employeeCode: employeeCode.field,
     workDate: workDate.field,
     firstLogin: firstLogin.field,
     lastLogoff: lastLogoff.field,
+    scheduleIn: scheduleIn.field,
+    scheduleOut: scheduleOut.field,
+    otHours: otHours.field,
+    totalHours: totalHours.field,
+    status: status.field,
     sources: {
       employeeCode: employeeCode.source,
       workDate: workDate.source,
       firstLogin: firstLogin.source,
       lastLogoff: lastLogoff.source,
+      scheduleIn: scheduleIn.source,
+      scheduleOut: scheduleOut.source,
+      otHours: otHours.source,
+      totalHours: totalHours.source,
+      status: status.source,
     },
-    autoDetected: [employeeCode, workDate, firstLogin, lastLogoff].some(
-      (item) => item.source === "AUTO",
-    ),
+    autoDetected: [
+      employeeCode,
+      workDate,
+      firstLogin,
+      lastLogoff,
+      scheduleIn,
+      scheduleOut,
+      otHours,
+      totalHours,
+      status,
+    ].some((item) => item.source === "AUTO"),
     complete: Boolean(
       employeeCode.field && workDate.field && firstLogin.field && lastLogoff.field,
     ),
@@ -268,6 +342,11 @@ export function normalizeKronosAttendanceRows(rows = [], {
         firstLoginEpochMs: null,
         lastLogoffAt: null,
         lastLogoffEpochMs: null,
+        scheduleIn: null,
+        scheduleOut: null,
+        otHours: null,
+        totalHours: null,
+        status: null,
         sourceRows: [],
       });
     }
@@ -295,6 +374,28 @@ export function normalizeKronosAttendanceRows(rows = [], {
       group.lastLogoffEpochMs = logoffEpochMs;
       group.lastLogoffAt = normalizeSqlDateTime(logoffRaw);
     }
+
+    const scheduleInRaw = getValueByPath(row, fieldConfiguration.scheduleIn);
+    const scheduleOutRaw = getValueByPath(row, fieldConfiguration.scheduleOut);
+    const otHoursRaw = getValueByPath(row, fieldConfiguration.otHours);
+    const totalHoursRaw = getValueByPath(row, fieldConfiguration.totalHours);
+    const statusRaw = getValueByPath(row, fieldConfiguration.status);
+
+    if (scheduleInRaw != null && group.scheduleIn == null) {
+      group.scheduleIn = scheduleInRaw;
+    }
+    if (scheduleOutRaw != null && group.scheduleOut == null) {
+      group.scheduleOut = scheduleOutRaw;
+    }
+    if (otHoursRaw != null && group.otHours == null) {
+      group.otHours = otHoursRaw;
+    }
+    if (totalHoursRaw != null && group.totalHours == null) {
+      group.totalHours = totalHoursRaw;
+    }
+    if (statusRaw != null && group.status == null) {
+      group.status = statusRaw;
+    }
   }
 
   return [...groups.values()].map((group) => {
@@ -315,12 +416,24 @@ export function normalizeKronosAttendanceRows(rows = [], {
       );
     }
 
+    const calculatedTotalHours =
+      group.totalHours != null
+        ? Number(group.totalHours)
+        : shiftSeconds != null
+        ? Number((shiftSeconds / 3600).toFixed(2))
+        : null;
+
     return {
       gyEmpCode: group.gyEmpCode,
       employeeUid: group.employeeUid,
       workDate: group.workDate,
+      scheduleIn: group.scheduleIn || null,
+      scheduleOut: group.scheduleOut || null,
       firstLoginAt: group.firstLoginAt,
       lastLogoffAt: group.lastLogoffAt,
+      otHours: group.otHours != null ? Number(group.otHours) : 0,
+      totalHours: calculatedTotalHours,
+      status: group.status != null ? group.status : shiftStatus,
       shiftSeconds,
       shiftStatus,
       sourceRowCount: group.sourceRows.length,

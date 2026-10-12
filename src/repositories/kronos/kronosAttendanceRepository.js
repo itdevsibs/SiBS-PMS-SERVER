@@ -63,3 +63,104 @@ export async function findOccupancyDailyMatches({
     availableIdleSeconds: Number(row.available_idle_seconds || 0),
   }));
 }
+
+/**
+ * Finds scheduled shifts for the given employees and date range directly from Kronos DB.
+ */
+export async function findKronosDailySchedules({
+  employeeUids = [],
+  dateFrom,
+  dateTo,
+} = {}) {
+  const normalizedUids = [
+    ...new Set(employeeUids.map(normalizeEmployeeUid).filter(Boolean)),
+  ];
+
+  if (!normalizedUids.length || !dateFrom || !dateTo) return [];
+
+  const placeholders = normalizedUids.map(() => "?").join(", ");
+  try {
+    const { kronosDb } = await import("../../config/db.js");
+    const [rows] = await kronosDb.query(
+      `
+        SELECT 
+          REPLACE(UPPER(TRIM(e.gy_emp_code)), 'SIB-', '') AS employee_uid,
+          e.gy_emp_fullname AS employee_name,
+          s.gy_sched_day AS sched_day,
+          s.gy_sched_mode AS sched_mode,
+          s.gy_sched_login AS sched_login,
+          s.gy_sched_logout AS sched_logout
+        FROM gy_schedule s
+        JOIN gy_employee e ON e.gy_emp_id = s.gy_emp_id
+        WHERE s.gy_sched_day BETWEEN ? AND ?
+          AND REPLACE(UPPER(TRIM(e.gy_emp_code)), 'SIB-', '') IN (${placeholders})
+      `,
+      [dateFrom, dateTo, ...normalizedUids.map((uid) => uid.toUpperCase())],
+    );
+
+    return rows.map((r) => ({
+      employeeUid: normalizeEmployeeUid(r.employee_uid),
+      employeeName: String(r.employee_name || "").trim(),
+      schedDay:
+        r.sched_day instanceof Date
+          ? r.sched_day.toISOString().slice(0, 10)
+          : String(r.sched_day || "").slice(0, 10),
+      schedMode: Number(r.sched_mode),
+      schedLogin: r.sched_login ? String(r.sched_login).trim() : null,
+      schedLogout: r.sched_logout ? String(r.sched_logout).trim() : null,
+    }));
+  } catch (error) {
+    console.warn("Unable to fetch Kronos daily schedules:", error.message);
+    return [];
+  }
+}
+
+/**
+ * Finds all scheduled employees for a specific account and date range directly from Kronos DB.
+ * Used to ensure absent and rest day employees who have no live tracker punches are included.
+ */
+export async function findKronosScheduledEmployeesByAccount({
+  kronosAccountId,
+  dateFrom,
+  dateTo,
+} = {}) {
+  const accountId = Number(kronosAccountId);
+  if (!accountId || !dateFrom || !dateTo) return [];
+
+  try {
+    const { kronosDb } = await import("../../config/db.js");
+    const [rows] = await kronosDb.query(
+      `
+        SELECT 
+          REPLACE(UPPER(TRIM(e.gy_emp_code)), 'SIB-', '') AS employee_uid,
+          e.gy_emp_code,
+          e.gy_emp_fullname,
+          s.gy_sched_day AS sched_day,
+          s.gy_sched_mode AS sched_mode,
+          s.gy_sched_login AS sched_login,
+          s.gy_sched_logout AS sched_logout
+        FROM gy_schedule s
+        JOIN gy_employee e ON e.gy_emp_id = s.gy_emp_id
+        WHERE e.gy_acc_id = ?
+          AND s.gy_sched_day BETWEEN ? AND ?
+      `,
+      [accountId, dateFrom, dateTo],
+    );
+
+    return rows.map((r) => ({
+      employeeUid: normalizeEmployeeUid(r.employee_uid),
+      gyEmpCode: String(r.gy_emp_code || "").trim(),
+      employeeName: String(r.gy_emp_fullname || "").trim(),
+      schedDay:
+        r.sched_day instanceof Date
+          ? r.sched_day.toISOString().slice(0, 10)
+          : String(r.sched_day || "").slice(0, 10),
+      schedMode: Number(r.sched_mode),
+      schedLogin: r.sched_login ? String(r.sched_login).trim() : null,
+      schedLogout: r.sched_logout ? String(r.sched_logout).trim() : null,
+    }));
+  } catch (error) {
+    console.warn("Unable to fetch Kronos scheduled employees by account:", error.message);
+    return [];
+  }
+}
