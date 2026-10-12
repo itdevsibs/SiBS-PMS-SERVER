@@ -28,6 +28,11 @@ export const kronosApiConfig = Object.freeze({
     workDate: String(process.env.KRONOS_ATTENDANCE_WORK_DATE_FIELD || "gy_tracker_date").trim(),
     firstLogin: String(process.env.KRONOS_ATTENDANCE_LOGIN_FIELD || "gy_tracker_login").trim(),
     lastLogoff: String(process.env.KRONOS_ATTENDANCE_LOGOFF_FIELD || "gy_tracker_logout").trim(),
+    scheduleIn: String(process.env.KRONOS_ATTENDANCE_SCHEDULE_IN_FIELD || "gy_sched_login").trim(),
+    scheduleOut: String(process.env.KRONOS_ATTENDANCE_SCHEDULE_OUT_FIELD || "gy_sched_logout").trim(),
+    otHours: String(process.env.KRONOS_ATTENDANCE_OT_HOURS_FIELD || "gy_tracker_ot").trim(),
+    totalHours: String(process.env.KRONOS_ATTENDANCE_TOTAL_HOURS_FIELD || "gy_tracker_wh").trim(),
+    status: String(process.env.KRONOS_ATTENDANCE_STATUS_FIELD || "gy_tracker_status").trim(),
   }),
 });
 
@@ -42,6 +47,11 @@ export function getKronosConfigurationStatus() {
       workDate: kronosApiConfig.attendanceFields.workDate || null,
       firstLogin: kronosApiConfig.attendanceFields.firstLogin || null,
       lastLogoff: kronosApiConfig.attendanceFields.lastLogoff || null,
+      scheduleIn: kronosApiConfig.attendanceFields.scheduleIn || null,
+      scheduleOut: kronosApiConfig.attendanceFields.scheduleOut || null,
+      otHours: kronosApiConfig.attendanceFields.otHours || null,
+      totalHours: kronosApiConfig.attendanceFields.totalHours || null,
+      status: kronosApiConfig.attendanceFields.status || null,
       complete: Boolean(
         kronosApiConfig.attendanceFields.employeeCode &&
           kronosApiConfig.attendanceFields.workDate &&

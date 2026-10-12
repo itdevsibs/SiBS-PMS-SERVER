@@ -1,4 +1,8 @@
-import { findOccupancyDailyMatches } from "../../repositories/kronos/kronosAttendanceRepository.js";
+import {
+  findOccupancyDailyMatches,
+  findKronosDailySchedules,
+  findKronosScheduledEmployeesByAccount,
+} from "../../repositories/kronos/kronosAttendanceRepository.js";
 import {
   findEmployeeLedgersByGyEmpCodes,
   normalizeEmployeeUid,
@@ -692,11 +696,24 @@ export async function getLiveAttendance({
     dateTo,
   });
 
-  const occupancyMatches = await findOccupancyDailyMatches({
-    employeeUids: dataset.rows.map((row) => row.employeeUid),
-    dateFrom: dataset.range.dateFrom,
-    dateTo: dataset.range.dateTo,
-  });
+  const [occupancyMatches, scheduleMatches, accountSchedules] = await Promise.all([
+    findOccupancyDailyMatches({
+      employeeUids: dataset.rows.map((row) => row.employeeUid),
+      dateFrom: dataset.range.dateFrom,
+      dateTo: dataset.range.dateTo,
+    }),
+    findKronosDailySchedules({
+      employeeUids: dataset.rows.map((row) => row.employeeUid),
+      dateFrom: dataset.range.dateFrom,
+      dateTo: dataset.range.dateTo,
+    }),
+    findKronosScheduledEmployeesByAccount({
+      kronosAccountId: dataset.scope.kronosMapping?.kronosAccountId,
+      dateFrom: dataset.range.dateFrom,
+      dateTo: dataset.range.dateTo,
+    }),
+  ]);
+
   const occupancyByKey = new Map(
     occupancyMatches.map((match) => [
       `${normalizeEmployeeUid(match.employeeUid)}|${match.productionDate}`,
@@ -704,17 +721,141 @@ export async function getLiveAttendance({
     ]),
   );
 
+  const scheduleByKey = new Map(
+    scheduleMatches.map((sched) => [
+      `${normalizeEmployeeUid(sched.employeeUid)}|${sched.schedDay}`,
+      sched,
+    ]),
+  );
+
+  const presentKeys = new Set(
+    dataset.rows.map(
+      (row) => `${normalizeEmployeeUid(row.employeeUid)}|${row.workDate}`,
+    ),
+  );
+
+function getManilaTodayIso() {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Manila",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+  const todayIso = getManilaTodayIso();
+
   const joinedRows = dataset.rows.map((row) => {
     const uid = normalizeEmployeeUid(row.employeeUid);
     const occupancy = occupancyByKey.get(`${uid}|${row.workDate}`) || null;
+    const schedule = scheduleByKey.get(`${uid}|${row.workDate}`) || null;
+
+    const scheduleIn = row.scheduleIn || schedule?.schedLogin || null;
+    const scheduleOut = row.scheduleOut || schedule?.schedLogout || null;
+    const isRestDay = schedule?.schedMode === 0 || scheduleIn === "00:00:00";
+    const isTodayOrFuture = String(row.workDate) >= todayIso;
+
+    let status = row.status;
+    if (row.firstLoginAt) {
+      status = "Present";
+    } else if (!row.firstLoginAt && !row.lastLogoffAt) {
+      if (isRestDay) {
+        status = "Rest Day";
+      } else if (isTodayOrFuture) {
+        status = null; // Shift is scheduled or in progress today, not marked Absent yet
+      } else {
+        status = "Absent";
+      }
+    } else if (status === 1 || status === "1" || status === "COMPLETE") {
+      status = "Present";
+    }
 
     return {
       ...row,
+      employeeName: row.employeeName || schedule?.employeeName || null,
+      scheduleIn: isRestDay ? "Rest Day" : scheduleIn,
+      scheduleOut: isRestDay ? "Rest Day" : scheduleOut,
+      scheduleMode: schedule?.schedMode ?? null,
+      status,
       occupancyRowCount: occupancy?.occupancyRowCount || 0,
       occupancyDataMatched: Boolean(occupancy?.occupancyRowCount),
       occupancy,
     };
   });
+
+  // Inject scheduled employees who have no live punch in dataset so they appear accurately for completed dates.
+  // For current date (today) or future dates, we do NOT inject them as absent because their shifts are not finished yet.
+  if (Array.isArray(accountSchedules) && accountSchedules.length > 0) {
+    let missingEmployees = accountSchedules.filter((sched) => {
+      const isPastDate = String(sched.schedDay) < todayIso;
+      if (!isPastDate) return false; // Do not include unclocked employees on today's date
+      const key = `${normalizeEmployeeUid(sched.employeeUid)}|${sched.schedDay}`;
+      return !presentKeys.has(key);
+    });
+
+    if (search || gyEmpCode) {
+      const term = String(search || gyEmpCode).toLowerCase().trim().replace(/^sib-\s*/i, "");
+      missingEmployees = missingEmployees.filter((sched) => {
+        const empCode = String(sched.gyEmpCode || "").toLowerCase();
+        const empUid = String(sched.employeeUid || "").toLowerCase();
+        const empName = String(sched.employeeName || "").toLowerCase();
+        return empCode.includes(term) || empUid.includes(term) || empName.includes(term);
+      });
+    }
+
+    if (missingEmployees.length > 0) {
+      const missingLedgers = await findEmployeeLedgersByGyEmpCodes(
+        missingEmployees.map((e) => e.gyEmpCode),
+      );
+      const missingLedgerMap = new Map(
+        missingLedgers.map((l) => [normalizeEmployeeUid(l.employeeUid), l]),
+      );
+
+      for (const sched of missingEmployees) {
+        const uid = normalizeEmployeeUid(sched.employeeUid);
+        const isRestDay = sched.schedMode === 0 || sched.schedLogin === "00:00:00";
+        const ledger = missingLedgerMap.get(uid) || null;
+
+        joinedRows.push({
+          gyEmpCode: sched.gyEmpCode,
+          employeeUid: uid,
+          employeeName: sched.employeeName,
+          workDate: sched.schedDay,
+          scheduleIn: isRestDay ? "Rest Day" : sched.schedLogin || null,
+          scheduleOut: isRestDay ? "Rest Day" : sched.schedLogout || null,
+          firstLoginAt: null,
+          lastLogoffAt: null,
+          otHours: 0,
+          totalHours: 0,
+          status: isRestDay ? "Rest Day" : "Absent",
+          shiftSeconds: 0,
+          shiftStatus: "INCOMPLETE",
+          sourceRowCount: 0,
+          rawJson: [],
+          hrisAccountId: dataset.scope.accountId,
+          accountName: dataset.scope.accountName,
+          kronosAccountId: dataset.scope.kronosMapping?.kronosAccountId,
+          kronosAccountName: dataset.scope.kronosMapping?.kronosAccountName || dataset.scope.accountName,
+          departmentId: dataset.scope.departmentId,
+          departmentName: dataset.scope.departmentName,
+          employeeLedgerId: ledger?.ledgerId || null,
+          employeeMappingStatus: ledger ? "MATCHED_LEDGER" : "UNMATCHED_LEDGER",
+          taskOrderId: ledger?.taskOrderId || null,
+          scheduleMode: sched.schedMode ?? null,
+          occupancyRowCount: 0,
+          occupancyDataMatched: false,
+          occupancy: null,
+        });
+      }
+
+      joinedRows.sort((a, b) => {
+        if (a.workDate !== b.workDate) return String(b.workDate).localeCompare(String(a.workDate));
+        return String(a.employeeName || a.employeeUid).localeCompare(String(b.employeeName || b.employeeUid));
+      });
+    }
+  }
 
   const safePage = normalizePage(page);
   const safeLimit = normalizeLimit(limit, 50);
