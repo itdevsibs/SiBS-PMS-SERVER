@@ -15,10 +15,6 @@ function round(value, digits = 2) {
   return Math.round((toFiniteNumber(value) + Number.EPSILON) * factor) / factor;
 }
 
-/**
- * Empty accumulator per bucket or summary
- * Tracks sum of time fields and distinct matched employee set
- */
 function emptyAccumulator(bucket = {}) {
   return {
     key: bucket.key || "summary",
@@ -34,12 +30,17 @@ function emptyAccumulator(bucket = {}) {
   };
 }
 
-/**
- * STEP 2, 3, 4, 5:
- * Normalizes time fields, adds to accumulator, and records distinct matched SiBS employee.
- */
+function emptyUtilizationAccumulator(bucket = {}) {
+  return {
+    key: bucket.key || "summary",
+    label: bucket.label || "Summary",
+    productiveSeconds: 0,
+    shiftSeconds: 0,
+    matchedEmployeeDays: 0,
+  };
+}
+
 function addRow(accumulator, row = {}) {
-  // STEP 2: Normalize the time fields. If missing, treat as 0.
   const talk = toFiniteNumber(row.talking_seconds);
   const hold = toFiniteNumber(row.hold_seconds);
   const afterCall = toFiniteNumber(row.after_call_seconds);
@@ -56,9 +57,6 @@ function addRow(accumulator, row = {}) {
   accumulator.chattingSeconds += chatting;
   accumulator.availableSeconds += avail;
 
-  // STEP 5: Actual Headcount = COUNT(DISTINCT matched SiBS employee)
-  // Multiple source rows for the same employee must still count as 1 employee.
-  // Do not count unmapped source agents as official headcount.
   const isMatched = String(row.mapping_status || "").toUpperCase() === "MATCHED";
   const uid = row.employee_uid ? String(row.employee_uid).trim() : null;
 
@@ -67,17 +65,19 @@ function addRow(accumulator, row = {}) {
   }
 }
 
-/**
- * Calculate Occupancy % using the approved contract definition:
- *
- * Total Work Time = Talking + Hold + After Call + Wrap Up + Email + Chatting
- * Productive Time (Total Logged-in Time) = Total Work Time + Idle Time
- * Occupancy % = Total Work Time / Productive Time * 100
- *
- * Missing source duration fields are treated as 0. If Productive Time is 0,
- * Occupancy is returned as 0% instead of NaN/Infinity.
- * STEP 8, 9, 12: Other fields remain null / blank.
- */
+function addUtilizationRow(accumulator, row = {}) {
+  if (!row.utilizationValid) return;
+
+  const productiveSeconds = toFiniteNumber(row.productiveSeconds);
+  const shiftSeconds = toFiniteNumber(row.shiftSeconds);
+
+  if (shiftSeconds <= 0) return;
+
+  accumulator.productiveSeconds += productiveSeconds;
+  accumulator.shiftSeconds += shiftSeconds;
+  accumulator.matchedEmployeeDays += 1;
+}
+
 function finalize(accumulator) {
   const totalWorkTime =
     accumulator.talkSeconds +
@@ -97,10 +97,8 @@ function finalize(accumulator) {
   const actualHeadcount = accumulator.matchedEmployeeUids.size;
 
   return {
-    // Authorized calculated metrics
     occupancyPct,
     actualHeadcount,
-    // New contract-aligned names.
     totalWorkTime: round(totalWorkTime, 0),
     productiveTime: round(productiveTime, 0),
     idleSeconds: round(accumulator.availableSeconds, 0),
@@ -109,8 +107,12 @@ function finalize(accumulator) {
     totalHandlingTime: round(totalWorkTime, 0),
     availableSeconds: round(accumulator.availableSeconds, 0),
 
-    // Must remain null / blank per STEP 8, 9, 12 until authoritative data is available
+    // Filled later when live Kronos shift data is available.
     utilizationPct: null,
+    utilizationProductiveTime: 0,
+    totalShiftTime: 0,
+    utilizationMatchedEmployeeDays: 0,
+
     requiredFte: null,
     buffer: null,
     attrited: null,
@@ -119,11 +121,22 @@ function finalize(accumulator) {
   };
 }
 
-/**
- * Aggregates dated agent occupancy rows into summary and periodic series
- */
+function finalizeUtilization(accumulator) {
+  return {
+    utilizationPct:
+      accumulator.shiftSeconds > 0
+        ? round((accumulator.productiveSeconds / accumulator.shiftSeconds) * 100, 2)
+        : null,
+    utilizationProductiveTime: round(accumulator.productiveSeconds, 0),
+    totalShiftTime: round(accumulator.shiftSeconds, 0),
+    utilizationMatchedEmployeeDays: accumulator.matchedEmployeeDays,
+  };
+}
+
 export function buildWfmOccupancyKpiDashboard({
   rows = [],
+  utilizationRows = [],
+  utilization = null,
   period = "weekly",
   dateFrom = null,
   dateTo = null,
@@ -133,7 +146,9 @@ export function buildWfmOccupancyKpiDashboard({
 } = {}) {
   const normalizedPeriod = normalizeCallKpiPeriod(period);
   const summary = emptyAccumulator();
+  const utilizationSummary = emptyUtilizationAccumulator();
   const buckets = new Map();
+  const utilizationBuckets = new Map();
 
   seedCallKpiReferencePeriodBuckets(buckets, {
     period: normalizedPeriod,
@@ -141,9 +156,14 @@ export function buildWfmOccupancyKpiDashboard({
     referenceDate,
     createAccumulator: emptyAccumulator,
   });
+  seedCallKpiReferencePeriodBuckets(utilizationBuckets, {
+    period: normalizedPeriod,
+    dateFrom,
+    referenceDate,
+    createAccumulator: emptyUtilizationAccumulator,
+  });
 
   for (const row of rows) {
-    // STEP 1 & 11: Ignore any row without a valid reporting date
     const date = parseCallKpiDateOnly(row.production_date);
     if (!date) continue;
 
@@ -155,15 +175,35 @@ export function buildWfmOccupancyKpiDashboard({
     buckets.set(bucket.key, accumulator);
   }
 
+  for (const row of utilizationRows) {
+    const date = parseCallKpiDateOnly(row.productionDate || row.workDate);
+    if (!date) continue;
+
+    addUtilizationRow(utilizationSummary, row);
+
+    const bucket = getCallKpiPeriodBucket(date, normalizedPeriod);
+    const accumulator =
+      utilizationBuckets.get(bucket.key) || emptyUtilizationAccumulator(bucket);
+    addUtilizationRow(accumulator, row);
+    utilizationBuckets.set(bucket.key, accumulator);
+  }
+
   return {
-    summary: finalize(summary),
+    summary: {
+      ...finalize(summary),
+      ...finalizeUtilization(utilizationSummary),
+    },
     series: [...buckets.values()]
       .sort((a, b) => a.key.localeCompare(b.key))
       .map((bucket) => ({
         key: bucket.key,
         label: bucket.label,
         ...finalize(bucket),
+        ...finalizeUtilization(
+          utilizationBuckets.get(bucket.key) || emptyUtilizationAccumulator(bucket),
+        ),
       })),
+    utilization,
     filters: {
       period: normalizedPeriod,
       dateFrom,
@@ -172,5 +212,57 @@ export function buildWfmOccupancyKpiDashboard({
       taskOrder,
     },
     availableTaskOrders,
+  };
+}
+
+export function buildWfmUtilizationKpiDashboard({
+  rows = [],
+  metadata = null,
+  period = "weekly",
+  dateFrom = null,
+  dateTo = null,
+  referenceDate = null,
+  taskOrder = null,
+} = {}) {
+  const normalizedPeriod = normalizeCallKpiPeriod(period);
+  const summary = emptyUtilizationAccumulator();
+  const buckets = new Map();
+
+  seedCallKpiReferencePeriodBuckets(buckets, {
+    period: normalizedPeriod,
+    dateFrom,
+    referenceDate,
+    createAccumulator: emptyUtilizationAccumulator,
+  });
+
+  for (const row of rows) {
+    const date = parseCallKpiDateOnly(row.productionDate || row.workDate);
+    if (!date) continue;
+
+    addUtilizationRow(summary, row);
+
+    const bucket = getCallKpiPeriodBucket(date, normalizedPeriod);
+    const accumulator = buckets.get(bucket.key) || emptyUtilizationAccumulator(bucket);
+    addUtilizationRow(accumulator, row);
+    buckets.set(bucket.key, accumulator);
+  }
+
+  return {
+    summary: finalizeUtilization(summary),
+    series: [...buckets.values()]
+      .sort((a, b) => a.key.localeCompare(b.key))
+      .map((bucket) => ({
+        key: bucket.key,
+        label: bucket.label,
+        ...finalizeUtilization(bucket),
+      })),
+    utilization: metadata,
+    filters: {
+      period: normalizedPeriod,
+      dateFrom,
+      dateTo,
+      referenceDate,
+      taskOrder,
+    },
   };
 }

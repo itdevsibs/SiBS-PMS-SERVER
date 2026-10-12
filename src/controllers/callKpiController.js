@@ -35,7 +35,7 @@ export async function getCallsReport(req, res) {
       data,
     });
   } catch (error) {
-    console.error("GET /api/wfm/kpis/calls-report error:", error);
+    console.error("GET /api/kpis/calls-report error:", error);
     return res.status(500).json({
       success: false,
       code: "CALLS_REPORT_ERROR",
@@ -61,7 +61,7 @@ export async function getWfmCallsKpi(req, res) {
       });
     }
 
-    console.error("GET /api/wfm/kpis/calls error:", {
+    console.error("GET /api/kpis/calls error:", {
       message: error.message,
       code: error.code,
     });
@@ -82,7 +82,7 @@ export async function getWfmSkills(req, res) {
       data: skillsByCountry,
     });
   } catch (error) {
-    console.error("GET /api/wfm/kpis/skills error:", error);
+    console.error("GET /api/kpis/skills error:", error);
     return res.status(500).json({
       success: false,
       code: "WFM_SKILLS_ERROR",

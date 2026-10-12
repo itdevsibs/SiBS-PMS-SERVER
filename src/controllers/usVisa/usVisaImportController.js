@@ -28,6 +28,8 @@ import {
   countImportErrorsByBatchId,
   listImportErrorsByBatchId,
 } from "../../repositories/usVisa/usVisaImportErrorRepository.js";
+import { clearUtilizationCache } from "../../services/cache/utilizationCacheService.js";
+import { clearOccupancyCache } from "../../services/cache/occupancyCacheService.js";
 
 function parseJsonValue(value) {
   if (value === null || value === undefined) return null;
@@ -331,6 +333,11 @@ export async function uploadUsVisaImport(req, res) {
       processedRows: result.batch?.totalRows ?? null,
       totalRows: result.batch?.totalRows ?? null,
     });
+
+    if (/AGENT_OCCUPANCY/i.test(String(result.batch?.importProfileCode || ""))) {
+      clearOccupancyCache();
+      clearUtilizationCache();
+    }
 
     return res.status(200).json({
       success: true,
@@ -794,6 +801,11 @@ export async function deleteUsVisaImportBatch(req, res) {
     }
 
     await deleteBatchById(batch.id);
+
+    if (/AGENT_OCCUPANCY/i.test(String(batch.importProfileCode || ""))) {
+      clearOccupancyCache();
+      clearUtilizationCache();
+    }
 
     return res.json({
       success: true,
