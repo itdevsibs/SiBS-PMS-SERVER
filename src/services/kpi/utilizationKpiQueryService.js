@@ -11,7 +11,7 @@ import {
 import { buildWfmUtilizationKpiDashboard } from "./occupancyKpiService.js";
 import { getCallCenterOperationsAccountsWithMappings } from "../kronos/kronosAccountScopeService.js";
 import { normalizeKronosAccountName } from "../kronos/kronosAccountDirectoryService.js";
-import { getTargetedAttendanceShiftRows } from "../kronos/kronosAttendanceService.js";
+import { getKronosOptimizedAttendanceEmployeeDayRows } from "../../repositories/kronos/kronosTrackerRepository.js";
 import { getOrCreateUtilizationCacheEntry } from "../cache/utilizationCacheService.js";
 
 function normalizeDate(value) {
@@ -117,7 +117,14 @@ async function resolveUtilizationDateRange(query = {}) {
     throwInvalidDateRange();
   }
 
-  const bounds = await getAgentOccupancyKpiDateBounds({ taskOrder });
+  // A complete date-picker selection already determines the reporting window.
+  // Avoid an unrelated MIN/MAX Occupancy query unless the user selected Latest
+  // or supplied only one boundary in the legacy/manual request path.
+  const needsBounds = !isCustomRange && !requestedReferenceDate &&
+    !(isLegacyManualRange && requestedDateFrom && requestedDateTo);
+  const bounds = needsBounds
+    ? await getAgentOccupancyKpiDateBounds({ taskOrder })
+    : { minDate: null, maxDate: null };
   let dateFrom = requestedDateFrom;
   let dateTo = requestedDateTo;
   let referenceDate = null;
@@ -155,29 +162,33 @@ async function resolveUtilizationDateRange(query = {}) {
 
 async function loadWfmUtilizationKpiDashboard(resolved) {
   const { period, dateFrom, dateTo, referenceDate, taskOrder } = resolved;
+  const startedAt = Date.now();
 
   const dailyOccupancyRows = await getAgentOccupancyDailyKpiRows({
     dateFrom,
     dateTo,
     taskOrder,
   });
+  const occupancyReadMs = Date.now() - startedAt;
 
   if (!dailyOccupancyRows.length) {
     return buildWfmUtilizationKpiDashboard({
       rows: [],
       metadata: {
         status: "NO_OCCUPANCY_DATA",
-        source: "KRONOS_LIVE",
-        fetchMode: "TARGETED_EMPLOYEE",
+        source: "KRONOS_API",
+        fetchMode: "OPTIMIZED_DATE_FILTERED_ATTENDANCE",
         storageMode: "LIVE_ONLY",
+        shiftTimeBasis: "KRONOS_TRACKER_LOGIN_TO_LOGOUT",
         accountName: "US Visa",
         occupancyEmployeeDays: 0,
         targetedEmployeeCount: 0,
         validEmployeeDays: 0,
+        missingTrackerDays: 0,
         missingAttendanceDays: 0,
         incompleteShiftDays: 0,
-        unmatchedEmployeeDays: 0,
         remoteRequestCount: 0,
+        timingsMs: { occupancyRead: occupancyReadMs, total: Date.now() - startedAt },
       },
       period,
       dateFrom,
@@ -188,9 +199,12 @@ async function loadWfmUtilizationKpiDashboard(resolved) {
   }
 
   const targetEmployeeRanges = buildTargetEmployeeRanges(dailyOccupancyRows);
+  const targetEmployeeUids = targetEmployeeRanges.map((target) => target.employeeUid);
 
   try {
+    const accountLookupStartedAt = Date.now();
     const accounts = await getCallCenterOperationsAccountsWithMappings();
+    const accountResolutionMs = Date.now() - accountLookupStartedAt;
     const usVisaAccount = accounts.find(
       (account) => normalizeKronosAccountName(account.accountName) === "US VISA",
     );
@@ -200,18 +214,21 @@ async function loadWfmUtilizationKpiDashboard(resolved) {
         rows: [],
         metadata: {
           status: "ACCOUNT_UNAVAILABLE",
-          source: "KRONOS_LIVE",
-          fetchMode: "TARGETED_EMPLOYEE",
+          source: "KRONOS_API",
+          fetchMode: "OPTIMIZED_DATE_FILTERED_ATTENDANCE",
           storageMode: "LIVE_ONLY",
+          shiftTimeBasis: "KRONOS_TRACKER_LOGIN_TO_LOGOUT",
           accountName: "US Visa",
           message: "US Visa could not be uniquely resolved in the live Kronos account directory.",
           occupancyEmployeeDays: dailyOccupancyRows.length,
           targetedEmployeeCount: targetEmployeeRanges.length,
           validEmployeeDays: 0,
+          missingTrackerDays: dailyOccupancyRows.length,
           missingAttendanceDays: dailyOccupancyRows.length,
           incompleteShiftDays: 0,
-          unmatchedEmployeeDays: 0,
           remoteRequestCount: 0,
+          timingsMs: { occupancyRead: occupancyReadMs, accountResolution: accountResolutionMs,
+            total: Date.now() - startedAt },
         },
         period,
         dateFrom,
@@ -221,43 +238,44 @@ async function loadWfmUtilizationKpiDashboard(resolved) {
       });
     }
 
-    const attendanceDataset = await getTargetedAttendanceShiftRows({
-      accountId: usVisaAccount.accountId,
-      employeeRanges: targetEmployeeRanges,
+    // Reuse the exact same account/date-scoped attendance dataset as Headcount.
+    // The repository shares its in-flight fetch and five-minute cache across
+    // callers, so opening the dashboard no longer launches a second, serial
+    // /employee-tracker-history scan. It preserves the existing employee-day
+    // login/logout aggregation and Utilization formula.
+    const attendanceStartedAt = Date.now();
+    const trackerDataset = await getKronosOptimizedAttendanceEmployeeDayRows({
+      kronosAccountId: usVisaAccount.kronosMapping.kronosAccountId,
+      employeeUids: targetEmployeeUids,
       dateFrom,
       dateTo,
     });
+    const attendanceFetchMs = Date.now() - attendanceStartedAt;
 
-    const attendanceByKey = new Map();
-    for (const attendance of attendanceDataset.rows) {
-      const uid = normalizeEmployeeUid(attendance.employeeUid);
-      if (!uid || !attendance.workDate) continue;
-      attendanceByKey.set(`${uid}|${attendance.workDate}`, attendance);
+    const trackerByKey = new Map();
+    for (const tracker of trackerDataset.rows) {
+      const uid = normalizeEmployeeUid(tracker.employeeUid);
+      if (!uid || !tracker.workDate) continue;
+      trackerByKey.set(`${uid}|${tracker.workDate}`, tracker);
     }
 
     const utilizationRows = [];
-    let missingAttendanceDays = 0;
+    let missingTrackerDays = 0;
     let incompleteShiftDays = 0;
-    let unmatchedEmployeeDays = 0;
 
     for (const occupancy of dailyOccupancyRows) {
       const uid = normalizeEmployeeUid(occupancy.employeeUid);
       const key = `${uid}|${occupancy.productionDate}`;
-      const attendance = attendanceByKey.get(key) || null;
+      const tracker = trackerByKey.get(key) || null;
 
-      if (!attendance) {
-        missingAttendanceDays += 1;
+      if (!tracker || !tracker.isPresent) {
+        missingTrackerDays += 1;
         continue;
       }
 
-      if (attendance.employeeMappingStatus !== "MATCHED_LEDGER") {
-        unmatchedEmployeeDays += 1;
-        continue;
-      }
-
-      const shiftSeconds = Number(attendance.shiftSeconds);
+      const shiftSeconds = Number(tracker.shiftSeconds);
       if (
-        attendance.shiftStatus !== "COMPLETE" ||
+        tracker.shiftStatus !== "COMPLETE" ||
         !Number.isFinite(shiftSeconds) ||
         shiftSeconds <= 0
       ) {
@@ -278,21 +296,33 @@ async function loadWfmUtilizationKpiDashboard(resolved) {
       rows: utilizationRows,
       metadata: {
         status: utilizationRows.length ? "AVAILABLE" : "NO_MATCHED_SHIFT_DATA",
-        source: "KRONOS_LIVE",
-        fetchMode: attendanceDataset.fetchMode,
+        source: "KRONOS_API",
+        fetchMode: trackerDataset.fetchMode,
         storageMode: "LIVE_ONLY",
+        shiftTimeBasis: "KRONOS_TRACKER_LOGIN_TO_LOGOUT",
+        trackerPresenceBasis: "VALID_GY_TRACKER_LOGIN",
         accountId: usVisaAccount.accountId,
         accountName: usVisaAccount.accountName,
         kronosAccountId: usVisaAccount.kronosMapping.kronosAccountId,
         occupancyEmployeeDays: dailyOccupancyRows.length,
-        targetedEmployeeCount: attendanceDataset.targetedEmployeeCount,
-        attendanceEmployeeDays: attendanceDataset.rows.length,
+        targetedEmployeeCount: targetEmployeeRanges.length,
+        trackerEmployeeDays: trackerDataset.rows.length,
+        attendanceEmployeeDays: trackerDataset.rows.length,
+        trackerSourceRows: trackerDataset.sourceRows,
         validEmployeeDays: utilizationRows.length,
-        missingAttendanceDays,
+        missingTrackerDays,
+        missingAttendanceDays: missingTrackerDays,
         incompleteShiftDays,
-        unmatchedEmployeeDays,
-        remoteRequestCount: attendanceDataset.remoteRequestCount,
-        fallbackReason: attendanceDataset.fallbackReason || null,
+        remoteRequestCount: trackerDataset.requestCount,
+        sourceEndpoint: trackerDataset.sourceEndpoint,
+        rawSourceEndpoint: trackerDataset.rawSourceEndpoint || null,
+        fallbackReason: trackerDataset.fallbackReason || null,
+        timingsMs: {
+          occupancyRead: occupancyReadMs,
+          accountResolution: accountResolutionMs,
+          attendanceFetch: attendanceFetchMs,
+          total: Date.now() - startedAt,
+        },
       },
       period,
       dateFrom,
@@ -301,28 +331,36 @@ async function loadWfmUtilizationKpiDashboard(resolved) {
       taskOrder,
     });
   } catch (error) {
-    console.error("Targeted utilization attendance fetch failed:", {
+    console.error("Tracker-based utilization fetch failed:", {
       code: error?.code,
       status: error?.status,
       message: error?.message,
+      endpoint: error?.endpoint || null,
+      params: error?.params || null,
+      stage: error?.stage || null,
+      attempts: error?.attempts || null,
+      elapsedMs: error?.elapsedMs ?? null,
     });
 
     return buildWfmUtilizationKpiDashboard({
       rows: [],
       metadata: {
         status: "UNAVAILABLE",
-        source: "KRONOS_LIVE",
-        fetchMode: "TARGETED_EMPLOYEE",
+        source: "KRONOS_API",
+        fetchMode: "OPTIMIZED_DATE_FILTERED_ATTENDANCE",
         storageMode: "LIVE_ONLY",
+        shiftTimeBasis: "KRONOS_TRACKER_LOGIN_TO_LOGOUT",
+        trackerPresenceBasis: "VALID_GY_TRACKER_LOGIN",
         accountName: "US Visa",
-        message: "Live Kronos attendance data is currently unavailable.",
+        message: "Live Kronos tracker data is currently unavailable.",
         occupancyEmployeeDays: dailyOccupancyRows.length,
         targetedEmployeeCount: targetEmployeeRanges.length,
         validEmployeeDays: 0,
+        missingTrackerDays: dailyOccupancyRows.length,
         missingAttendanceDays: dailyOccupancyRows.length,
         incompleteShiftDays: 0,
-        unmatchedEmployeeDays: 0,
         remoteRequestCount: 0,
+        timingsMs: { occupancyRead: occupancyReadMs, total: Date.now() - startedAt },
       },
       period,
       dateFrom,
@@ -347,7 +385,7 @@ function buildUtilizationCacheKey({
       : [];
 
   return JSON.stringify({
-    version: 1,
+    version: 2,
     account: "US_VISA",
     period: period || null,
     dateFrom: dateFrom || null,

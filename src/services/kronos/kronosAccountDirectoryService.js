@@ -89,7 +89,7 @@ const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
  * Fetches the authoritative Kronos account directory live.
  * Nothing is persisted in PMS. The raw account collection is cursor-paginated.
  */
-export async function fetchLiveKronosAccounts({ forceRefresh = false } = {}) {
+export async function fetchLiveKronosAccounts({ forceRefresh = false, retryTransient = false } = {}) {
   const now = Date.now();
   if (!forceRefresh && cachedAccounts && now - cachedAccountsTimestamp < CACHE_TTL_MS) {
     return cachedAccounts;
@@ -108,6 +108,7 @@ export async function fetchLiveKronosAccounts({ forceRefresh = false } = {}) {
         after_id: afterId,
         limit: RAW_PAGE_LIMIT,
       },
+      retryTransient,
     });
 
     const rows = extractRows(payload);

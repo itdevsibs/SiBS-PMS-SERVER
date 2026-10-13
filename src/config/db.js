@@ -111,6 +111,9 @@ export const kronosTables = {
   user: dbTable(KRONOS_DB_NAME, "gy_user"),
   accounts: dbTable(KRONOS_DB_NAME, "gy_accounts"),
   department: dbTable(KRONOS_DB_NAME, "gy_department"),
+  schedule: dbTable(KRONOS_DB_NAME, "gy_schedule"),
+  tracker: dbTable(KRONOS_DB_NAME, "gy_tracker"),
+  scheduleEscalate: dbTable(KRONOS_DB_NAME, "gy_schedule_escalate"),
 };
 
 // ============================================================

@@ -9,6 +9,7 @@ import {
 import { getWfmEmailsKpi } from "../controllers/emailKpiController.js";
 import { getWfmQualityAuditKpi } from "../controllers/qualityAuditKpiController.js";
 import {
+  getWfmAbsenteeismKpi,
   getWfmOccupancyKpi,
   getWfmUtilizationKpi,
 } from "../controllers/occupancyKpiController.js";
@@ -62,6 +63,12 @@ router.get(
   "/kpis/utilization",
   ...requirePerformanceViewer,
   getWfmUtilizationKpi,
+);
+
+router.get(
+  "/kpis/absenteeism",
+  ...requirePerformanceViewer,
+  getWfmAbsenteeismKpi,
 );
 
 export default router;

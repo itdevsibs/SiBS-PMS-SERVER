@@ -1,5 +1,6 @@
 import { getWfmOccupancyKpiDashboard } from "../services/kpi/occupancyKpiQueryService.js";
 import { getWfmUtilizationKpiDashboard } from "../services/kpi/utilizationKpiQueryService.js";
+import { getWfmAbsenteeismKpiDashboard } from "../services/kpi/absenteeismKpiQueryService.js";
 
 const BAD_REQUEST_CODES = new Set([
   "INVALID_CUSTOM_DATE_RANGE",
@@ -53,3 +54,17 @@ export async function getWfmUtilizationKpi(req, res) {
     });
   }
 }
+
+export async function getWfmAbsenteeismKpi(req, res) {
+  try {
+    const dashboard = await getWfmAbsenteeismKpiDashboard(req.query);
+    return res.json({ success: true, data: dashboard });
+  } catch (error) {
+    return sendBadRequestOrServerError(res, error, {
+      fallbackCode: "ABSENTEEISM_KPI_QUERY_FAILED",
+      fallbackMessage: "Unable to load Absenteeism KPI data.",
+      logLabel: "Get WFM Absenteeism KPI failed:",
+    });
+  }
+}
+

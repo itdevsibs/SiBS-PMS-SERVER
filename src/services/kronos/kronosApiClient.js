@@ -5,12 +5,16 @@ import {
 } from "./kronosTokenService.js";
 
 export class KronosApiError extends Error {
-  constructor(message, { status = 500, code = "KRONOS_API_ERROR", payload = null } = {}) {
+  constructor(message, { status = 500, code = "KRONOS_API_ERROR", payload = null, endpoint = null, params = null, attempts = 1, elapsedMs = null } = {}) {
     super(message);
     this.name = "KronosApiError";
     this.status = status;
     this.code = code;
     this.payload = payload;
+    this.endpoint = endpoint;
+    this.params = params;
+    this.attempts = attempts;
+    this.elapsedMs = elapsedMs;
   }
 }
 
@@ -78,28 +82,96 @@ async function executeRequest(endpoint, options, token) {
   }
 }
 
+// Explicit opt-in retries for read-only, date-filtered Headcount requests.
+// Other Kronos consumers retain their existing request/retry behavior.
+const TRANSIENT_HTTP_STATUSES = new Set([429, 500, 502, 503, 504]);
+const MAX_TRANSIENT_RETRIES = 2;
+const RETRY_DELAY_MS = 250;
+
+function safeRequestContext(endpoint, options) {
+  // Do not include Authorization headers, JWTs or body content in diagnostics.
+  return { endpoint, params: options.query || null };
+}
+
+function retryDelay(attempt) {
+  return new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS * 2 ** (attempt - 1)));
+}
+
 export async function kronosApiRequest(endpoint, options = {}) {
-  let token = await getKronosToken();
-  let { response, payload } = await executeRequest(endpoint, options, token);
+  const startedAt = Date.now();
+  const context = safeRequestContext(endpoint, options);
+  const method = String(options.method || "GET").toUpperCase();
+  const maxRetries = method === "GET" && options.retryTransient === true
+    ? MAX_TRANSIENT_RETRIES
+    : 0;
+  let attempt = 0;
 
-  if (response.status === 401 && options.retryOn401 !== false) {
-    await invalidateKronosToken();
-    token = await getKronosToken({ forceRefresh: true });
-    ({ response, payload } = await executeRequest(endpoint, options, token));
+  while (attempt <= maxRetries) {
+    attempt += 1;
+    try {
+      let token = await getKronosToken();
+      let { response, payload } = await executeRequest(endpoint, options, token);
+
+      if (response.status === 401 && options.retryOn401 !== false) {
+        await invalidateKronosToken();
+        token = await getKronosToken({ forceRefresh: true });
+        ({ response, payload } = await executeRequest(endpoint, options, token));
+      }
+
+      if (response.ok) return payload;
+
+      const err = new KronosApiError(
+        payload?.message || `Kronos API returned HTTP ${response.status}.`,
+        {
+          status: response.status,
+          code: response.status === 401 ? "KRONOS_UNAUTHORIZED" : "KRONOS_REQUEST_FAILED",
+          payload,
+          ...context,
+          attempts: attempt,
+          elapsedMs: Date.now() - startedAt,
+        },
+      );
+      if (attempt <= maxRetries && TRANSIENT_HTTP_STATUSES.has(response.status)) {
+        console.warn("Retrying temporary Kronos API HTTP failure:", {
+          ...context, status: response.status, attempt, maxAttempts: maxRetries + 1,
+        });
+        await retryDelay(attempt);
+        continue;
+      }
+      throw err;
+    } catch (error) {
+      // Do not retry errors thrown after the final HTTP response was handled.
+      // In particular, an exhausted 500 above must be preserved unchanged.
+      if (error instanceof KronosApiError && error.endpoint) {
+        if (error.code === "KRONOS_REQUEST_FAILED" || error.code === "KRONOS_UNAUTHORIZED") {
+          throw error;
+        }
+      }
+      const status = Number(error?.status) || (error?.code === "KRONOS_API_TIMEOUT" ? 504 : 502);
+      const enriched = error instanceof KronosApiError
+        ? error
+        : new KronosApiError(error?.message || "Kronos API request could not be completed.", {
+          status, code: error?.code || "KRONOS_TRANSPORT_FAILED",
+          ...context,
+          attempts: attempt, elapsedMs: Date.now() - startedAt,
+        });
+      enriched.endpoint ||= context.endpoint;
+      enriched.params ??= context.params;
+      enriched.attempts = attempt;
+      enriched.elapsedMs = Date.now() - startedAt;
+      const retryable = enriched.code === "KRONOS_API_TIMEOUT" ||
+        enriched.code === "KRONOS_TRANSPORT_FAILED";
+      if (retryable && attempt <= maxRetries) {
+        console.warn("Retrying temporary Kronos API transport failure:", {
+          ...context, status: enriched.status, code: enriched.code,
+          attempt, maxAttempts: maxRetries + 1,
+        });
+        await retryDelay(attempt);
+        continue;
+      }
+      throw enriched;
+    }
   }
-
-  if (!response.ok) {
-    throw new KronosApiError(
-      payload?.message || `Kronos API returned HTTP ${response.status}.`,
-      {
-        status: response.status,
-        code: response.status === 401 ? "KRONOS_UNAUTHORIZED" : "KRONOS_REQUEST_FAILED",
-        payload,
-      },
-    );
-  }
-
-  return payload;
 }
 
 export function getKronosApiResponse(endpoint, { params = {}, ...options } = {}) {

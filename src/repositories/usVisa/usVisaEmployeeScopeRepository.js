@@ -218,3 +218,72 @@ export async function findScopeAssignmentsByEmployeeUids(employeeUids = []) {
 
   return rows.map(mapScopeAssignment).filter(Boolean);
 }
+
+function normalizeDateKey(value) {
+  const text = String(value || "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
+}
+
+function normalizeTaskOrderList(value) {
+  const items = Array.isArray(value) ? value : value ? String(value).split(",") : [];
+  return [...new Set(items.map(normalizeTaskOrder).filter(Boolean))];
+}
+
+/**
+ * Returns the US Visa roster population that can participate in attendance-
+ * based Headcount / People Metrics for the requested reporting window.
+ *
+ * This deliberately does not depend on Calls, Chat, Email, or Occupancy source
+ * activity. Employees only need to be in the roster employment window; Kronos
+ * attendance decides whether they are actually present for a period.
+ */
+export async function findUsVisaRosterEmployeeUids({
+  taskOrder = null,
+  dateFrom = null,
+  dateTo = null,
+} = {}) {
+  const cleanDateFrom = normalizeDateKey(dateFrom);
+  const cleanDateTo = normalizeDateKey(dateTo);
+
+  if (!cleanDateFrom || !cleanDateTo || cleanDateFrom > cleanDateTo) {
+    return [];
+  }
+
+  const taskOrders = normalizeTaskOrderList(taskOrder);
+  const conditions = [
+    "l.sibs_id IS NOT NULL",
+    "TRIM(l.sibs_id) <> ''",
+    "l.task_order IS NOT NULL",
+    "TRIM(l.task_order) <> ''",
+    "COALESCE(l.us_visa_join_date, '1900-01-01') <= ?",
+    "(l.us_visa_departure_date IS NULL OR l.us_visa_departure_date >= ?)",
+  ];
+  const params = [cleanDateTo, cleanDateFrom];
+
+  const [rows] = await pmsDb.query(
+    `
+      SELECT DISTINCT
+        REPLACE(UPPER(TRIM(l.sibs_id)), 'SIB-', '') AS employee_uid,
+        l.task_order AS task_order_raw
+      FROM ${pmsTables.usVisaEmployeeLedger} l
+      WHERE ${conditions.join("\n        AND ")}
+      ORDER BY employee_uid ASC
+    `,
+    params,
+  );
+
+  const allowedTaskOrders = new Set(taskOrders);
+
+  return [
+    ...new Set(
+      (rows || [])
+        .filter((row) =>
+          allowedTaskOrders.size
+            ? allowedTaskOrders.has(normalizeTaskOrder(row.task_order_raw))
+            : true,
+        )
+        .map((row) => normalizeUid(row.employee_uid).toUpperCase())
+        .filter(Boolean),
+    ),
+  ];
+}
