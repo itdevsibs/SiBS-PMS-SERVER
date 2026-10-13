@@ -68,7 +68,7 @@ async function getCachedValidTaskOrders() {
   return result.value;
 }
 
-async function resolveOccupancyDateRange(query = {}) {
+export async function resolveOccupancyDateRange(query = {}) {
   const period = normalizeCallKpiPeriod(query.period);
   const requestedReferenceDate = validateReferenceDate(query.referenceDate || query.reference);
   const requestedDateFrom = normalizeDate(query.from || query.dateFrom);
