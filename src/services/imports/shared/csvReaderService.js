@@ -46,13 +46,17 @@ function buildRow(values, headers, rowNumber) {
   };
 }
 
-export function parseCsvText(text) {
-  const records = parse(String(text ?? ""), {
+export function parseCsvRecords(text, options = {}) {
+  return parse(String(text ?? ""), {
     bom: true,
     relax_column_count: true,
     relax_quotes: true,
-    skip_empty_lines: true,
+    skip_empty_lines: options.skipEmptyLines ?? false,
   });
+}
+
+export function parseCsvText(text) {
+  const records = parseCsvRecords(text, { skipEmptyLines: true });
 
   if (!records.length) {
     return {
@@ -73,6 +77,11 @@ export function parseCsvText(text) {
     rows,
     rowCount: rows.length,
   };
+}
+
+export async function readCsvRecords(filePath, options = {}) {
+  const text = await fs.readFile(filePath, "utf8");
+  return parseCsvRecords(text, options);
 }
 
 export async function readCsvFile(filePath) {

@@ -139,7 +139,11 @@ function getWorkbookReaderPublicMessage(code) {
     return "The selected file could not be read as an Excel workbook. Please select a valid .xlsx file and try again.";
   }
 
-  return "The uploaded Excel workbook could not be read.";
+  if (code === WORKBOOK_READER_ERROR_CODES.INVALID_CSV_FILE) {
+    return "The selected file could not be read as a valid CSV file. Please re-export the report as .csv and try again.";
+  }
+
+  return "The uploaded Excel or CSV file could not be read.";
 }
 
 export function getFatalMessage(result = {}) {
@@ -179,45 +183,45 @@ export function getFatalMessage(result = {}) {
       firstError.errorCode === "MISSING_REQUIRED_HEADER"
     ) {
       if (isQualityAudit) {
-        return "Only the US Visa Quality Audit workbook (.xlsx) with the NewDB1 sheet and required QA columns is allowed for this card.";
+        return "Only US Visa Quality Audit Excel (.xlsx) or CSV (.csv) files with the required QA columns are allowed for this card.";
       }
       if (isOccupancy) {
         if (isHerodash) {
-          return "Only HeroDash Agent Occupancy (.xlsx) files are allowed for this card. The selected file is missing required HeroDash Occupancy sheets or column headers.";
+          return "Only HeroDash Agent Occupancy Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file is missing required HeroDash Occupancy columns.";
         }
         if (isFusenet) {
-          return "Only FuseNet Agent Occupancy (.xlsx) files are allowed for this card. The selected file is missing the required 15 Minutes sheet or Occupancy column headers.";
+          return "Only FuseNet Agent Occupancy Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file is missing the required Occupancy columns.";
         }
         if (isFusecom) {
-          return "Only Fusecom Agent Occupancy (.xlsx) files are allowed for this card. The selected file is missing the required 15 Minutes sheet or Occupancy column headers.";
+          return "Only Fusecom Agent Occupancy Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file is missing the required Occupancy columns.";
         }
-        return `Only ${profileLabel} (.xlsx) files are allowed for this card. The selected file does not match the required Agent Occupancy workbook structure.`;
+        return `Only ${profileLabel} Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file does not match the required Agent Occupancy structure.`;
       }
       if (isAgentLevel) {
         if (isHerodash) {
-          return "Only HeroDash Agent Level (.xlsx) files are allowed for this card. The selected file is missing required HeroDash Agent Level sheets or column headers.";
+          return "Only HeroDash Agent Level Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file is missing required HeroDash Agent Level columns.";
         }
         if (isFusenet) {
-          return "Only FuseNet Agent Level (.xlsx) files are allowed for this card. The selected file is missing required FuseNet Agent Level sheets or column headers.";
+          return "Only FuseNet Agent Level Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file is missing required FuseNet Agent Level columns.";
         }
         if (isFusecom) {
-          return "Only Fusecom Agent Level (.xlsx) files are allowed for this card. The selected file is missing required Fusecom Agent Level sheets or column headers.";
+          return "Only Fusecom Agent Level Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file is missing required Fusecom Agent Level columns.";
         }
-        return `Only ${profileLabel} (.xlsx) files are allowed for this card. The selected file is missing required Agent Level sheets or column headers.`;
+        return `Only ${profileLabel} Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file is missing required Agent Level columns.`;
       }
       if (isHerodash) {
-        return "Only HeroDash Skill Statistics (.xlsx) files are allowed for this card. The selected file is missing required HeroDash sheets or column headers.";
+        return "Only HeroDash Skill Statistics Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file is missing required HeroDash columns.";
       }
       if (isFusecom) {
-        return "Only Fusecom Skill Statistics (.xlsx) files are allowed for this card. The selected file is missing required Fusecom sheets or column headers.";
+        return "Only Fusecom Skill Statistics Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file is missing required Fusecom columns.";
       }
-      return "The uploaded workbook does not match the required report template for this card.";
+      return "The uploaded Excel or CSV file does not match the required report template for this card.";
     }
 
     return (
       firstError.errorMessage ||
       firstError.message ||
-      "The uploaded workbook does not match the expected report format."
+      "The uploaded Excel or CSV file does not match the expected report format."
     );
   }
 

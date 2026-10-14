@@ -7,7 +7,7 @@ import {
   buildSkillHandleSecondsSql,
 } from "../services/kpi/ahtCalculationService.js";
 
-const COMPLETED_BATCH_STATUS = "COMPLETED";
+const KPI_BATCH_STATUSES = ["COMPLETED", "COMPLETED_WITH_ERRORS"];
 
 function appendTaskOrderCountryFilter({
   conditions,
@@ -261,10 +261,10 @@ function appendSkillFilter({
 function buildDateFilters({ dateFrom, dateTo } = {}) {
   const conditions = [
     "s.production_date IS NOT NULL",
-    "b.status = ?",
+    `b.status IN (${KPI_BATCH_STATUSES.map(() => "?").join(", ")})`,
   ];
 
-  const values = [COMPLETED_BATCH_STATUS];
+  const values = [...KPI_BATCH_STATUSES];
 
   if (dateFrom) {
     conditions.push("DATE(s.production_date) >= ?");
@@ -353,12 +353,10 @@ export async function getCallKpiDateBounds({
 } = {}) {
   const conditions = [
     "s.production_date IS NOT NULL",
-    "b.status = ?",
+    `b.status IN (${KPI_BATCH_STATUSES.map(() => "?").join(", ")})`,
   ];
 
-  const values = [
-    COMPLETED_BATCH_STATUS,
-  ];
+  const values = [...KPI_BATCH_STATUSES];
 
   appendSourceGrainFilter({
     conditions,
@@ -690,9 +688,9 @@ export async function getCallsReportData({
 } = {}) {
   const conditions = [
     "s.production_date IS NOT NULL",
-    "b.status = ?",
+    `b.status IN (${KPI_BATCH_STATUSES.map(() => "?").join(", ")})`,
   ];
-  const values = [COMPLETED_BATCH_STATUS];
+  const values = [...KPI_BATCH_STATUSES];
 
   if (dateFrom) {
     conditions.push("DATE(s.production_date) >= ?");

@@ -1,8 +1,10 @@
-// Selects the domain processor and source file type for a US VISA import profile.
+// Selects the domain processor and supported source file types for a US VISA import profile.
 import { processAgentInteractionWorkbook } from "./agentInteractions/agentInteractionImportProcessor.js";
 import { processAgentOccupancyWorkbook } from "./agentOccupancy/agentOccupancyImportProcessor.js";
 import { processEmailRawDataWorkbook } from "./emailRawData/emailRawDataImportProcessor.js";
 import { processQualityAuditWorkbook } from "./qualityAudit/qualityAuditImportProcessor.js";
+
+const XLSX_AND_CSV_EXTENSIONS = Object.freeze([".xlsx", ".csv"]);
 
 export const US_VISA_IMPORT_REPORT_TYPES = Object.freeze({
   SKILL_STATISTICS: "SKILL_STATISTICS",
@@ -15,25 +17,29 @@ export const US_VISA_IMPORT_REPORT_TYPES = Object.freeze({
 const PROCESSORS_BY_REPORT_TYPE = Object.freeze({
   [US_VISA_IMPORT_REPORT_TYPES.AGENT_LEVEL]: {
     domain: "AGENT_INTERACTION",
-    fileType: "XLSX",
+    fileType: "XLSX_OR_CSV",
+    supportedExtensions: XLSX_AND_CSV_EXTENSIONS,
     processWorkbook: processAgentInteractionWorkbook,
     processCsv: null,
   },
   [US_VISA_IMPORT_REPORT_TYPES.AGENT_OCCUPANCY]: {
     domain: "AGENT_OCCUPANCY",
-    fileType: "XLSX",
+    fileType: "XLSX_OR_CSV",
+    supportedExtensions: XLSX_AND_CSV_EXTENSIONS,
     processWorkbook: processAgentOccupancyWorkbook,
     processCsv: null,
   },
   [US_VISA_IMPORT_REPORT_TYPES.EMAIL_RAW_DATA]: {
     domain: "EMAIL_RAW_DATA",
-    fileType: "XLSX",
+    fileType: "XLSX_OR_CSV",
+    supportedExtensions: XLSX_AND_CSV_EXTENSIONS,
     processWorkbook: processEmailRawDataWorkbook,
     processCsv: null,
   },
   [US_VISA_IMPORT_REPORT_TYPES.QUALITY_AUDIT]: {
     domain: "QUALITY_AUDIT",
-    fileType: "XLSX",
+    fileType: "XLSX_OR_CSV",
+    supportedExtensions: XLSX_AND_CSV_EXTENSIONS,
     processWorkbook: processQualityAuditWorkbook,
     processCsv: null,
   },
@@ -44,7 +50,8 @@ export function getUsVisaImportProcessor(profile = {}) {
 
   return PROCESSORS_BY_REPORT_TYPE[reportType] || {
     domain: "SKILL_STATISTICS",
-    fileType: "XLSX",
+    fileType: "XLSX_OR_CSV",
+    supportedExtensions: XLSX_AND_CSV_EXTENSIONS,
     processWorkbook: null,
     processCsv: null,
   };
