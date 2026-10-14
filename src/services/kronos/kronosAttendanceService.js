@@ -1,7 +1,6 @@
 import {
   findOccupancyDailyMatches,
-  findKronosDailySchedules,
-  findKronosScheduledEmployeesByAccount,
+  getKronosAttendanceSheetScheduleData,
 } from "../../repositories/kronos/kronosAttendanceRepository.js";
 import {
   findEmployeeLedgersByGyEmpCodes,
@@ -17,6 +16,7 @@ import { resolveCallCenterOperationsAccountScope } from "./kronosAccountScopeSer
 
 const ATTENDANCE_ENDPOINT = "/api/v1/employee-attendance";
 const TRACKER_HISTORY_ENDPOINT = "/api/v1/employee-tracker-history";
+const TEAM_LEADERS_KRONOS_ACCOUNT_ID = 78;
 
 function normalizePage(value, fallback = 1) {
   const parsed = Number(value);
@@ -696,23 +696,77 @@ export async function getLiveAttendance({
     dateTo,
   });
 
-  const [occupancyMatches, scheduleMatches, accountSchedules] = await Promise.all([
+  const [occupancyMatches, scheduleData] = await Promise.all([
     findOccupancyDailyMatches({
       employeeUids: dataset.rows.map((row) => row.employeeUid),
       dateFrom: dataset.range.dateFrom,
       dateTo: dataset.range.dateTo,
     }),
-    findKronosDailySchedules({
+    getKronosAttendanceSheetScheduleData({
+      kronosAccountId: dataset.scope.kronosMapping?.kronosAccountId,
+      accountName: dataset.scope.accountName,
       employeeUids: dataset.rows.map((row) => row.employeeUid),
       dateFrom: dataset.range.dateFrom,
       dateTo: dataset.range.dateTo,
     }),
-    findKronosScheduledEmployeesByAccount({
-      kronosAccountId: dataset.scope.kronosMapping?.kronosAccountId,
+  ]);
+
+  const { schedules: accountSchedules, teamLeaders } = scheduleData;
+  const teamLeadersByUid = new Map(
+    teamLeaders.map((leader) => [normalizeEmployeeUid(leader.employeeUid), leader]),
+  );
+
+  // Team Leaders are linked to US Visa in PMS, but their attendance belongs
+  // to Kronos account 78. Read that account through the same Kronos API and
+  // keep ONLY the individually verified US Visa Team Leaders; never import
+  // unrelated Team Leaders into the US Visa sheet or KPI populations.
+  let leaderPunchRows = [];
+  if (teamLeadersByUid.size > 0) {
+    const leaderScope = {
+      ...dataset.scope,
+      kronosMapping: {
+        ...dataset.scope.kronosMapping,
+        kronosAccountId: TEAM_LEADERS_KRONOS_ACCOUNT_ID,
+      },
+    };
+    const { rows: rawLeaderAttendance } = await fetchAccountAttendancePagesParallel({
+      scope: leaderScope,
       dateFrom: dataset.range.dateFrom,
       dateTo: dataset.range.dateTo,
-    }),
-  ]);
+    });
+    if (rawLeaderAttendance.length > 0) {
+      const fieldConfiguration = getAttendanceFieldConfiguration(rawLeaderAttendance);
+      const normalized = normalizeKronosAttendanceRows(rawLeaderAttendance, { fieldConfiguration });
+      const existingKeys = new Set(dataset.rows.map(
+        (row) => `${normalizeEmployeeUid(row.employeeUid)}|${row.workDate}`,
+      ));
+      leaderPunchRows = normalized.filter((row) => {
+        const uid = normalizeEmployeeUid(row.employeeUid);
+        const key = `${uid}|${row.workDate}`;
+        return teamLeadersByUid.has(uid) && !existingKeys.has(key) &&
+          (!search || `${uid} ${teamLeadersByUid.get(uid).employeeName}`.toLowerCase()
+            .includes(String(search).toLowerCase().trim())) &&
+          (!gyEmpCode || uid === normalizeEmployeeUid(gyEmpCode));
+      }).map((row) => {
+        const leader = teamLeadersByUid.get(normalizeEmployeeUid(row.employeeUid));
+        return {
+          ...row,
+          employeeName: leader.employeeName || null,
+          employeeRole: "TEAM_LEADER",
+          hrisAccountId: dataset.scope.accountId,
+          accountName: dataset.scope.accountName,
+          kronosAccountId: TEAM_LEADERS_KRONOS_ACCOUNT_ID,
+          kronosAccountName: "Team Leaders",
+          departmentId: dataset.scope.departmentId,
+          departmentName: dataset.scope.departmentName,
+          employeeLedgerId: null,
+          employeeMappingStatus: "MATCHED_US_VISA_ROSTER",
+          taskOrderId: null,
+        };
+      });
+    }
+  }
+  const attendanceRows = [...dataset.rows, ...leaderPunchRows];
 
   const occupancyByKey = new Map(
     occupancyMatches.map((match) => [
@@ -722,14 +776,14 @@ export async function getLiveAttendance({
   );
 
   const scheduleByKey = new Map(
-    scheduleMatches.map((sched) => [
+    accountSchedules.map((sched) => [
       `${normalizeEmployeeUid(sched.employeeUid)}|${sched.schedDay}`,
       sched,
     ]),
   );
 
   const presentKeys = new Set(
-    dataset.rows.map(
+    attendanceRows.map(
       (row) => `${normalizeEmployeeUid(row.employeeUid)}|${row.workDate}`,
     ),
   );
@@ -747,14 +801,16 @@ function getManilaTodayIso() {
 
   const todayIso = getManilaTodayIso();
 
-  const joinedRows = dataset.rows.map((row) => {
+  const joinedRows = attendanceRows.map((row) => {
     const uid = normalizeEmployeeUid(row.employeeUid);
     const occupancy = occupancyByKey.get(`${uid}|${row.workDate}`) || null;
     const schedule = scheduleByKey.get(`${uid}|${row.workDate}`) || null;
 
-    const scheduleIn = row.scheduleIn || schedule?.schedLogin || null;
-    const scheduleOut = row.scheduleOut || schedule?.schedLogout || null;
-    const isRestDay = schedule?.schedMode === 0 || scheduleIn === "00:00:00";
+    const scheduleIn = schedule?.schedLogin ?? row.scheduleIn ?? null;
+    const scheduleOut = schedule?.schedLogout ?? row.scheduleOut ?? null;
+    // Midnight is a valid shift start. Only the explicit Kronos rest-day
+    // schedule mode identifies a rest day (do not infer it from 00:00:00).
+    const isRestDay = schedule?.schedMode === 0;
     const isTodayOrFuture = String(row.workDate) >= todayIso;
 
     let status = row.status;
@@ -775,6 +831,7 @@ function getManilaTodayIso() {
     return {
       ...row,
       employeeName: row.employeeName || schedule?.employeeName || null,
+      employeeRole: row.employeeRole || schedule?.employeeRole || null,
       scheduleIn: isRestDay ? "Rest Day" : scheduleIn,
       scheduleOut: isRestDay ? "Rest Day" : scheduleOut,
       scheduleMode: schedule?.schedMode ?? null,
@@ -815,7 +872,7 @@ function getManilaTodayIso() {
 
       for (const sched of missingEmployees) {
         const uid = normalizeEmployeeUid(sched.employeeUid);
-        const isRestDay = sched.schedMode === 0 || sched.schedLogin === "00:00:00";
+        const isRestDay = sched.schedMode === 0;
         const ledger = missingLedgerMap.get(uid) || null;
 
         joinedRows.push({
@@ -836,8 +893,11 @@ function getManilaTodayIso() {
           rawJson: [],
           hrisAccountId: dataset.scope.accountId,
           accountName: dataset.scope.accountName,
-          kronosAccountId: dataset.scope.kronosMapping?.kronosAccountId,
-          kronosAccountName: dataset.scope.kronosMapping?.kronosAccountName || dataset.scope.accountName,
+          kronosAccountId: sched.kronosAccountId || dataset.scope.kronosMapping?.kronosAccountId,
+          kronosAccountName: sched.employeeRole === "TEAM_LEADER"
+            ? "Team Leaders"
+            : dataset.scope.kronosMapping?.kronosAccountName || dataset.scope.accountName,
+          employeeRole: sched.employeeRole || null,
           departmentId: dataset.scope.departmentId,
           departmentName: dataset.scope.departmentName,
           employeeLedgerId: ledger?.ledgerId || null,
@@ -867,7 +927,7 @@ function getManilaTodayIso() {
   return {
     scope: dataset.scope,
     sourceEndpoint: dataset.sourceEndpoint,
-    sourceRows: dataset.sourceRows,
+    sourceRows: dataset.sourceRows + leaderPunchRows.reduce((count, row) => count + (row.sourceRowCount || 0), 0),
     normalizedRows: total,
     completeShiftRows: dataset.completeShiftRows,
     incompleteShiftRows: dataset.incompleteShiftRows,

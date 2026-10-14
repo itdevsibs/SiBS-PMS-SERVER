@@ -8,14 +8,21 @@ import {
   normalizeKronosAccountName,
 } from "../../services/kronos/kronosAccountDirectoryService.js";
 
+const EMPLOYEE_DIRECTORY_ENDPOINT = "/api/v1/employee-directory";
 const OPTIMIZED_SCHEDULE_ENDPOINT = "/api/v1/employee-schedules";
-const EMPLOYEE_RESOURCE_PREFIX = "/api/v1/employees";
+const DIRECTORY_PAGE_LIMIT = 100;
+const DIRECTORY_MAX_PAGES = 200;
 const SCHEDULE_PAGE_LIMIT = 100;
 const MAX_SCHEDULE_PAGES = 200;
-const SCHEDULE_CONCURRENCY = 3;
-const EMPLOYEE_ID_CACHE_MS = 60 * 60 * 1000;
-const employeeIdCache = new Map();
-const employeeIdInFlight = new Map();
+const SCHEDULE_CONCURRENCY = 6;
+const DIRECTORY_CACHE_MS = 30 * 60 * 1000;
+const SCHEDULE_CACHE_MS = 30 * 60 * 1000;
+const DIRECTORY_CACHE_MAX_ENTRIES = 30;
+const SCHEDULE_CACHE_MAX_ENTRIES = 1500;
+const directoryCache = new Map();
+const directoryInFlight = new Map();
+const scheduleCache = new Map();
+const scheduleInFlight = new Map();
 
 function normalizeDate(value) {
   const text = String(value || "").trim();
@@ -45,15 +52,13 @@ function isZeroTime(value) {
   return !text || text === "00:00:00" || text === "00:00";
 }
 
-// Kronos gy_sched_mode=0 is a rest day. Explicit rest-day labels (if returned
-// by an adapter) also override leftover shift times.
 const REST_DAY_MODES = new Set([
   "0", "FALSE", "REST", "REST DAY", "REST-DAY", "REST_DAY", "RESTDAY",
   "RD", "DAY OFF", "DAY-OFF", "DAY_OFF", "OFF", "UNSCHEDULED", "INACTIVE",
 ]);
 
-// Do not filter by weekday: actively scheduled Saturday/Sunday shifts are
-// counted like weekdays; without an eligible schedule there is no absence.
+// Rest days and unscheduled weekends are excluded. A Saturday/Sunday with an
+// active schedule is treated exactly like a weekday schedule.
 function scheduleModeIsActive(row = {}) {
   const rawMode = firstDefinedValue(row, [
     "gy_sched_mode", "schedule.gy_sched_mode", "schedule_mode", "sched_mode", "mode",
@@ -64,7 +69,6 @@ function scheduleModeIsActive(row = {}) {
   if (REST_DAY_MODES.has(text)) return false;
   if (text === "1" || text === "ACTIVE" || text === "SCHEDULED") return true;
 
-  // Preserve the previous fallback for schedules without a recognized mode.
   const scheduledLogin = firstDefinedValue(row, [
     "gy_sched_login", "schedule.gy_sched_login", "scheduled_login", "sched_login",
   ]);
@@ -106,7 +110,6 @@ async function mapWithConcurrency(items, concurrency, worker) {
   return results;
 }
 
-/** Resolve the numeric account ID from Kronos, never from the unrelated HRIS account ID. */
 async function resolveKronosAccountId(accountName) {
   const normalized = normalizeKronosAccountName(accountName);
   if (!normalized) unavailable("Kronos account name is required.", "KRONOS_ACCOUNT_REQUIRED");
@@ -119,93 +122,237 @@ async function resolveKronosAccountId(accountName) {
   }
   const matches = directory.filter((row) => row.normalizedName === normalized);
   if (matches.length !== 1) {
-    unavailable(`Kronos account ${accountName} did not resolve uniquely (${matches.length} matches).`,
-      "KRONOS_ACCOUNT_MAPPING_UNAVAILABLE");
+    unavailable(
+      `Kronos account ${accountName} did not resolve uniquely (${matches.length} matches).`,
+      "KRONOS_ACCOUNT_MAPPING_UNAVAILABLE",
+    );
   }
   return matches[0].kronosAccountId;
 }
 
-/**
- * The PMS ledger maps SIBS code -> gy_emp_code. Attendance provides employee_id
- * when present; employees without tracker activity must still be resolved so
- * their schedules can be counted. Cache verified employee codes, not names.
- */
-async function resolveInternalEmployeeId(employeeUid) {
-  const uid = normalizeTrackerEmployeeUid(employeeUid);
-  const cached = employeeIdCache.get(uid);
-  if (cached && cached.expiresAt > Date.now()) return { id: cached.id, requested: 0 };
-  let pending = employeeIdInFlight.get(uid);
-  if (!pending) {
-    pending = (async () => {
-      let payload;
-      try {
-        payload = await getKronosApiResponse(`${EMPLOYEE_RESOURCE_PREFIX}/${encodeURIComponent(uid)}`, {
-          retryTransient: true,
-        });
-      } catch (error) {
-        error.stage ??= "EMPLOYEE_ID_LOOKUP";
-        throw error;
-      }
-      const employee = payload?.data || {};
-      const responseCode = normalizeTrackerEmployeeUid(employee.gy_emp_code);
-      const id = positiveInteger(employee.gy_emp_id);
-      if (!id || responseCode !== uid) unavailable(
-        `Kronos employee ID could not be verified for roster code ${uid}.`,
-        "KRONOS_EMPLOYEE_ID_UNRESOLVED",
-      );
-      employeeIdCache.set(uid, { id, expiresAt: Date.now() + EMPLOYEE_ID_CACHE_MS });
-      if (employeeIdCache.size > 2500) employeeIdCache.delete(employeeIdCache.keys().next().value);
-      return { id, requested: 1 };
-    })();
-    employeeIdInFlight.set(uid, pending);
-    pending.finally(() => employeeIdInFlight.delete(uid)).catch(() => {});
-  }
-  return pending;
+function pageInfo(payload, requestedPage) {
+  const pagination = payload?.pagination || {};
+  return {
+    currentPage: Number(pagination.currentPage ?? pagination.current_page ?? requestedPage),
+    totalPages: Number(pagination.totalPages ?? pagination.total_pages ?? 0),
+    totalRecords: Number(pagination.totalRecords ?? pagination.total ?? NaN),
+  };
 }
 
-/** Exact date-filtered page-based schedule view; gy_emp_id != gy_emp_code. */
-async function fetchEmployeeSchedulePages(gyEmpId, dateFrom, dateTo) {
+async function fetchPageCollection(endpoint, filters, {
+  context,
+  maxPages,
+  pageLimit,
+} = {}) {
   const rows = [];
   let requestCount = 0;
   let totalPages = null;
-  for (let page = 1; page <= MAX_SCHEDULE_PAGES; page += 1) {
+  let expectedTotal = null;
+
+  for (let page = 1; page <= maxPages; page += 1) {
     let payload;
     try {
-      payload = await getKronosApiResponse(OPTIMIZED_SCHEDULE_ENDPOINT, {
-        params: { gy_emp_id: gyEmpId, date_from: dateFrom, date_to: dateTo,
-          page, limit: SCHEDULE_PAGE_LIMIT },
+      payload = await getKronosApiResponse(endpoint, {
+        params: { ...filters, page, limit: pageLimit },
         retryTransient: true,
+        kpiShared: true,
       });
     } catch (error) {
-      error.stage ??= "SCHEDULE_PAGE_FETCH";
+      error.stage ??= context;
       throw error;
     }
     requestCount += 1;
     const batch = extractRows(payload);
-    const pagination = payload?.pagination || {};
-    const declaredTotalPages = positiveInteger(pagination.totalPages ?? pagination.total_pages);
-    const currentPage = positiveInteger(pagination.currentPage ?? pagination.current_page);
-    if (!batch || !declaredTotalPages || currentPage !== page) {
-      unavailable(`Incomplete schedule pagination for Kronos employee ID ${gyEmpId}.`,
-        "KRONOS_SCHEDULE_PAGINATION_INVALID");
+    if (payload?.success === false || !batch) {
+      unavailable(`Kronos ${context} page ${page} did not return a data array.`,
+        "KRONOS_PAGINATION_INCOMPLETE");
     }
-    if (totalPages !== null && totalPages !== declaredTotalPages) {
-      unavailable(`Schedule pagination changed for employee ${gyEmpId}.`,
-        "KRONOS_SCHEDULE_PAGINATION_CHANGED");
+
+    const info = pageInfo(payload, page);
+    if (!Number.isSafeInteger(info.totalPages) || info.totalPages < 1 ||
+        info.totalPages > maxPages || info.currentPage !== page) {
+      unavailable(`Kronos ${context} returned invalid pagination on page ${page}.`,
+        "KRONOS_PAGINATION_INVALID");
     }
-    totalPages = declaredTotalPages;
-    if (page > 1 && !batch.length) unavailable(`Empty intermediate schedule page for ${gyEmpId}.`);
+    if (totalPages !== null && totalPages !== info.totalPages) {
+      unavailable(`Kronos ${context} page count changed while fetching.`,
+        "KRONOS_PAGINATION_CHANGED");
+    }
+    totalPages = info.totalPages;
+    if (Number.isSafeInteger(info.totalRecords) && info.totalRecords >= 0) {
+      if (expectedTotal !== null && expectedTotal !== info.totalRecords) {
+        unavailable(`Kronos ${context} row count changed while fetching.`,
+          "KRONOS_PAGINATION_CHANGED");
+      }
+      expectedTotal ??= info.totalRecords;
+    }
+    if (page > 1 && !batch.length) {
+      unavailable(`Kronos ${context} returned an empty intermediate page ${page}.`,
+        "KRONOS_PAGINATION_INCOMPLETE");
+    }
     rows.push(...batch);
     if (page === totalPages) {
-      const expected = Number(pagination.totalRecords ?? pagination.total ?? NaN);
-      if (Number.isSafeInteger(expected) && expected !== rows.length) {
-        unavailable(`Schedule row count mismatch for ${gyEmpId}: ${rows.length} versus ${expected}.`);
+      if (expectedTotal !== null && rows.length !== expectedTotal) {
+        unavailable(`Kronos ${context} returned ${rows.length} of ${expectedTotal} rows.`,
+          "KRONOS_PAGINATION_INCOMPLETE");
       }
       return { rows, requestCount };
     }
   }
-  unavailable(`Schedule result exceeds ${MAX_SCHEDULE_PAGES} pages for employee ${gyEmpId}.`,
-    "KRONOS_SCHEDULE_PAGE_LIMIT_EXCEEDED");
+
+  unavailable(`Kronos ${context} exceeded ${maxPages} pages.`,
+    "KRONOS_PAGE_LIMIT_EXCEEDED");
+}
+
+function rememberDirectoryCache(accountId, data) {
+  directoryCache.set(accountId, { data, expiresAt: Date.now() + DIRECTORY_CACHE_MS });
+  while (directoryCache.size > DIRECTORY_CACHE_MAX_ENTRIES) {
+    directoryCache.delete(directoryCache.keys().next().value);
+  }
+}
+
+function directoryEmployee(row, expectedAccountId) {
+  const accountId = positiveInteger(firstDefinedValue(row, [
+    "gy_acc_id", "employee.gy_acc_id", "account_id", "account.gy_acc_id",
+  ]));
+  if (accountId && accountId !== expectedAccountId) return null;
+
+  const employeeUid = normalizeTrackerEmployeeUid(firstDefinedValue(row, [
+    "gy_emp_code", "employee.gy_emp_code", "employee_code", "emp_code",
+    "employee.employee_code", "employee.emp_code", "sibs_id", "employee.sibs_id",
+    "employeeUid", "employee_uid",
+  ]));
+  const gyEmpId = positiveInteger(firstDefinedValue(row, [
+    "gy_emp_id", "employee.gy_emp_id", "employee_id",
+  ]));
+  if (!employeeUid || !gyEmpId) return null;
+  return { employeeUid, gyEmpId };
+}
+
+async function fetchAccountEmployeeDirectory(accountId) {
+  const cached = directoryCache.get(accountId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return { ...cached.data, requestCount: 0 };
+  }
+
+  let pending = directoryInFlight.get(accountId);
+  let sharedPending = true;
+  if (!pending) {
+    sharedPending = false;
+    pending = (async () => {
+      const result = await fetchPageCollection(
+        EMPLOYEE_DIRECTORY_ENDPOINT,
+        { account_ids: accountId },
+        {
+          context: "EMPLOYEE_DIRECTORY_FETCH",
+          maxPages: DIRECTORY_MAX_PAGES,
+          pageLimit: DIRECTORY_PAGE_LIMIT,
+        },
+      );
+      const byUid = new Map();
+      for (const row of result.rows) {
+        const employee = directoryEmployee(row, accountId);
+        if (!employee) continue;
+        const previous = byUid.get(employee.employeeUid);
+        if (previous && previous.gyEmpId !== employee.gyEmpId) {
+          unavailable(`Conflicting Kronos IDs for employee ${employee.employeeUid}.`,
+            "KRONOS_EMPLOYEE_ID_CONFLICT");
+        }
+        byUid.set(employee.employeeUid, employee);
+      }
+      const data = {
+        byUid,
+        sourceRows: result.rows.length,
+        requestCount: result.requestCount,
+      };
+      rememberDirectoryCache(accountId, data);
+      return data;
+    })();
+    directoryInFlight.set(accountId, pending);
+    pending.finally(() => directoryInFlight.delete(accountId)).catch(() => {});
+  }
+
+  const data = await pending;
+  return { ...data, requestCount: sharedPending ? 0 : data.requestCount };
+}
+
+function findCoveringSchedule(map, gyEmpId, from, to, { cache = false } = {}) {
+  let match = null;
+  let shortest = Infinity;
+  const now = Date.now();
+  for (const [key, entry] of map) {
+    const [id, start, end] = key.split("|");
+    if (Number(id) !== gyEmpId || start > from || end < to) continue;
+    if (cache && entry.expiresAt <= now) {
+      map.delete(key);
+      continue;
+    }
+    const width = Date.parse(end) - Date.parse(start);
+    if (width < shortest) {
+      match = entry;
+      shortest = width;
+    }
+  }
+  return match;
+}
+
+async function fetchEmployeeSchedulePagesUncached(gyEmpId, dateFrom, dateTo) {
+  return fetchPageCollection(
+    OPTIMIZED_SCHEDULE_ENDPOINT,
+    { gy_emp_id: gyEmpId, date_from: dateFrom, date_to: dateTo },
+    {
+      context: "SCHEDULE_PAGE_FETCH",
+      maxPages: MAX_SCHEDULE_PAGES,
+      pageLimit: SCHEDULE_PAGE_LIMIT,
+    },
+  );
+}
+
+async function fetchEmployeeSchedulePages(gyEmpId, dateFrom, dateTo) {
+  const id = positiveInteger(gyEmpId);
+  const from = normalizeDate(dateFrom);
+  const to = normalizeDate(dateTo);
+  if (!id || !from || !to || from > to) {
+    unavailable("Invalid employee schedule filters.", "KRONOS_SCHEDULE_FILTER_INVALID");
+  }
+
+  const cached = findCoveringSchedule(scheduleCache, id, from, to, { cache: true });
+  if (cached) {
+    return {
+      rows: cached.data.rows.filter((row) => {
+        const day = scheduleDate(row);
+        return day && day >= from && day <= to;
+      }),
+      requestCount: 0,
+    };
+  }
+
+  const key = `${id}|${from}|${to}`;
+  let pendingEntry = findCoveringSchedule(scheduleInFlight, id, from, to);
+  let pending = pendingEntry?.promise || pendingEntry || null;
+  let sharedPending = true;
+  if (!pending) {
+    sharedPending = false;
+    pending = fetchEmployeeSchedulePagesUncached(id, from, to)
+      .then((data) => {
+        scheduleCache.set(key, { data, expiresAt: Date.now() + SCHEDULE_CACHE_MS });
+        while (scheduleCache.size > SCHEDULE_CACHE_MAX_ENTRIES) {
+          scheduleCache.delete(scheduleCache.keys().next().value);
+        }
+        return data;
+      });
+    scheduleInFlight.set(key, { promise: pending, from, to });
+    pending.finally(() => scheduleInFlight.delete(key)).catch(() => {});
+  }
+
+  const data = await pending;
+  return {
+    rows: data.rows.filter((row) => {
+      const day = scheduleDate(row);
+      return day && day >= from && day <= to;
+    }),
+    requestCount: sharedPending ? 0 : data.requestCount,
+  };
 }
 
 function nowInManila() {
@@ -305,18 +452,19 @@ function emptyDataset({ requestedEmployeeCount = 0 } = {}) {
     sourceEndpoints: {
       trackerHistory: "/api/v1/employee-attendance",
       rawTrackerSource: null,
+      employeeDirectory: EMPLOYEE_DIRECTORY_ENDPOINT,
       schedules: OPTIMIZED_SCHEDULE_ENDPOINT,
     },
   };
 }
 
 /**
- * Data-source-only adapter: the existing six-period Headcount and Absenteeism
- * calculations (absenteeismKpiService.js) are unchanged.
- * - Account: live-resolved numeric Kronos account ID (US Visa currently 20)
- * - TO and employee population: PMS ledger sibs_id vs Kronos gy_emp_code
- * - Schedules: resolve gy_emp_id for ALL roster agents, including absentees
- * - Date picker: same resolved dateFrom/dateTo passed to both optimized views
+ * Shared KPI data adapter. The formulas remain in absenteeismKpiService.js.
+ * - Kronos account/date attendance comes from /employee-attendance.
+ * - PMS ledger supplies the target/Task Order employee codes.
+ * - Kronos /employee-directory?account_ids=... supplies gy_emp_id in bulk.
+ * - Date-filtered /employee-schedules supplies schedule rows per matched agent.
+ * Attendance and directory calls run together after the account is resolved.
  */
 export async function getKronosAbsenteeismEmployeeDayRows({
   employeeUids = [], dateFrom = null, dateTo = null, accountName = "US Visa",
@@ -330,64 +478,94 @@ export async function getKronosAbsenteeismEmployeeDayRows({
 
   const kronosAccountId = await resolveKronosAccountId(accountName);
   let attendance;
+  let employeeDirectory;
   try {
-    attendance = await getKronosOptimizedAttendanceEmployeeDayRows({
-      kronosAccountId, employeeUids: employeeCodes, dateFrom: from, dateTo: to,
-    });
+    [attendance, employeeDirectory] = await Promise.all([
+      getKronosOptimizedAttendanceEmployeeDayRows({
+        kronosAccountId,
+        employeeUids: employeeCodes,
+        dateFrom: from,
+        dateTo: to,
+      }),
+      fetchAccountEmployeeDirectory(kronosAccountId),
+    ]);
   } catch (error) {
-    error.stage ??= "ATTENDANCE_PAGE_FETCH";
+    error.stage ??= "ATTENDANCE_OR_EMPLOYEE_DIRECTORY_FETCH";
     throw error;
   }
+
+  const targetSet = new Set(employeeCodes);
+  const verifiedIds = new Map();
+  for (const uid of employeeCodes) {
+    const directoryEntry = employeeDirectory.byUid.get(uid);
+    if (directoryEntry?.gyEmpId) verifiedIds.set(uid, directoryEntry.gyEmpId);
+  }
+
   const presenceKeys = new Set();
   const presentRows = [];
-  const verifiedIds = new Map();
   for (const record of attendance.rows) {
+    if (!targetSet.has(record.employeeUid)) continue;
     if (record.gyEmpId) {
-      const oldId = verifiedIds.get(record.employeeUid);
-      if (oldId && oldId !== record.gyEmpId) unavailable(
-        `Conflicting Kronos internal IDs for employee ${record.employeeUid}.`,
-        "KRONOS_EMPLOYEE_ID_CONFLICT",
-      );
+      const priorId = verifiedIds.get(record.employeeUid);
+      if (priorId && priorId !== record.gyEmpId) {
+        unavailable(
+          `Conflicting Kronos internal IDs for employee ${record.employeeUid}.`,
+          "KRONOS_EMPLOYEE_ID_CONFLICT",
+        );
+      }
       verifiedIds.set(record.employeeUid, record.gyEmpId);
     }
     if (!record.isPresent) continue;
     const key = `${record.employeeUid}|${record.workDate}`;
     if (presenceKeys.has(key)) continue;
     presenceKeys.add(key);
-    presentRows.push({ employeeUid: record.employeeUid, workDate: record.workDate,
-      accountId: kronosAccountId, loginAt: record.firstLoginAt,
-      logoutAt: record.lastLogoutAt, shiftSeconds: record.shiftSeconds,
-      shiftStatus: record.shiftStatus });
+    presentRows.push({
+      employeeUid: record.employeeUid,
+      workDate: record.workDate,
+      accountId: kronosAccountId,
+      loginAt: record.firstLoginAt,
+      logoutAt: record.lastLogoutAt,
+      shiftSeconds: record.shiftSeconds,
+      shiftStatus: record.shiftStatus,
+    });
   }
 
-  const missingCodes = employeeCodes.filter((uid) => !verifiedIds.has(uid));
-  const lookedUp = await mapWithConcurrency(missingCodes, SCHEDULE_CONCURRENCY, async (uid) => {
-    const result = await resolveInternalEmployeeId(uid);
-    return { uid, ...result };
-  });
-  for (const item of lookedUp) verifiedIds.set(item.uid, item.id);
-
-  const scheduleResults = await mapWithConcurrency(employeeCodes, SCHEDULE_CONCURRENCY,
+  // Only employees verified under the selected Kronos account are schedule
+  // candidates. This prevents stale ledger rows or another Kronos account from
+  // being classified as US Visa absenteeism.
+  const matchedEmployeeCodes = employeeCodes.filter((uid) => verifiedIds.has(uid));
+  const scheduleResults = await mapWithConcurrency(
+    matchedEmployeeCodes,
+    SCHEDULE_CONCURRENCY,
     async (uid) => {
-      const result = await fetchEmployeeSchedulePages(verifiedIds.get(uid), from, to);
-      return { uid, ...result };
-    });
+      const gyEmpId = verifiedIds.get(uid);
+      const result = await fetchEmployeeSchedulePages(gyEmpId, from, to);
+      return { uid, gyEmpId, ...result };
+    },
+  );
+
   const current = nowInManila();
   const groupedSchedules = new Map();
   for (const entry of scheduleResults) {
     for (const schedule of entry.rows) {
-      if (Number(schedule.gy_emp_id) !== verifiedIds.get(entry.uid)) {
-        unavailable(`Kronos schedule employee ID mismatch for ${entry.uid}.`,
-          "KRONOS_SCHEDULE_EMPLOYEE_MISMATCH");
+      const scheduleId = positiveInteger(schedule.gy_emp_id);
+      if (scheduleId && scheduleId !== entry.gyEmpId) {
+        unavailable(
+          `Kronos schedule employee ID mismatch for ${entry.uid}.`,
+          "KRONOS_SCHEDULE_EMPLOYEE_MISMATCH",
+        );
       }
       if (!scheduleModeIsActive(schedule)) continue;
       const workDate = scheduleDate(schedule);
       if (!workDate || workDate < from || workDate > to) continue;
       const window = getCompletedScheduleWindow(schedule, current);
-      if (!window) continue; // No reliable shift boundaries: not an absence.
+      if (!window) continue;
       const key = `${entry.uid}|${workDate}`;
       const prior = groupedSchedules.get(key) || {
-        uid: entry.uid, workDate, windows: [], allCompleted: true,
+        uid: entry.uid,
+        workDate,
+        windows: [],
+        allCompleted: true,
       };
       prior.windows.push(window);
       prior.allCompleted &&= window.completed;
@@ -395,23 +573,20 @@ export async function getKronosAbsenteeismEmployeeDayRows({
     }
   }
 
-  // Only completed employee-days qualify for absence. No partial/current/future
-  // shift is classified absent. Keep the original employee-day KPI granularity.
   const completedSchedules = [...groupedSchedules.values()].filter(
     (entry) => entry.allCompleted,
   );
 
-  // A shift starting on the final selected date may finish next morning.
-  // Request ONLY that extra day if necessary; the main attendance request and
-  // its cache remain shared with Utilization/HC for the date-picker range.
   let boundaryAttendance = null;
   if (completedSchedules.some((entry) => entry.workDate === to &&
       entry.windows.some((window) => window.overnight))) {
     const extraDate = nextDate(to);
     try {
       boundaryAttendance = await getKronosOptimizedAttendanceEmployeeDayRows({
-        kronosAccountId, employeeUids: employeeCodes,
-        dateFrom: extraDate, dateTo: extraDate,
+        kronosAccountId,
+        employeeUids: matchedEmployeeCodes,
+        dateFrom: extraDate,
+        dateTo: extraDate,
       });
     } catch (error) {
       error.stage ??= "OVERNIGHT_BOUNDARY_ATTENDANCE_FETCH";
@@ -420,13 +595,13 @@ export async function getKronosAbsenteeismEmployeeDayRows({
   }
 
   const intervalIndex = indexTrackerIntervals([
-    ...attendance.rows, ...(boundaryAttendance?.rows || []),
+    ...attendance.rows,
+    ...(boundaryAttendance?.rows || []),
   ]);
   const rows = completedSchedules.map((entry) => ({
     employeeUid: entry.uid,
     workDate: entry.workDate,
     accountId: kronosAccountId,
-    // No-show only if ZERO matching tracker intervals across the entire shift.
     hasAttendance: entry.windows.some((window) =>
       attendedDuringScheduledShift(window, intervalIndex.get(entry.uid) || [])),
   }));
@@ -435,25 +610,35 @@ export async function getKronosAbsenteeismEmployeeDayRows({
     || left.employeeUid.localeCompare(right.employeeUid);
   rows.sort(sortRows);
   presentRows.sort(sortRows);
+
   return {
-    rows, presentRows, requestedEmployeeCount: employeeCodes.length,
-    matchedEmployeeCount: verifiedIds.size, accountCount: 1,
-    remoteRequestCount: attendance.requestCount + (boundaryAttendance?.requestCount || 0)
-      + lookedUp.reduce((sum, item) => sum + item.requested, 0)
-      + scheduleResults.reduce((sum, entry) => sum + entry.requestCount, 0),
-    accountEmployeeSourceRows: lookedUp.length,
+    rows,
+    presentRows,
+    requestedEmployeeCount: employeeCodes.length,
+    matchedEmployeeCount: matchedEmployeeCodes.length,
+    accountCount: 1,
+    remoteRequestCount:
+      attendance.requestCount +
+      employeeDirectory.requestCount +
+      (boundaryAttendance?.requestCount || 0) +
+      scheduleResults.reduce((sum, entry) => sum + entry.requestCount, 0),
+    accountEmployeeSourceRows: employeeDirectory.sourceRows,
     trackerSourceRows: attendance.sourceRows + (boundaryAttendance?.sourceRows || 0),
-    trackerAccountMatchedRows: attendance.accountMatchedRows + (boundaryAttendance?.accountMatchedRows || 0),
+    trackerAccountMatchedRows:
+      attendance.accountMatchedRows + (boundaryAttendance?.accountMatchedRows || 0),
     scheduleSourceRows: scheduleResults.reduce((sum, entry) => sum + entry.rows.length, 0),
     validAccountDays: new Set(rows.map((row) => row.workDate)).size,
     sourceEndpoints: {
       trackerHistory: attendance.sourceEndpoint,
       rawTrackerSource: null,
+      employeeDirectory: EMPLOYEE_DIRECTORY_ENDPOINT,
       schedules: OPTIMIZED_SCHEDULE_ENDPOINT,
-      employeeResource: `${EMPLOYEE_RESOURCE_PREFIX}/{gy_emp_code}`,
+      employeeResource: null,
     },
-    fetchMode: "OPTIMIZED_ATTENDANCE_PLUS_DATE_FILTERED_SCHEDULES",
-    storageMode: "LIVE_ONLY", presenceBasis: "KRONOS_TRACKER_LOGIN",
-    accountFilter: accountName, kronosAccountId,
+    fetchMode: "OPTIMIZED_ATTENDANCE_DIRECTORY_PLUS_DATE_FILTERED_SCHEDULES",
+    storageMode: "LIVE_ONLY",
+    presenceBasis: "KRONOS_TRACKER_LOGIN",
+    accountFilter: accountName,
+    kronosAccountId,
   };
 }

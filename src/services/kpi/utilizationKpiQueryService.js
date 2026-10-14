@@ -11,7 +11,7 @@ import {
 import { buildWfmUtilizationKpiDashboard } from "./occupancyKpiService.js";
 import { getCallCenterOperationsAccountsWithMappings } from "../kronos/kronosAccountScopeService.js";
 import { normalizeKronosAccountName } from "../kronos/kronosAccountDirectoryService.js";
-import { getKronosOptimizedAttendanceEmployeeDayRows } from "../../repositories/kronos/kronosTrackerRepository.js";
+import { getKronosUtilizationTrackerEmployeeDayRows } from "../../repositories/kronos/kronosTrackerRepository.js";
 import { getOrCreateUtilizationCacheEntry } from "../cache/utilizationCacheService.js";
 
 function normalizeDate(value) {
@@ -177,7 +177,7 @@ async function loadWfmUtilizationKpiDashboard(resolved) {
       metadata: {
         status: "NO_OCCUPANCY_DATA",
         source: "KRONOS_API",
-        fetchMode: "OPTIMIZED_DATE_FILTERED_ATTENDANCE",
+        fetchMode: "EMPLOYEE_TRACKER_RELATIONSHIP_LOCAL_DATE_FILTER",
         storageMode: "LIVE_ONLY",
         shiftTimeBasis: "KRONOS_TRACKER_LOGIN_TO_LOGOUT",
         accountName: "US Visa",
@@ -215,7 +215,7 @@ async function loadWfmUtilizationKpiDashboard(resolved) {
         metadata: {
           status: "ACCOUNT_UNAVAILABLE",
           source: "KRONOS_API",
-          fetchMode: "OPTIMIZED_DATE_FILTERED_ATTENDANCE",
+          fetchMode: "EMPLOYEE_TRACKER_RELATIONSHIP_LOCAL_DATE_FILTER",
           storageMode: "LIVE_ONLY",
           shiftTimeBasis: "KRONOS_TRACKER_LOGIN_TO_LOGOUT",
           accountName: "US Visa",
@@ -238,13 +238,11 @@ async function loadWfmUtilizationKpiDashboard(resolved) {
       });
     }
 
-    // Reuse the exact same account/date-scoped attendance dataset as Headcount.
-    // The repository shares its in-flight fetch and five-minute cache across
-    // callers, so opening the dashboard no longer launches a second, serial
-    // /employee-tracker-history scan. It preserves the existing employee-day
-    // login/logout aggregation and Utilization formula.
+    // Preserve the previously faster Utilization path: fetch tracker history only
+    // for occupancy-targeted employees and reuse the per-employee 30-minute cache.
+    // Headcount and Absenteeism remain on the bulk/date-filtered attendance endpoint.
     const attendanceStartedAt = Date.now();
-    const trackerDataset = await getKronosOptimizedAttendanceEmployeeDayRows({
+    const trackerDataset = await getKronosUtilizationTrackerEmployeeDayRows({
       kronosAccountId: usVisaAccount.kronosMapping.kronosAccountId,
       employeeUids: targetEmployeeUids,
       dateFrom,
@@ -347,7 +345,7 @@ async function loadWfmUtilizationKpiDashboard(resolved) {
       metadata: {
         status: "UNAVAILABLE",
         source: "KRONOS_API",
-        fetchMode: "OPTIMIZED_DATE_FILTERED_ATTENDANCE",
+        fetchMode: "EMPLOYEE_TRACKER_RELATIONSHIP_LOCAL_DATE_FILTER",
         storageMode: "LIVE_ONLY",
         shiftTimeBasis: "KRONOS_TRACKER_LOGIN_TO_LOGOUT",
         trackerPresenceBasis: "VALID_GY_TRACKER_LOGIN",
@@ -385,7 +383,7 @@ function buildUtilizationCacheKey({
       : [];
 
   return JSON.stringify({
-    version: 2,
+    version: 4,
     account: "US_VISA",
     period: period || null,
     dateFrom: dateFrom || null,
