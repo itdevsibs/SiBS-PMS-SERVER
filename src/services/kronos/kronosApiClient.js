@@ -47,8 +47,38 @@ async function parseResponse(response) {
   }
 }
 
+// Only KPI calls opt into this request pool. The Attendance Sheet retains its
+// independent fetching, concurrency and cache policy.
+const kpiSlots = { active: 0, waiting: [] };
+
+function kpiConcurrencyLimit() {
+  const configured = Number(process.env.KRONOS_KPI_MAX_CONCURRENT_REQUESTS);
+  return Number.isSafeInteger(configured) && configured >= 1 && configured <= 12
+    ? configured : 3;
+}
+
+async function acquireKpiSlot() {
+  if (kpiSlots.active < kpiConcurrencyLimit()) {
+    kpiSlots.active += 1;
+  } else {
+    await new Promise((resolve) => kpiSlots.waiting.push(resolve));
+  }
+  // Ownership of the reserved slot is handed to the next waiter on release.
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const next = kpiSlots.waiting.shift();
+    if (next) next();
+    else kpiSlots.active -= 1;
+  };
+}
+
 async function executeRequest(endpoint, options, token) {
   const controller = new AbortController();
+  // The queue covers each physical HTTP call only, not token refreshes or
+  // retry backoff. A slow retry cannot monopolize the KPI request slots.
+  const releaseKpiSlot = options.kpiShared ? await acquireKpiSlot() : null;
   const timeout = setTimeout(() => controller.abort(), kronosApiConfig.requestTimeoutMs);
 
   try {
@@ -79,6 +109,7 @@ async function executeRequest(endpoint, options, token) {
     throw error;
   } finally {
     clearTimeout(timeout);
+    releaseKpiSlot?.();
   }
 }
 
