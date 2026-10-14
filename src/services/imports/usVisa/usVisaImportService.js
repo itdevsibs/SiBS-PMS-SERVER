@@ -741,12 +741,14 @@ function getUploadedFileExtension(temporaryFile = {}, filePath = "") {
 }
 
 function assertProfileFileType(processor = {}, temporaryFile = {}, filePath = "") {
-  const expectedExtension = processor.fileType === "CSV" ? ".csv" : ".xlsx";
+  const supportedExtensions = Array.isArray(processor.supportedExtensions)
+    ? processor.supportedExtensions.map((value) => String(value || "").toLowerCase())
+    : [processor.fileType === "CSV" ? ".csv" : ".xlsx"];
   const actualExtension = getUploadedFileExtension(temporaryFile, filePath);
 
-  if (actualExtension !== expectedExtension) {
+  if (!supportedExtensions.includes(actualExtension)) {
     throw new UsVisaImportError(
-      `This import profile requires a ${expectedExtension} file.`,
+      `This import profile supports only ${supportedExtensions.join(" or ")} files.`,
       { code: "INVALID_FILE_TYPE" },
     );
   }
@@ -803,7 +805,7 @@ export async function importUsVisaRawWorkbook(options = {}) {
     reportImportProgress(progressToken, {
       stage: "reading",
       percent: 24,
-      message: "Preparing the uploaded workbook.",
+      message: "Preparing the uploaded file.",
     });
 
     const fileHashStartedAt = Date.now();
@@ -903,14 +905,14 @@ export async function importUsVisaRawWorkbook(options = {}) {
     reportImportProgress(progressToken, {
       stage: "reading",
       percent: 26,
-      message: "Reading workbook sheets and headers.",
+      message: "Reading source rows and headers.",
     });
     const workbookLoadStartedAt = Date.now();
     const workbook = await openWorkbook(filePath);
     reportImportProgress(progressToken, {
       stage: "reading",
       percent: 30,
-      message: "Workbook loaded successfully.",
+      message: "Source file loaded successfully.",
     });
 
     if (agentPerformance) {
@@ -927,7 +929,7 @@ export async function importUsVisaRawWorkbook(options = {}) {
     reportImportProgress(progressToken, {
       stage: "validating",
       percent: 34,
-      message: "Validating workbook structure and required fields.",
+      message: "Validating file structure and required fields.",
     });
     const workbookValidationStartedAt = Date.now();
     const workbookValidation = validateWorkbookProfile(workbook, profileCode);
@@ -982,7 +984,7 @@ export async function importUsVisaRawWorkbook(options = {}) {
     reportImportProgress(progressToken, {
       stage: "validating",
       percent: 40,
-      message: "Workbook structure validated.",
+      message: "File structure validated.",
     });
 
     let occupancyMetadata = null;

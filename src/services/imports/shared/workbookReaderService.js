@@ -1,9 +1,14 @@
 // Reads XLSX workbooks while preserving source headers and row values.
+import path from "node:path";
+
 import ExcelJS from "exceljs";
+
+import { readCsvRecords } from "./csvReaderService.js";
 
 export const WORKBOOK_READER_ERROR_CODES = {
   INVALID_EXCEL_FILE: "INVALID_EXCEL_FILE",
   CORRUPTED_WORKBOOK: "CORRUPTED_WORKBOOK",
+  INVALID_CSV_FILE: "INVALID_CSV_FILE",
 };
 
 export class WorkbookReaderError extends Error {
@@ -141,11 +146,73 @@ function getWorksheet(workbook, worksheetNameOrId) {
   return workbook.getWorksheet(worksheetNameOrId) || null;
 }
 
+function getSourceExtension(filePath = "") {
+  return path.extname(String(filePath || "")).toLowerCase();
+}
+
+async function openCsvAsWorkbook(filePath) {
+  try {
+    const records = await readCsvRecords(filePath, { skipEmptyLines: false });
+    const hasData = records.some((record) =>
+      Array.isArray(record) && record.some((value) => String(value ?? "").trim() !== ""),
+    );
+
+    if (!hasData) {
+      throw new WorkbookReaderError("CSV file does not contain any data.", {
+        code: WORKBOOK_READER_ERROR_CODES.INVALID_CSV_FILE,
+      });
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet("CSV Data");
+
+    records.forEach((record, index) => {
+      const rowNumber = index + 1;
+      const values = Array.isArray(record) ? record : [record];
+      worksheet.getRow(rowNumber).values = [undefined, ...values];
+    });
+
+    Object.defineProperty(workbook, "__sourceFileType", {
+      value: "CSV",
+      enumerable: false,
+      configurable: true,
+    });
+
+    return workbook;
+  } catch (error) {
+    if (error instanceof WorkbookReaderError) {
+      throw error;
+    }
+
+    if (isMissingFileError(error)) {
+      throw new WorkbookReaderError("CSV file could not be read.", {
+        code: WORKBOOK_READER_ERROR_CODES.INVALID_CSV_FILE,
+        cause: error,
+      });
+    }
+
+    throw new WorkbookReaderError("CSV file is corrupted or invalid.", {
+      code: WORKBOOK_READER_ERROR_CODES.INVALID_CSV_FILE,
+      cause: error,
+    });
+  }
+}
+
 export async function openWorkbook(filePath) {
+  if (getSourceExtension(filePath) === ".csv") {
+    return openCsvAsWorkbook(filePath);
+  }
+
   const workbook = new ExcelJS.Workbook();
 
   try {
     await workbook.xlsx.readFile(filePath);
+
+    Object.defineProperty(workbook, "__sourceFileType", {
+      value: "XLSX",
+      enumerable: false,
+      configurable: true,
+    });
 
     return workbook;
   } catch (error) {

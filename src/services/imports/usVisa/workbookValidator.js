@@ -610,7 +610,9 @@ function getSheetNameForRule(workbook, rule) {
     }
   }
 
-  if (rule.sheetName && !rule.sheetNameCandidates) {
+  const isCsvWorkbook = workbook?.__sourceFileType === "CSV";
+
+  if (rule.sheetName && !rule.sheetNameCandidates && !isCsvWorkbook) {
     return null;
   }
 
