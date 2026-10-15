@@ -11,6 +11,7 @@ import { chooseCallKpiDataGrain } from "../services/kpi/callKpiService.js";
 import {
   getDistinctSkillsByCountry,
   getCallsReportData,
+  getCallKpiDateBounds,
 } from "../repositories/callKpiRepository.js";
 
 const BAD_REQUEST_CODES = new Set([
@@ -23,17 +24,39 @@ const BAD_REQUEST_CODES = new Set([
 export async function getCallsReport(req, res) {
   try {
     const { date, dateFrom, dateTo, country } = req.query;
-    const effectiveDateFrom = dateFrom || date || undefined;
-    const effectiveDateTo = dateTo || date || undefined;
-    const data = await getCallsReportData({
+    let effectiveDateFrom = dateFrom || date || undefined;
+    let effectiveDateTo = dateTo || date || undefined;
+    
+    let data = await getCallsReportData({
       dateFrom: effectiveDateFrom,
       dateTo: effectiveDateTo,
       country: country || undefined,
     });
 
+    // If no records found for the requested date (e.g. current date with no data yet),
+    // default directly to the latest available date in the database
+    let resolvedDate = date;
+    if ((!data || data.length === 0) && !dateFrom && !dateTo) {
+      const dateRange = await getCallKpiDateBounds({
+        sourceSystem: "US_VISA",
+        country: country || undefined,
+      });
+      if (dateRange?.maxDate) {
+        effectiveDateFrom = dateRange.maxDate;
+        effectiveDateTo = dateRange.maxDate;
+        resolvedDate = dateRange.maxDate;
+        data = await getCallsReportData({
+          dateFrom: effectiveDateFrom,
+          dateTo: effectiveDateTo,
+          country: country || undefined,
+        });
+      }
+    }
+
     return res.json({
       success: true,
       data,
+      resolvedDate,
     });
   } catch (error) {
     console.error("GET /api/kpis/calls-report error:", error);
