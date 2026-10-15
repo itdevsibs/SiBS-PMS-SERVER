@@ -86,7 +86,7 @@ export function buildAgentOccupancyIdentityParts(row = {}) {
     ];
   }
 
-  if (row.data_grain === "AGENT_OCCUPANCY_15_MINUTE") {
+  if (["AGENT_OCCUPANCY_15_MINUTE", "AGENT_OCCUPANCY_30_MINUTE"].includes(row.data_grain)) {
     return [
       normalize(row.source_system),
       normalize(taskOrderId),

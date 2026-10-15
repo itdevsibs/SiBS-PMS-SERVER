@@ -2,6 +2,7 @@ const VALID_GRAINS = new Set([
   "AGENT_OCCUPANCY_DAY",
   "AGENT_OCCUPANCY_PERIOD",
   "AGENT_OCCUPANCY_15_MINUTE",
+  "AGENT_OCCUPANCY_30_MINUTE",
 ]);
 
 const NUMERIC_FIELDS = [
@@ -119,15 +120,18 @@ export function validateCanonicalAgentOccupancyRow(row = {}) {
     }
   }
 
-  if (row.data_grain === "AGENT_OCCUPANCY_15_MINUTE") {
+  if (["AGENT_OCCUPANCY_15_MINUTE", "AGENT_OCCUPANCY_30_MINUTE"].includes(row.data_grain)) {
+    const intervalLabel = row.data_grain === "AGENT_OCCUPANCY_30_MINUTE"
+      ? "30-minute"
+      : "15-minute";
     if (!isValidDate(row.production_date)) {
-      errors.push(makeIssue("production_date", "INVALID_DATE", row.production_date, "production_date must be a valid source date for 15-minute Occupancy rows."));
+      errors.push(makeIssue("production_date", "INVALID_DATE", row.production_date, `production_date must be a valid source date for ${intervalLabel} Occupancy rows.`));
     }
     if (isBlank(row.interval_start_utc)) {
-      errors.push(makeIssue("interval_start_utc", "MISSING_REQUIRED_VALUE", row.interval_start_utc, "interval_start_utc is required for 15-minute Occupancy rows."));
+      errors.push(makeIssue("interval_start_utc", "MISSING_REQUIRED_VALUE", row.interval_start_utc, `interval_start_utc is required for ${intervalLabel} Occupancy rows.`));
     }
     if (isBlank(row.source_timezone)) {
-      errors.push(makeIssue("source_timezone", "MISSING_REQUIRED_VALUE", row.source_timezone, "source_timezone is required for 15-minute Occupancy rows."));
+      errors.push(makeIssue("source_timezone", "MISSING_REQUIRED_VALUE", row.source_timezone, `source_timezone is required for ${intervalLabel} Occupancy rows.`));
     }
   }
 

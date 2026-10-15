@@ -7,6 +7,7 @@ import {
   getSkillStatisticsByBatchId,
 } from "../repositories/usVisa/usVisaSkillStatisticsRepository.js";
 import { getWfmCallKpiDashboard } from "../services/kpi/callKpiQueryService.js";
+import { chooseCallKpiDataGrain } from "../services/kpi/callKpiService.js";
 import {
   getDistinctSkillsByCountry,
   getCallsReportData,
@@ -129,6 +130,41 @@ function getWeekLabel(dateStr) {
   return `Week ${weekNum}`;
 }
 
+function selectFinestSkillRows(rows = []) {
+  const grainsByKey = new Map();
+
+  for (const row of rows) {
+    const key = [
+      String(row.sourceSystem || "").trim().toUpperCase(),
+      String(row.productionDate || "").slice(0, 10),
+      String(row.sourceSkillName || "").trim().toLowerCase(),
+    ].join("|");
+
+    if (!grainsByKey.has(key)) {
+      grainsByKey.set(key, new Set());
+    }
+
+    grainsByKey.get(key).add(row.dataGrain);
+  }
+
+  const preferredByKey = new Map(
+    [...grainsByKey.entries()].map(([key, grains]) => [
+      key,
+      chooseCallKpiDataGrain([...grains]),
+    ]),
+  );
+
+  return rows.filter((row) => {
+    const key = [
+      String(row.sourceSystem || "").trim().toUpperCase(),
+      String(row.productionDate || "").slice(0, 10),
+      String(row.sourceSkillName || "").trim().toLowerCase(),
+    ].join("|");
+
+    return row.dataGrain === preferredByKey.get(key);
+  });
+}
+
 export async function getWfmImportedFiles(req, res) {
   try {
     const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
@@ -186,18 +222,9 @@ export async function getWfmBatchReport(req, res) {
       });
     }
 
-    // Use the canonical source grain so historical multi-grain batches are not double counted.
-    const sourceSystem = String(batch.sourceSystem || "").trim().toUpperCase();
-    const primaryGrain =
-      sourceSystem === "FUSECOM"
-        ? "SKILL_15_MINUTE"
-        : sourceSystem === "HERODASH"
-          ? "SKILL_DAY"
-          : null;
-
-    const primaryRows = primaryGrain
-      ? rows.filter((r) => r.dataGrain === primaryGrain)
-      : rows;
+    // Historical batches may contain the same business activity at multiple
+    // grains. Keep only the finest available grain per source/date/skill.
+    const primaryRows = selectFinestSkillRows(rows);
 
     // Aggregate summary metrics
     let totalCallsOffered = 0;

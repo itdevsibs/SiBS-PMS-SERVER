@@ -3,6 +3,7 @@ import { processAgentInteractionWorkbook } from "./agentInteractions/agentIntera
 import { processAgentOccupancyWorkbook } from "./agentOccupancy/agentOccupancyImportProcessor.js";
 import { processEmailRawDataWorkbook } from "./emailRawData/emailRawDataImportProcessor.js";
 import { processQualityAuditWorkbook } from "./qualityAudit/qualityAuditImportProcessor.js";
+import { processSkillStatisticsWorkbook } from "./skillStatistics/skillStatisticsImportProcessor.js";
 
 const XLSX_AND_CSV_EXTENSIONS = Object.freeze([".xlsx", ".csv"]);
 
@@ -15,6 +16,13 @@ export const US_VISA_IMPORT_REPORT_TYPES = Object.freeze({
 });
 
 const PROCESSORS_BY_REPORT_TYPE = Object.freeze({
+  [US_VISA_IMPORT_REPORT_TYPES.SKILL_STATISTICS]: {
+    domain: "SKILL_STATISTICS",
+    fileType: "XLSX_OR_CSV",
+    supportedExtensions: XLSX_AND_CSV_EXTENSIONS,
+    processWorkbook: processSkillStatisticsWorkbook,
+    processCsv: null,
+  },
   [US_VISA_IMPORT_REPORT_TYPES.AGENT_LEVEL]: {
     domain: "AGENT_INTERACTION",
     fileType: "XLSX_OR_CSV",
@@ -48,11 +56,8 @@ const PROCESSORS_BY_REPORT_TYPE = Object.freeze({
 export function getUsVisaImportProcessor(profile = {}) {
   const reportType = String(profile.reportType || "").trim().toUpperCase();
 
-  return PROCESSORS_BY_REPORT_TYPE[reportType] || {
-    domain: "SKILL_STATISTICS",
-    fileType: "XLSX_OR_CSV",
-    supportedExtensions: XLSX_AND_CSV_EXTENSIONS,
-    processWorkbook: null,
-    processCsv: null,
-  };
+  return (
+    PROCESSORS_BY_REPORT_TYPE[reportType] ||
+    PROCESSORS_BY_REPORT_TYPE[US_VISA_IMPORT_REPORT_TYPES.SKILL_STATISTICS]
+  );
 }

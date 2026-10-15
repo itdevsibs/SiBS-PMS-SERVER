@@ -9,6 +9,37 @@ import {
 
 const KPI_BATCH_STATUSES = ["COMPLETED", "COMPLETED_WITH_ERRORS"];
 
+function appendFinestAvailableGrainFilter({
+  conditions,
+  values,
+  rowAlias = "s",
+}) {
+  const grainRankSql = (alias) => `
+    CASE ${alias}.data_grain
+      WHEN 'SKILL_15_MINUTE' THEN 1
+      WHEN 'SKILL_30_MINUTE' THEN 2
+      WHEN 'SKILL_DAY' THEN 3
+      WHEN 'SKILL_REPORT_SUMMARY' THEN 4
+      ELSE 99
+    END
+  `;
+
+  conditions.push(`
+    NOT EXISTS (
+      SELECT 1
+      FROM ${pmsTables.usVisaRawSkillStatistics} finer
+      INNER JOIN ${pmsTables.usVisaImportBatches} finer_batch
+        ON finer_batch.id = finer.batch_id
+      WHERE finer.source_system = ${rowAlias}.source_system
+        AND finer.production_date = ${rowAlias}.production_date
+        AND COALESCE(TRIM(finer.source_skill_name), '') = COALESCE(TRIM(${rowAlias}.source_skill_name), '')
+        AND finer_batch.status IN (${KPI_BATCH_STATUSES.map(() => "?").join(", ")})
+        AND ${grainRankSql("finer")} < ${grainRankSql(rowAlias)}
+    )
+  `);
+  values.push(...KPI_BATCH_STATUSES);
+}
+
 function appendTaskOrderCountryFilter({
   conditions,
   values,
@@ -56,7 +87,7 @@ function appendCountryFilter({
   if (normalizedSourceSystem === "HERODASH") {
     conditions.push(`LOWER(TRIM(s.country_region)) IN (${placeholders})`);
     values.push(...normalizedCountries);
-  } else if (normalizedSourceSystem === "FUSECOM") {
+  } else if (normalizedSourceSystem === "FUSECOM" || normalizedSourceSystem === "FUSENET") {
     conditions.push(
       `(LOWER(TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX(s.source_skill_name, ' - ', 1), '::', -1))) IN (${placeholders}) OR LOWER(TRIM(s.country_region)) IN (${placeholders}))`,
     );
@@ -434,6 +465,16 @@ export async function getDailyCallKpiRows({
     dataGrain,
   });
 
+  if (
+    !dataGrain &&
+    (!sourceGrainMap || Object.keys(sourceGrainMap).length === 0)
+  ) {
+    appendFinestAvailableGrainFilter({
+      conditions,
+      values,
+    });
+  }
+
   appendTaskOrderCountryFilter({
     conditions,
     values,
@@ -708,6 +749,11 @@ export async function getCallsReportData({
       country,
     });
   }
+
+  appendFinestAvailableGrainFilter({
+    conditions,
+    values,
+  });
 
   const [rawRows] = await pmsDb.query(
     `

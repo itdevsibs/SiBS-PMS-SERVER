@@ -10,15 +10,31 @@ import {
 
 export const FUSECOM_SOURCE_SYSTEM = "FUSECOM";
 export const FUSECOM_15_MINUTE_SHEET_NAME = "15 Minutes Statistics";
+export const FUSECOM_15_MINUTE_SHEET_NAMES = [
+  "15 Minutes Statistics",
+  "15 Minutes",
+  "15 Minute Statistics",
+  "15 Minute",
+];
+export const FUSECOM_30_MINUTE_SHEET_NAMES = [
+  "Half Hourly Statistics",
+  "Half Hourly",
+  "30 Minutes Statistics",
+  "30 Minutes",
+];
+export const FUSECOM_DAILY_SHEET_NAMES = [
+  "Per Day",
+  "Per Day Statistics",
+  "Daily",
+];
 export const FUSECOM_DATA_GRAIN = "SKILL_15_MINUTE";
+export const FUSECOM_30_MINUTE_DATA_GRAIN = "SKILL_30_MINUTE";
+export const FUSECOM_DAILY_DATA_GRAIN = "SKILL_DAY";
 export const FUSECOM_INTERVAL_MINUTES = 15;
-
-export const FUSECOM_SHEET_GRAINS = {
-  [FUSECOM_15_MINUTE_SHEET_NAME]: FUSECOM_DATA_GRAIN,
-};
 
 const INTRADAY_INTERVAL_MINUTES = {
   [FUSECOM_DATA_GRAIN]: FUSECOM_INTERVAL_MINUTES,
+  [FUSECOM_30_MINUTE_DATA_GRAIN]: 30,
 };
 
 const FIELD_MAPPINGS = [
@@ -188,6 +204,13 @@ function normalizeHeader(header) {
     .toLowerCase();
 }
 
+function normalizeSheetName(sheetName) {
+  return String(sheetName || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
 function toStringResult(value) {
   if (value === null || value === undefined || String(value).trim() === "") {
     return {
@@ -302,7 +325,9 @@ function mapDateFields(sourceLookup, dataGrain, mappedRow, conversionErrors) {
   const isIntraday = Boolean(INTRADAY_INTERVAL_MINUTES[dataGrain]);
   const dateEntry = getSourceEntry(
     sourceLookup,
-    isIntraday ? ["Date-Time", "Date/Time"] : ["Date"],
+    isIntraday
+      ? ["Date/Time", "Date-Time", "Date Time", "Datetime"]
+      : ["Date"],
   );
   const dateResult = isIntraday
     ? toDateTimeValue(dateEntry.value)
@@ -348,12 +373,38 @@ function mapDateFields(sourceLookup, dataGrain, mappedRow, conversionErrors) {
 }
 
 export function getFusecomDataGrain(sheetName) {
-  return FUSECOM_SHEET_GRAINS[sheetName] || null;
+  const normalizedSheetName = normalizeSheetName(sheetName);
+
+  if (
+    FUSECOM_15_MINUTE_SHEET_NAMES.some(
+      (candidate) => normalizeSheetName(candidate) === normalizedSheetName,
+    )
+  ) {
+    return FUSECOM_DATA_GRAIN;
+  }
+
+  if (
+    FUSECOM_30_MINUTE_SHEET_NAMES.some(
+      (candidate) => normalizeSheetName(candidate) === normalizedSheetName,
+    )
+  ) {
+    return FUSECOM_30_MINUTE_DATA_GRAIN;
+  }
+
+  if (
+    FUSECOM_DAILY_SHEET_NAMES.some(
+      (candidate) => normalizeSheetName(candidate) === normalizedSheetName,
+    )
+  ) {
+    return FUSECOM_DAILY_DATA_GRAIN;
+  }
+
+  return null;
 }
 
 export function isFusecom15MinuteSheet(sheet = {}) {
   return (
-    sheet.sheetName === FUSECOM_15_MINUTE_SHEET_NAME &&
+    getFusecomDataGrain(sheet.sheetName) === FUSECOM_DATA_GRAIN &&
     sheet.dataGrain === FUSECOM_DATA_GRAIN
   );
 }
@@ -366,9 +417,18 @@ export function getFusecomFieldMappings() {
 }
 
 export function mapFusecomSkillStatisticsRow(sourceRow = {}, options = {}) {
-  const dataGrain = FUSECOM_DATA_GRAIN;
+  const dataGrain =
+    options.dataGrain ||
+    getFusecomDataGrain(options.sheetName) ||
+    (Object.keys(sourceRow).some((header) =>
+      ["date/time", "date-time", "date time", "datetime"].includes(
+        normalizeHeader(header),
+      ),
+    )
+      ? FUSECOM_DATA_GRAIN
+      : FUSECOM_DAILY_DATA_GRAIN);
   const mappedRow = {
-    source_system: FUSECOM_SOURCE_SYSTEM,
+    source_system: options.sourceSystem || FUSECOM_SOURCE_SYSTEM,
     source_sheet: options.sheetName || FUSECOM_15_MINUTE_SHEET_NAME,
     data_grain: dataGrain,
   };

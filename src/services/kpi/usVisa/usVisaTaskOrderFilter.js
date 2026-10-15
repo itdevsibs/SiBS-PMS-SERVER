@@ -234,7 +234,7 @@ export function buildUsVisaTaskOrderCountrySqlFilter(
     };
   }
 
-  if (normalizedSourceSystem === "FUSECOM") {
+  if (normalizedSourceSystem === "FUSECOM" || normalizedSourceSystem === "FUSENET") {
     return {
       condition: `LOWER(TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX(${tableAlias}.source_skill_name, ' - ', 1), '::', -1))) IN (${placeholders})`,
       values: normalizedCountries,
