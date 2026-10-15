@@ -3,10 +3,16 @@ import {
   getWorksheetNames,
   readHeaderRow,
 } from "../shared/workbookReaderService.js";
+import {
+  FUSECOM_SKILL_STATISTICS_SHEET_RULES,
+  FUSENET_SKILL_STATISTICS_SHEET_RULES,
+  HERODASH_SKILL_STATISTICS_HEADERS,
+} from "./skillStatistics/skillStatisticsWorkbookRules.js";
 
 export const IMPORT_PROFILE_CODES = {
   HERO_SKILL_STATISTICS_INBOUND: "HERO_SKILL_STATISTICS_INBOUND",
   FUSECOM_SKILL_STATISTICS_INBOUND: "FUSECOM_SKILL_STATISTICS_INBOUND",
+  FUSENET_SKILL_STATISTICS_INBOUND: "FUSENET_SKILL_STATISTICS_INBOUND",
   FUSECOM_AGENT_LEVEL: "FUSECOM_AGENT_LEVEL",
   FUSENET_AGENT_LEVEL: "FUSENET_AGENT_LEVEL",
   HERODASH_AGENT_LEVEL: "HERODASH_AGENT_LEVEL",
@@ -23,84 +29,6 @@ export const WORKBOOK_VALIDATION_ERROR_CODES = {
   MISSING_REQUIRED_COLUMN: "MISSING_REQUIRED_COLUMN",
   UNKNOWN_COLUMN: "UNKNOWN_COLUMN",
 };
-
-const HERODASH_SKILL_STATISTICS_HEADERS = [
-  "Date",
-  "Country/Region",
-  "Skill",
-  "Total calls offered",
-  "Total calls in IVR",
-  "Total handled calls",
-  "Handled calls <= SLT",
-  "Handled calls > SLT",
-  "SL in %",
-  "Total IVR time",
-  "AVG IVR time",
-  "ASA",
-  "Queue time (sec)",
-  "Total abandoned calls",
-  "Abandoned calls <= SLT",
-  "Abandoned calls > SLT",
-  "% Abandoned rate",
-  "AVG handle time",
-  "Abandoned calls AVG time",
-  "Total talk time",
-  "AVG talk time",
-  "Calls on hold",
-  "Total call time",
-  "AVG hold time",
-  "Total warp-up time",
-  "AVG warp-up time",
-  "Total hold time",
-  "% Reachability",
-];
-
-const FUSECOM_DAILY_SKILL_STATISTICS_HEADERS = [
-  "Date",
-  "Skill Group Name",
-  "Skill Name",
-  "Total Calls IVR",
-  "Total Calls Offered",
-  "Failed Calls",
-  "Net Calls Offered",
-  "Total Handled Calls",
-  "Handled Calls <= SLT",
-  "Handled Calls > SLT",
-  "Short Calls",
-  "Queue Time (sec)",
-  "Abandoned Calls AVG Time",
-  "Total Abandoned Calls",
-  "Net Abandoned Calls",
-  "Short Abandoned Calls",
-  "% Abandoned Rate",
-  "% Service Level non-DIBP",
-  "% Service Level DIBP",
-  "AVG Handle Time",
-  "Total Call Time",
-  "Total Talk Time",
-  "Total Hold Time",
-  "Total After Call Time",
-  "AVG Talk Time",
-  "AVG Hold Time",
-  "AVG After Call Time",
-  "Abandoned Calls <= SLT in Time",
-  "Abandoned Calls > SLT in Time",
-  "% Reachability",
-  "Calls on Hold",
-];
-
-const FUSECOM_INTRADAY_SKILL_STATISTICS_HEADERS = [
-  "Date/Time",
-  ...FUSECOM_DAILY_SKILL_STATISTICS_HEADERS.filter(
-    (header) => header !== "Date",
-  ),
-];
-
-const FUSECOM_IGNORED_HEADERS = [
-  "Record Number",
-  "Hold on Held Calls",
-  "VCH AVG time (sec)",
-];
 
 const COMMON_AGENT_LEVEL_IGNORED_HEADERS = [
   "Record Number",
@@ -193,6 +121,7 @@ const HERODASH_AGENT_LEVEL_HEADERS = [
 
 const COMMON_AGENT_OCCUPANCY_HEADERS = [
   "Record Number",
+  "Date",
   "Date/Time",
   "Agent Name",
   "Agent Login",
@@ -240,11 +169,61 @@ const COMMON_AGENT_OCCUPANCY_HEADERS = [
   "In a call",
 ];
 
-const FUSE_AGENT_OCCUPANCY_REQUIRED_HEADERS = [
+const FUSE_AGENT_OCCUPANCY_INTRADAY_REQUIRED_HEADERS = [
   "Date/Time",
   ["Agent Name", "Agent name", "Agent"],
   "Logged Time",
   "Productive Login",
+];
+
+const FUSE_AGENT_OCCUPANCY_DAILY_REQUIRED_HEADERS = [
+  "Date",
+  ["Agent Name", "Agent name", "Agent"],
+  "Logged Time",
+  "Productive Login",
+];
+
+const FUSENET_AGENT_OCCUPANCY_SHEET_RULES = [
+  {
+    sheetName: "15 Minutes",
+    sheetNameCandidates: [
+      "15 Minutes",
+      "15 Minutes Statistics",
+      "15 Minute",
+      "15 Minute Statistics",
+    ],
+    dataGrain: "AGENT_OCCUPANCY_15_MINUTE",
+    headerRowNumber: 9,
+    headerRowCandidates: [9, 1],
+    requiredHeaders: FUSE_AGENT_OCCUPANCY_INTRADAY_REQUIRED_HEADERS,
+    ignoredHeaders: COMMON_AGENT_OCCUPANCY_HEADERS,
+    disableHeaderFallbackForXlsx: true,
+  },
+  {
+    sheetName: "Half Hourly",
+    sheetNameCandidates: [
+      "Half Hourly",
+      "Half Hourly Statistics",
+      "30 Minutes",
+      "30 Minutes Statistics",
+    ],
+    dataGrain: "AGENT_OCCUPANCY_30_MINUTE",
+    headerRowNumber: 9,
+    headerRowCandidates: [9, 1],
+    requiredHeaders: FUSE_AGENT_OCCUPANCY_INTRADAY_REQUIRED_HEADERS,
+    ignoredHeaders: COMMON_AGENT_OCCUPANCY_HEADERS,
+    disableHeaderFallbackForXlsx: true,
+  },
+  {
+    sheetName: "Per Day",
+    sheetNameCandidates: ["Per Day", "Per Day Statistics", "Daily"],
+    dataGrain: "AGENT_OCCUPANCY_DAY",
+    headerRowNumber: 9,
+    headerRowCandidates: [9, 1],
+    requiredHeaders: FUSE_AGENT_OCCUPANCY_DAILY_REQUIRED_HEADERS,
+    ignoredHeaders: COMMON_AGENT_OCCUPANCY_HEADERS,
+    disableHeaderFallbackForXlsx: true,
+  },
 ];
 
 const HERODASH_AGENT_OCCUPANCY_REQUIRED_HEADERS = [
@@ -346,22 +325,16 @@ export const WORKBOOK_PROFILE_DEFINITIONS = {
     profileCode:
       IMPORT_PROFILE_CODES.FUSECOM_SKILL_STATISTICS_INBOUND,
     sourceSystem: "FUSECOM",
-    requiredSheets: [
-      {
-        sheetName: "15 Minutes Statistics",
-        dataGrain: "SKILL_15_MINUTE",
-        headerRowNumber: 1,
-        headerRowCandidates: [9],
-        requiredHeaders: FUSECOM_INTRADAY_SKILL_STATISTICS_HEADERS,
+    requiredSheets: FUSECOM_SKILL_STATISTICS_SHEET_RULES,
+    selectHighestPriorityNonEmptySheet: true,
+  },
 
-        // These columns exist in the official Fusecom workbook but are
-        // intentionally not used by PMS KPI calculations.
-        //
-        // They remain available in the original raw row_json, but they
-        // must not create UNKNOWN_COLUMN warnings/import-error records.
-        ignoredHeaders: FUSECOM_IGNORED_HEADERS,
-      },
-    ],
+  [IMPORT_PROFILE_CODES.FUSENET_SKILL_STATISTICS_INBOUND]: {
+    profileCode:
+      IMPORT_PROFILE_CODES.FUSENET_SKILL_STATISTICS_INBOUND,
+    sourceSystem: "FUSENET",
+    requiredSheets: FUSENET_SKILL_STATISTICS_SHEET_RULES,
+    selectHighestPriorityNonEmptySheet: true,
   },
 
   [IMPORT_PROFILE_CODES.FUSECOM_AGENT_LEVEL]: {
@@ -421,7 +394,7 @@ export const WORKBOOK_PROFILE_DEFINITIONS = {
         dataGrain: "AGENT_OCCUPANCY_15_MINUTE",
         headerRowNumber: 9,
         headerRowCandidates: [9, 1],
-        requiredHeaders: FUSE_AGENT_OCCUPANCY_REQUIRED_HEADERS,
+        requiredHeaders: FUSE_AGENT_OCCUPANCY_INTRADAY_REQUIRED_HEADERS,
         ignoredHeaders: COMMON_AGENT_OCCUPANCY_HEADERS,
       },
     ],
@@ -430,16 +403,10 @@ export const WORKBOOK_PROFILE_DEFINITIONS = {
   [IMPORT_PROFILE_CODES.FUSENET_AGENT_OCCUPANCY]: {
     profileCode: IMPORT_PROFILE_CODES.FUSENET_AGENT_OCCUPANCY,
     sourceSystem: "FUSENET",
-    requiredSheets: [
-      {
-        sheetName: "15 Minutes",
-        dataGrain: "AGENT_OCCUPANCY_15_MINUTE",
-        headerRowNumber: 9,
-        headerRowCandidates: [9, 1],
-        requiredHeaders: FUSE_AGENT_OCCUPANCY_REQUIRED_HEADERS,
-        ignoredHeaders: COMMON_AGENT_OCCUPANCY_HEADERS,
-      },
-    ],
+    requiredSheets: FUSENET_AGENT_OCCUPANCY_SHEET_RULES,
+    selectHighestPriorityNonEmptySheet: true,
+    noSupportedDataMessage:
+      "No supported FuseNet Agent Occupancy data was found. Expected a non-empty 15 Minutes, Half Hourly, or Per Day dataset.",
   },
 
   [IMPORT_PROFILE_CODES.HERODASH_AGENT_OCCUPANCY]: {
@@ -612,6 +579,10 @@ function getSheetNameForRule(workbook, rule) {
 
   const isCsvWorkbook = workbook?.__sourceFileType === "CSV";
 
+  if (!isCsvWorkbook && rule.disableHeaderFallbackForXlsx) {
+    return null;
+  }
+
   if (rule.sheetName && !rule.sheetNameCandidates && !isCsvWorkbook) {
     return null;
   }
@@ -647,6 +618,104 @@ function getSheetNameForRule(workbook, rule) {
   }
 
   return workbook.worksheets[0]?.name || null;
+}
+
+function worksheetHasDataRows(workbook, sheetName, headerRowNumber) {
+  const worksheet = workbook.getWorksheet(sheetName);
+  if (!worksheet) return false;
+
+  for (
+    let rowNumber = Number(headerRowNumber || 1) + 1;
+    rowNumber <= worksheet.rowCount;
+    rowNumber += 1
+  ) {
+    const row = worksheet.getRow(rowNumber);
+    let hasValue = false;
+
+    row.eachCell({ includeEmpty: false }, (cell) => {
+      const value = cell?.value;
+
+      if (
+        value !== null &&
+        value !== undefined &&
+        String(
+          value && typeof value === "object" && "text" in value
+            ? value.text
+            : value,
+        ).trim() !== ""
+      ) {
+        hasValue = true;
+      }
+    });
+
+    if (hasValue) return true;
+  }
+
+  return false;
+}
+
+function validateHighestPriorityNonEmptySheet(workbook, rules = [], options = {}) {
+  for (const rule of rules) {
+    const sheetName = getSheetNameForRule(workbook, rule);
+
+    if (!sheetName || !workbook.getWorksheet(sheetName)) {
+      continue;
+    }
+
+    const headerRowNumber = findBestHeaderRowNumber(
+      workbook,
+      sheetName,
+      rule,
+    );
+
+    if (!worksheetHasDataRows(workbook, sheetName, headerRowNumber)) {
+      continue;
+    }
+
+    const validation = validateSheetHeaders(workbook, rule);
+
+    if (workbook?.__sourceFileType === "CSV") {
+      const selectorHeader = Array.isArray(rule.requiredHeaders?.[0])
+        ? rule.requiredHeaders[0][0]
+        : rule.requiredHeaders?.[0];
+      const missingSelectorHeader = validation.errors.some(
+        (error) =>
+          error.errorCode ===
+            WORKBOOK_VALIDATION_ERROR_CODES.MISSING_REQUIRED_COLUMN &&
+          normalizeHeader(error.columnName) === normalizeHeader(selectorHeader),
+      );
+
+      // A CSV has no worksheet name. Use Date/Time to identify interval data
+      // and Date to identify daily data before applying the full validation.
+      if (missingSelectorHeader) {
+        continue;
+      }
+    }
+
+    // The finest available non-empty grain is authoritative. If it is
+    // malformed, reject the upload instead of falling back to a coarser
+    // sheet, because doing so could silently double-count overlapping data.
+    return validation;
+  }
+
+  const error = createValidationIssue({
+    severity: "FATAL",
+    code: WORKBOOK_VALIDATION_ERROR_CODES.MISSING_REQUIRED_SHEET,
+    message:
+      options.noSupportedDataMessage ||
+      "No supported Skill Statistics data was found. Expected a non-empty 15 Minutes, Half Hourly, or Per Day dataset.",
+  });
+
+  return {
+    sheetName: null,
+    dataGrain: null,
+    headerRowNumber: null,
+    headers: [],
+    requiredHeaders: [],
+    errors: [error],
+    warnings: [],
+    isValid: false,
+  };
 }
 
 function validateSheetHeaders(workbook, rule) {
@@ -809,10 +878,17 @@ export function validateWorkbookProfile(
     };
   }
 
-  const sheets =
-    profileDefinition.requiredSheets.map((rule) =>
-      validateSheetHeaders(workbook, rule),
-    );
+  const sheets = profileDefinition.selectHighestPriorityNonEmptySheet
+    ? [
+        validateHighestPriorityNonEmptySheet(
+          workbook,
+          profileDefinition.requiredSheets,
+          { noSupportedDataMessage: profileDefinition.noSupportedDataMessage },
+        ),
+      ]
+    : profileDefinition.requiredSheets.map((rule) =>
+        validateSheetHeaders(workbook, rule),
+      );
 
   const errors = sheets.flatMap(
     (sheet) => sheet.errors,

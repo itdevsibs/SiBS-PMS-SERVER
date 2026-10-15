@@ -153,7 +153,7 @@ export function getFatalMessage(result = {}) {
     result.profile?.profileName ||
     "";
   const isHerodash = /hero/i.test(profileCode);
-  const isFusecom = /fuse/i.test(profileCode);
+  const isFusecom = /fusecom/i.test(profileCode);
   const isFusenet = /fusenet/i.test(profileCode);
   const isOccupancy = /occupancy/i.test(profileCode);
   const isAgentLevel = /agent/i.test(profileCode) && !isOccupancy;
@@ -211,6 +211,9 @@ export function getFatalMessage(result = {}) {
       }
       if (isHerodash) {
         return "Only HeroDash Skill Statistics Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file is missing required HeroDash columns.";
+      }
+      if (isFusenet) {
+        return "Only FuseNet Skill Statistics Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file is missing required FuseNet columns.";
       }
       if (isFusecom) {
         return "Only Fusecom Skill Statistics Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file is missing required Fusecom columns.";

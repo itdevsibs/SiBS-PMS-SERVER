@@ -179,6 +179,7 @@ export function prepareAgentOccupancyRow({
   taskOrderId,
   fileHash,
   sourceTimezone,
+  dataGrain,
   identityResolver,
   scopeIndex,
   employeeMetadataIndex,
@@ -188,6 +189,7 @@ export function prepareAgentOccupancyRow({
     taskOrderId,
     fileHash,
     sourceTimezone,
+    dataGrain,
   });
   // Occupancy Personal ID and Agent Login are retained as source/audit data
   // only. They are not SiBS employee identifiers. Resolve the employee using
@@ -252,6 +254,7 @@ async function processChunk({
   taskOrderId,
   fileHash,
   sourceTimezone,
+  dataGrain,
   counters,
   seenRows,
   identityResolver,
@@ -265,6 +268,7 @@ async function processChunk({
     taskOrderId,
     fileHash,
     sourceTimezone,
+    dataGrain,
     identityResolver,
     scopeIndex,
     employeeMetadataIndex,
@@ -428,11 +432,13 @@ export async function processAgentOccupancyWorkbook({
   const safeChunkSize = Number.isInteger(Number(chunkSize)) && Number(chunkSize) > 0
     ? Number(chunkSize)
     : 1000;
+  const dataGrain = sheet.dataGrain || null;
   const mappingOptions = {
     profileCode,
     taskOrderId,
     fileHash,
     sourceTimezone,
+    dataGrain,
   };
   const identitiesByKey = new Map();
   const worksheet = workbook.getWorksheet(sheetName);
@@ -517,6 +523,7 @@ export async function processAgentOccupancyWorkbook({
         taskOrderId,
         fileHash,
         sourceTimezone,
+        dataGrain,
         counters,
         seenRows,
         identityResolver,

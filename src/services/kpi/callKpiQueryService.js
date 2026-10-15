@@ -20,6 +20,7 @@ const SUPPORTED_SOURCE_SYSTEMS = new Set([
   "US_VISA",
   "US VISA",
   "FUSECOM",
+  "FUSENET",
   "HERODASH",
 ]);
 const SUPPORTED_GRAINS = new Set([
@@ -152,16 +153,22 @@ export async function getWfmCallKpiDashboard(query = {}) {
   const availableGrains = [...allAvailableGrains];
 
   const sourceGrainMap = {};
-  for (const [src, grains] of Object.entries(availableGrainsBySource)) {
-    const chosen = requestedGrain && grains.includes(requestedGrain)
-      ? requestedGrain
-      : chooseCallKpiDataGrain(grains);
-    if (chosen) {
-      sourceGrainMap[src] = chosen;
+
+  // Only force one grain when the caller explicitly requests it. In AUTO
+  // mode the repository resolves the finest available grain per
+  // source/date/skill, allowing daily fallback on dates where no interval
+  // data exists without double-counting overlapping daily + interval rows.
+  if (requestedGrain) {
+    for (const [src, grains] of Object.entries(availableGrainsBySource)) {
+      if (grains.includes(requestedGrain)) {
+        sourceGrainMap[src] = requestedGrain;
+      }
     }
   }
 
-  const hasAnyGrain = Object.keys(sourceGrainMap).length > 0;
+  const hasAnyGrain = requestedGrain
+    ? Object.keys(sourceGrainMap).length > 0
+    : availableGrains.length > 0;
   const primaryDataGrain = requestedGrain && availableGrains.includes(requestedGrain)
     ? requestedGrain
     : chooseCallKpiDataGrain(availableGrains);
@@ -187,8 +194,8 @@ export async function getWfmCallKpiDashboard(query = {}) {
 
   const bounds = await getCallKpiDateBounds({
     sourceSystem,
-    sourceGrainMap,
-    dataGrain: primaryDataGrain,
+    sourceGrainMap: requestedGrain ? sourceGrainMap : null,
+    dataGrain: requestedGrain ? primaryDataGrain : null,
     taskOrderCountries,
     country,
     skill,
@@ -241,8 +248,8 @@ export async function getWfmCallKpiDashboard(query = {}) {
 
   const rows = await getDailyCallKpiRows({
     sourceSystem,
-    sourceGrainMap,
-    dataGrain: primaryDataGrain,
+    sourceGrainMap: requestedGrain ? sourceGrainMap : null,
+    dataGrain: requestedGrain ? primaryDataGrain : null,
     dateFrom,
     dateTo,
     taskOrderCountries,

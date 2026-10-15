@@ -1,4 +1,4 @@
-// Builds deterministic row identity and content hashes for US VISA imports.
+// Builds deterministic identity and content hashes for US VISA Skill Statistics imports.
 import crypto from "crypto";
 
 const CONTENT_HASH_FIELDS = [

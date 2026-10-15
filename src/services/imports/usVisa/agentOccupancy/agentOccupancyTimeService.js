@@ -147,7 +147,7 @@ export function normalizeOccupancyIntervalStart(rawDateTime, sourceTimezone) {
     return failure(
       "INVALID_SOURCE_TIMEZONE",
       sourceTimezone,
-      "A valid source timezone is required for 15-minute Occupancy rows.",
+      "A valid source timezone is required for interval Occupancy rows.",
     );
   }
 

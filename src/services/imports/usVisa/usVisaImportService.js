@@ -12,42 +12,10 @@ import {
 import {
   insertImportErrors,
 } from "../../../repositories/usVisa/usVisaImportErrorRepository.js";
-import {
-  getRawImportRowsByBatchSheetRowNumbers,
-  insertRawImportRows,
-  updateRawImportValidationStatuses,
-} from "../../../repositories/usVisa/usVisaRawImportRepository.js";
-import {
-  findSkillStatisticsByRowHashes,
-  insertSkillStatisticsRowsWithDuplicateProtection,
-} from "../../../repositories/usVisa/usVisaSkillStatisticsRepository.js";
 import { calculateFileSha256 } from "../shared/fileHashService.js";
 import {
-  FUSECOM_SOURCE_SYSTEM,
-  isFusecom15MinuteSheet,
-  mapFusecomSkillStatisticsRow,
-} from "./mappers/fusecomMapper.js";
-import {
-  HERODASH_SOURCE_SYSTEM,
-  mapHeroDashSkillStatisticsRow,
-} from "./mappers/heroDashMapper.js";
-import {
-  IMPORT_ROW_CLASSIFICATIONS,
-  classifyPreparedChunkRows,
-  reconcileClassificationsWithStoredRows,
-} from "./importChunkClassifier.js";
-import {
-  createContentHash,
-  createRowHash,
-} from "../shared/rowHashService.js";
-import {
-  validateCanonicalSkillStatisticsRow,
-} from "../shared/rowValidator.js";
-import {
   getWorksheetNames,
-  iterateWorksheetRowChunks,
   openWorkbook,
-  readHeaderRow,
   WorkbookReaderError,
 } from "../shared/workbookReaderService.js";
 import { toDateValue } from "../shared/valueConversionService.js";
@@ -256,418 +224,20 @@ function mapWorkbookIssueToImportError(issue, batchId) {
   };
 }
 
-function mapConversionErrorToImportError(error, context = {}) {
-  return {
-    batchId: context.batchId,
-    rawRowId: context.rawRowId,
-    sheetName: context.sheetName,
-    excelRowNumber: context.excelRowNumber,
-    severity: "ERROR",
-    errorType: "VALUE_CONVERSION",
-    errorCode: error.errorCode,
-    columnName: error.sourceHeader,
-    rawValue: error.rawValue,
-    errorMessage: error.message,
-    existingRowId: null,
-  };
-}
-
-function mapRowValidationErrorToImportError(error, context = {}) {
-  return {
-    batchId: context.batchId,
-    rawRowId: context.rawRowId,
-    sheetName: context.sheetName,
-    excelRowNumber: context.excelRowNumber,
-    severity: "ERROR",
-    errorType: error.errorType || "ROW_VALIDATION",
-    errorCode: error.errorCode,
-    columnName: error.columnName || error.fieldName,
-    rawValue: error.rawValue,
-    errorMessage: error.message,
-    existingRowId: null,
-  };
-}
-
-function createDuplicateImportError(row, context = {}) {
-  return {
-    batchId: context.batchId,
-    rawRowId: context.rawRowId,
-    sheetName: context.sheetName,
-    excelRowNumber: context.excelRowNumber,
-    severity: "DUPLICATE",
-    errorType: "DUPLICATE_CHECK",
-    errorCode: "DUPLICATE_ROW",
-    columnName: null,
-    rawValue: null,
-    errorMessage: "Duplicate row already exists.",
-    existingRowId: row.existingRowId || null,
-  };
-}
-
-function createConflictImportError(row, context = {}) {
-  return {
-    batchId: context.batchId,
-    rawRowId: context.rawRowId,
-    sheetName: context.sheetName,
-    excelRowNumber: context.excelRowNumber,
-    severity: "WARNING",
-    errorType: "DUPLICATE_CHECK",
-    errorCode: "ROW_CONFLICT",
-    columnName: null,
-    rawValue: null,
-    errorMessage:
-      "A row with the same business identity exists but has different canonical values.",
-    existingRowId: row.existingRowId || null,
-  };
-}
-
 function getProfileSourceSystem(profileCode) {
   if (profileCode === IMPORT_PROFILE_CODES.HERO_SKILL_STATISTICS_INBOUND) {
-    return HERODASH_SOURCE_SYSTEM;
+    return "HERODASH";
   }
 
   if (profileCode === IMPORT_PROFILE_CODES.FUSECOM_SKILL_STATISTICS_INBOUND) {
-    return FUSECOM_SOURCE_SYSTEM;
+    return "FUSECOM";
+  }
+
+  if (profileCode === IMPORT_PROFILE_CODES.FUSENET_SKILL_STATISTICS_INBOUND) {
+    return "FUSENET";
   }
 
   return null;
-}
-
-function mapSourceRow({ profileCode, sourceRow, sheet }) {
-  if (profileCode === IMPORT_PROFILE_CODES.HERO_SKILL_STATISTICS_INBOUND) {
-    const result = mapHeroDashSkillStatisticsRow(sourceRow);
-
-    result.mappedRow.source_sheet = sheet.sheetName;
-
-    return result;
-  }
-
-  if (profileCode === IMPORT_PROFILE_CODES.FUSECOM_SKILL_STATISTICS_INBOUND) {
-    return mapFusecomSkillStatisticsRow(sourceRow, {
-      sheetName: sheet.sheetName,
-      dataGrain: sheet.dataGrain,
-    });
-  }
-
-  throw new UsVisaImportError("Unsupported import profile.", {
-    code: "UNSUPPORTED_IMPORT_PROFILE",
-  });
-}
-
-function buildDomainRow({
-  mappedRow,
-  contentHash,
-  batch,
-  rawRowId,
-  profile,
-}) {
-  return {
-    ...mappedRow,
-    batchId: batch.id,
-    rawImportRowId: rawRowId,
-    importProfileId: profile.id,
-    rowContentHash: contentHash,
-  };
-}
-
-function prepareSourceRow({
-  profileCode,
-  sourceRow,
-  sheet,
-  reportDateFrom,
-  reportDateTo,
-}) {
-  const mapped = mapSourceRow({
-    profileCode,
-    sourceRow: sourceRow.rowJson,
-    sheet,
-  });
-  const rowHash = createRowHash(mapped.mappedRow, {
-    reportDateFrom,
-    reportDateTo,
-  });
-  const contentHash = createContentHash(mapped.mappedRow);
-  const validationResult = validateCanonicalSkillStatisticsRow(mapped.mappedRow);
-
-  return {
-    excelRowNumber: sourceRow.excelRowNumber,
-    mappedRow: mapped.mappedRow,
-    rowJson: mapped.rowJson,
-    conversionErrors: mapped.conversionErrors,
-    validationErrors: validationResult.errors,
-    rowHash,
-    contentHash,
-    isValid:
-      mapped.conversionErrors.length === 0 && validationResult.errors.length === 0,
-  };
-}
-
-function getRawStatusForClassification(classification) {
-  if (classification === IMPORT_ROW_CLASSIFICATIONS.INVALID) {
-    return "INVALID";
-  }
-
-  if (classification === IMPORT_ROW_CLASSIFICATIONS.DUPLICATE_ROW) {
-    return "DUPLICATE";
-  }
-
-  if (classification === IMPORT_ROW_CLASSIFICATIONS.ROW_CONFLICT) {
-    return "WARNING";
-  }
-
-  return "VALID";
-}
-
-function mapRowsByHash(rows = []) {
-  return new Map(
-    rows
-      .filter((row) => row?.rowHash)
-      .map((row) => [row.rowHash, row]),
-  );
-}
-
-function mapRawRowsByExcelNumber(rows = []) {
-  return new Map(
-    rows
-      .filter((row) => Number.isInteger(Number(row?.excelRowNumber)))
-      .map((row) => [Number(row.excelRowNumber), row]),
-  );
-}
-
-function createRowContext(batch, sheet, row, rawRow) {
-  return {
-    batchId: batch.id,
-    rawRowId: rawRow?.id || null,
-    sheetName: sheet.sheetName,
-    excelRowNumber: row.excelRowNumber,
-  };
-}
-
-function buildValidationImportErrors(row, context) {
-  return [
-    ...row.conversionErrors.map((error) =>
-      mapConversionErrorToImportError(error, context),
-    ),
-    ...row.validationErrors.map((error) =>
-      mapRowValidationErrorToImportError(error, context),
-    ),
-  ];
-}
-
-function updateCountersForRows(counters, rows = []) {
-  counters.totalRows += rows.length;
-
-  for (const row of rows) {
-    if (row.classification === IMPORT_ROW_CLASSIFICATIONS.NEW) {
-      counters.validRows += 1;
-      continue;
-    }
-
-    if (row.classification === IMPORT_ROW_CLASSIFICATIONS.INVALID) {
-      counters.invalidRows += 1;
-      continue;
-    }
-
-    if (row.classification === IMPORT_ROW_CLASSIFICATIONS.DUPLICATE_ROW) {
-      counters.duplicateRows += 1;
-      continue;
-    }
-
-    if (row.classification === IMPORT_ROW_CLASSIFICATIONS.ROW_CONFLICT) {
-      counters.warningRows += 1;
-    }
-  }
-}
-
-async function processRowChunk({
-  rowChunk,
-  batch,
-  profile,
-  profileCode,
-  sheet,
-  reportDateFrom,
-  reportDateTo,
-  counters,
-  seenRows,
-}) {
-  const preparedRows = rowChunk.map((sourceRow) =>
-    prepareSourceRow({
-      profileCode,
-      sourceRow,
-      sheet,
-      reportDateFrom,
-      reportDateTo,
-    }),
-  );
-  const validHashes = [
-    ...new Set(
-      preparedRows
-        .filter((row) => row.isValid)
-        .map((row) => row.rowHash),
-    ),
-  ];
-  const existingRows = await findSkillStatisticsByRowHashes(validHashes);
-  const existingByHash = mapRowsByHash(existingRows);
-  const classifiedRows = classifyPreparedChunkRows({
-    rows: preparedRows,
-    existingByHash,
-    seenRows,
-  });
-
-  await insertRawImportRows(
-    classifiedRows.map((row) => ({
-      batchId: batch.id,
-      sheetName: sheet.sheetName,
-      excelRowNumber: row.excelRowNumber,
-      dataGrain: sheet.dataGrain,
-      rowJson: row.rowJson,
-      rowHash: row.rowHash,
-      validationStatus: getRawStatusForClassification(row.classification),
-    })),
-  );
-
-  const rawRows = await getRawImportRowsByBatchSheetRowNumbers(
-    batch.id,
-    sheet.sheetName,
-    classifiedRows.map((row) => row.excelRowNumber),
-  );
-  const rawByExcelNumber = mapRawRowsByExcelNumber(rawRows);
-
-  if (rawByExcelNumber.size !== classifiedRows.length) {
-    throw new UsVisaImportError(
-      "Unable to resolve all raw staging rows after bulk insert.",
-      {
-        code: "RAW_ROW_LOOKUP_MISMATCH",
-      },
-    );
-  }
-
-  for (const row of classifiedRows) {
-    row.rawRowId = rawByExcelNumber.get(Number(row.excelRowNumber)).id;
-  }
-
-  const newRows = classifiedRows.filter(
-    (row) => row.classification === IMPORT_ROW_CLASSIFICATIONS.NEW,
-  );
-  const domainRows = newRows.map((row) => {
-    return buildDomainRow({
-      mappedRow: row.mappedRow,
-      contentHash: row.contentHash,
-      batch,
-      rawRowId: row.rawRowId,
-      profile,
-    });
-  });
-
-  if (domainRows.length) {
-    await insertSkillStatisticsRowsWithDuplicateProtection(domainRows);
-  }
-
-  const storedRows = newRows.length
-    ? await findSkillStatisticsByRowHashes(validHashes)
-    : existingRows;
-  const storedByHash = mapRowsByHash(storedRows);
-
-  for (const row of newRows) {
-    if (!storedByHash.has(row.rowHash)) {
-      throw new UsVisaImportError(
-        "Canonical skill-statistics row was not found after bulk insert.",
-        {
-          code: "CANONICAL_ROW_LOOKUP_MISMATCH",
-        },
-      );
-    }
-  }
-
-  const finalRows = reconcileClassificationsWithStoredRows({
-    rows: classifiedRows,
-    storedByHash,
-    batchId: batch.id,
-  });
-  const rawStatusUpdates = finalRows
-    .filter((row) => row.classification !== IMPORT_ROW_CLASSIFICATIONS.INVALID)
-    .map((row) => ({
-      rawRowId: row.rawRowId,
-      validationStatus:
-        row.classification === IMPORT_ROW_CLASSIFICATIONS.NEW
-          ? "PROCESSED"
-          : getRawStatusForClassification(row.classification),
-    }));
-
-  if (rawStatusUpdates.length) {
-    await updateRawImportValidationStatuses(rawStatusUpdates);
-  }
-
-  const importErrors = [];
-
-  for (const row of finalRows) {
-    const rawRow = rawByExcelNumber.get(Number(row.excelRowNumber));
-    const context = createRowContext(batch, sheet, row, rawRow);
-
-    if (row.classification === IMPORT_ROW_CLASSIFICATIONS.INVALID) {
-      importErrors.push(...buildValidationImportErrors(row, context));
-      continue;
-    }
-
-    if (
-      row.classification === IMPORT_ROW_CLASSIFICATIONS.DUPLICATE_ROW ||
-      row.classification === IMPORT_ROW_CLASSIFICATIONS.ROW_CONFLICT
-    ) {
-      const storedRow = storedByHash.get(row.rowHash);
-      row.existingRowId = row.existingRowId || storedRow?.id || null;
-
-      importErrors.push(
-        row.classification === IMPORT_ROW_CLASSIFICATIONS.DUPLICATE_ROW
-          ? createDuplicateImportError(row, context)
-          : createConflictImportError(row, context),
-      );
-    }
-  }
-
-  if (importErrors.length) {
-    await insertImportErrors(importErrors);
-  }
-
-  updateCountersForRows(counters, finalRows);
-}
-
-async function processSheet({
-  workbook,
-  batch,
-  profile,
-  profileCode,
-  sheet,
-  reportDateFrom,
-  reportDateTo,
-  counters,
-  seenRows,
-  onChunkProcessed,
-}) {
-  const headers = readHeaderRow(workbook, sheet.sheetName, sheet.headerRowNumber);
-
-  await iterateWorksheetRowChunks(
-    workbook,
-    sheet.sheetName,
-    {
-      headerRowNumber: sheet.headerRowNumber,
-      headers,
-      chunkSize: getChunkSize(),
-    },
-    async (rowChunk) => {
-      await processRowChunk({
-        rowChunk,
-        batch,
-        profile,
-        profileCode,
-        sheet,
-        reportDateFrom,
-        reportDateTo,
-        counters,
-        seenRows,
-      });
-      onChunkProcessed?.(rowChunk.length);
-    },
-  );
 }
 
 function hasCompletedWithErrors(counters) {
@@ -814,6 +384,7 @@ export async function importUsVisaRawWorkbook(options = {}) {
     const profile = await loadImportProfile(importProfileIdOrCode);
     const profileCode = profile.profileCode;
     const processor = getUsVisaImportProcessor(profile);
+
     importLockConnection = await acquireUsVisaImportLock();
     assertProfileFileType(processor, temporaryFile, filePath);
     const isAgentLevel =
@@ -1015,15 +586,23 @@ export async function importUsVisaRawWorkbook(options = {}) {
         };
       }
 
+      const selectedOccupancyGrain =
+        workbookValidation.sheets[0]?.dataGrain || null;
+      const occupancyRequiresSourceTimezone = [
+        "AGENT_OCCUPANCY_15_MINUTE",
+        "AGENT_OCCUPANCY_30_MINUTE",
+      ].includes(selectedOccupancyGrain);
+
       if (
         ["FUSECOM", "FUSENET"].includes(String(profile.sourceSystem || "").toUpperCase()) &&
+        occupancyRequiresSourceTimezone &&
         !occupancyMetadata.sourceTimezone
       ) {
         return {
           batch: null,
           rejected: true,
           code: "SOURCE_TIMEZONE_MISSING",
-          message: "The Occupancy workbook is missing its source timezone metadata.",
+          message: "The interval Occupancy workbook is missing its source timezone metadata.",
           profile,
           profileCode,
           fileHash,
@@ -1065,66 +644,28 @@ export async function importUsVisaRawWorkbook(options = {}) {
       );
     }
 
-    if (processor.processWorkbook) {
-      const processorMetrics = await processor.processWorkbook({
-        workbook,
-        batch,
-        profile,
-        profileCode,
-        workbookValidation,
-        counters,
-        chunkSize: getChunkSize(),
-        taskOrderId:
-          occupancyTaskOrder?.id ||
-          emailTaskOrder?.id ||
-          batch.taskOrderId ||
-          null,
-        fileHash,
-        sourceTimezone: occupancyMetadata?.sourceTimezone || null,
-        onProgress: (progress) => reportImportProgress(progressToken, progress),
-      });
+    const processorMetrics = await processor.processWorkbook({
+      workbook,
+      batch,
+      profile,
+      profileCode,
+      workbookValidation,
+      counters,
+      chunkSize: getChunkSize(),
+      taskOrderId:
+        occupancyTaskOrder?.id ||
+        emailTaskOrder?.id ||
+        batch.taskOrderId ||
+        null,
+      fileHash,
+      reportDateFrom,
+      reportDateTo,
+      sourceTimezone: occupancyMetadata?.sourceTimezone || null,
+      onProgress: (progress) => reportImportProgress(progressToken, progress),
+    });
 
-      if (agentPerformance) {
-        agentPerformance.processorMetrics = processorMetrics || {};
-      }
-    } else {
-      const seenRows = new Map();
-      const skillSheets = workbookValidation.sheets.filter((sheet) => !(
-        profileCode === IMPORT_PROFILE_CODES.FUSECOM_SKILL_STATISTICS_INBOUND &&
-        !isFusecom15MinuteSheet(sheet)
-      ));
-      const totalSkillRows = skillSheets.reduce((total, sheet) => {
-        const worksheet = workbook.getWorksheet(sheet.sheetName);
-        return total + Math.max((worksheet?.rowCount || 0) - (sheet.headerRowNumber || 1), 0);
-      }, 0);
-      let processedSkillRows = 0;
-
-      for (const sheet of skillSheets) {
-        await processSheet({
-          workbook,
-          batch,
-          profile,
-          profileCode,
-          sheet,
-          reportDateFrom,
-          reportDateTo,
-          counters,
-          seenRows,
-          onChunkProcessed: (rowCount) => {
-            processedSkillRows += rowCount;
-            const ratio = totalSkillRows > 0
-              ? Math.min(processedSkillRows / totalSkillRows, 1)
-              : 1;
-            reportImportProgress(progressToken, {
-              stage: "processing",
-              percent: 45 + Math.round(ratio * 45),
-              processedRows: processedSkillRows,
-              totalRows: totalSkillRows,
-              message: "Processing service and queue-level records.",
-            });
-          },
-        });
-      }
+    if (agentPerformance) {
+      agentPerformance.processorMetrics = processorMetrics || {};
     }
 
     reportImportProgress(progressToken, {

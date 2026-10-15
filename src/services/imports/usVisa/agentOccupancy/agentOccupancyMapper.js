@@ -1,4 +1,5 @@
 import {
+  toDateValue,
   toDecimalValue,
   toIntegerValue,
   toStringValue,
@@ -18,6 +19,7 @@ export const AGENT_OCCUPANCY_GRAINS = Object.freeze({
   DAY: "AGENT_OCCUPANCY_DAY",
   PERIOD: "AGENT_OCCUPANCY_PERIOD",
   FIFTEEN_MINUTE: "AGENT_OCCUPANCY_15_MINUTE",
+  THIRTY_MINUTE: "AGENT_OCCUPANCY_30_MINUTE",
 });
 
 const SOURCE_SYSTEM_BY_PROFILE = Object.freeze({
@@ -148,25 +150,44 @@ function baseRow(sourceRow, sourceSystem, grain, options = {}) {
 
 function mapFuseRow(sourceRow, profileCode, options) {
   const sourceSystem = sourceSystemForProfile(profileCode);
-  const mappedRow = baseRow(sourceRow, sourceSystem, AGENT_OCCUPANCY_GRAINS.FIFTEEN_MINUTE, options);
+  const grain = options.dataGrain || AGENT_OCCUPANCY_GRAINS.FIFTEEN_MINUTE;
+  const mappedRow = baseRow(sourceRow, sourceSystem, grain, options);
   const conversionErrors = [];
   mappedRow.source_timezone = options.sourceTimezone || null;
 
-  const interval = normalizeOccupancyIntervalStart(
-    getValue(sourceRow, "Date/Time"),
-    mappedRow.source_timezone,
-  );
-  mappedRow.production_date = interval.productionDate || null;
-  mappedRow.interval_start_utc = interval.intervalStartUtc || null;
-  if (!interval.ok) {
-    conversionErrors.push({
-      fieldName: "interval_start_utc",
-      targetField: "interval_start_utc",
-      sourceHeader: "Date/Time",
-      rawValue: getValue(sourceRow, "Date/Time"),
-      errorCode: interval.errorCode,
-      message: interval.message,
-    });
+  if (grain === AGENT_OCCUPANCY_GRAINS.DAY) {
+    const rawDate = getValue(sourceRow, "Date");
+    const date = toDateValue(rawDate);
+    mappedRow.production_date = date.value;
+    mappedRow.interval_start_utc = null;
+    if (!date.ok) {
+      conversionErrors.push({
+        fieldName: "production_date",
+        targetField: "production_date",
+        sourceHeader: "Date",
+        rawValue: rawDate,
+        errorCode: date.errorCode,
+        message: date.message,
+      });
+    }
+  } else {
+    const rawDateTime = getValue(sourceRow, "Date/Time");
+    const interval = normalizeOccupancyIntervalStart(
+      rawDateTime,
+      mappedRow.source_timezone,
+    );
+    mappedRow.production_date = interval.productionDate || null;
+    mappedRow.interval_start_utc = interval.intervalStartUtc || null;
+    if (!interval.ok) {
+      conversionErrors.push({
+        fieldName: "interval_start_utc",
+        targetField: "interval_start_utc",
+        sourceHeader: "Date/Time",
+        rawValue: rawDateTime,
+        errorCode: interval.errorCode,
+        message: interval.message,
+      });
+    }
   }
 
   mappedRow.agent_name_raw = toStringValue(getValue(sourceRow, "Agent Name")).value;

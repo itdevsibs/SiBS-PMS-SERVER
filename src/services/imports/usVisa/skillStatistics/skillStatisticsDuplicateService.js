@@ -1,13 +1,13 @@
-// Classifies canonical row duplicates/conflicts without overwriting domain data.
+// Classifies US VISA Skill Statistics duplicates/conflicts without overwriting canonical data.
 import {
   findSkillStatisticsByRowHash,
-} from "../../../repositories/usVisa/usVisaSkillStatisticsRepository.js";
+} from "../../../../repositories/usVisa/usVisaSkillStatisticsRepository.js";
 import {
   updateRawImportValidationStatus,
-} from "../../../repositories/usVisa/usVisaRawImportRepository.js";
+} from "../../../../repositories/usVisa/usVisaRawImportRepository.js";
 import {
   insertImportError,
-} from "../../../repositories/usVisa/usVisaImportErrorRepository.js";
+} from "../../../../repositories/usVisa/usVisaImportErrorRepository.js";
 
 export const DUPLICATE_CHECK_RESULTS = {
   NEW: "NEW",

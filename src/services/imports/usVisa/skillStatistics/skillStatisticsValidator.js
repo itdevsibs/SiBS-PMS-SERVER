@@ -1,4 +1,4 @@
-// Validates mapped canonical import rows without stopping workbook processing.
+// Validates mapped canonical US VISA Skill Statistics rows without stopping workbook processing.
 
 export const ROW_VALIDATION_ERROR_CODES = {
   MISSING_REQUIRED_VALUE: "MISSING_REQUIRED_VALUE",
