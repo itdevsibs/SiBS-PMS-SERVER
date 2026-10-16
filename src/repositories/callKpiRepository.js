@@ -1,11 +1,11 @@
 import { pmsDb, pmsTables } from "../config/db.js";
 import {
   buildUsVisaTaskOrderCountrySqlFilter,
-} from "../services/kpi/usVisa/usVisaTaskOrderFilter.js";
+} from "../services/kpi/usVisa/calls/taskOrderFilter.js";
 import {
   buildSkillHandleDenominatorSql,
   buildSkillHandleSecondsSql,
-} from "../services/kpi/ahtCalculationService.js";
+} from "../services/kpi/usVisa/calls/ahtCalculationService.js";
 
 const KPI_BATCH_STATUSES = ["COMPLETED", "COMPLETED_WITH_ERRORS"];
 

@@ -4,7 +4,7 @@ import {
   toStringValue,
 } from "../../shared/valueConversionService.js";
 import { normalizeUsVisaTaskOrderId } from "../../../../config/usVisaTaskOrders.js";
-import { normalizeEmailCountry } from "../../../kpi/emailCountryService.js";
+import { normalizeEmailCountry } from "../../../kpi/usVisa/email/emailCountryService.js";
 
 const HEADERS = Object.freeze({
   auditorName: "Auditor's Name",

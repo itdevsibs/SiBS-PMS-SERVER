@@ -1,7 +1,7 @@
 import express from "express";
 
 import {
-  getKronosAttendancePreview,
+  getKronosAttendanceSheet,
   getKronosCcoAccounts,
   getKronosIntegrationStatus,
   getKronosLiveAttendance,
@@ -19,7 +19,7 @@ router.use(authMiddleware, requireRole([7, 9]));
 router.get("/status", getKronosIntegrationStatus);
 router.get("/accounts", getKronosCcoAccounts);
 
-router.get("/attendance/preview", getKronosAttendancePreview);
+router.get("/attendance-sheet", getKronosAttendanceSheet);
 router.get("/tracker-history/preview", getKronosTrackerHistoryPreview);
 router.get("/attendance/live", getKronosLiveAttendance);
 

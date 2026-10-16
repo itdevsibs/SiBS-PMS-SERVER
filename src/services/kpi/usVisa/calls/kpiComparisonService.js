@@ -1,5 +1,5 @@
-import { getWfmCallKpiDashboard } from "../callKpiQueryService.js";
-import { getUsVisaAgentCallKpiDashboard } from "./usVisaAgentCallKpiService.js";
+import { getWfmCallKpiDashboard } from "./callKpiQueryService.js";
+import { getUsVisaAgentCallKpiDashboard } from "./agentCallKpiService.js";
 
 export const US_VISA_KPI_COMPARISON_STATUSES = Object.freeze({
   MATCH: "MATCH",

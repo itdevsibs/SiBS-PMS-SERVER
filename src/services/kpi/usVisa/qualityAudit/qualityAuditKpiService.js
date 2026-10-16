@@ -3,8 +3,8 @@ import {
   normalizeCallKpiPeriod,
   parseCallKpiDateOnly,
   seedCallKpiReferencePeriodBuckets,
-} from "./callKpiService.js";
-import { normalizeEmailCountry } from "./emailCountryService.js";
+} from "../calls/callKpiService.js";
+import { normalizeEmailCountry } from "../email/emailCountryService.js";
 
 function emptyAccumulator(bucket = {}) {
   return {

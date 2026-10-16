@@ -1,5 +1,5 @@
 import { pmsDb, pmsTables } from "../../config/db.js";
-import { normalizeEmailCountryFilter } from "../../services/kpi/emailCountryService.js";
+import { normalizeEmailCountryFilter } from "../../services/kpi/usVisa/email/emailCountryService.js";
 
 const KPI_BATCH_STATUSES = ["COMPLETED", "COMPLETED_WITH_ERRORS"];
 

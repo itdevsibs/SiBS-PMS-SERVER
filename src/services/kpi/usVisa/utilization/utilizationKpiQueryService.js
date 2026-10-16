@@ -1,18 +1,18 @@
 import {
   getAgentOccupancyDailyKpiRows,
   getAgentOccupancyKpiDateBounds,
-} from "../../repositories/usVisa/usVisaOccupancyKpiRepository.js";
-import { normalizeUsVisaTaskOrderId } from "../../config/usVisaTaskOrders.js";
+} from "../../../../repositories/usVisa/usVisaOccupancyKpiRepository.js";
+import { normalizeUsVisaTaskOrderId } from "../../../../config/usVisaTaskOrders.js";
 import {
   normalizeCallKpiPeriod,
   resolveCallKpiDateRange,
   resolveDefaultCallKpiDateRange,
-} from "./callKpiService.js";
-import { buildWfmUtilizationKpiDashboard } from "./occupancyKpiService.js";
-import { getCallCenterOperationsAccountsWithMappings } from "../kronos/kronosAccountScopeService.js";
-import { normalizeKronosAccountName } from "../kronos/kronosAccountDirectoryService.js";
-import { getKronosUtilizationTrackerEmployeeDayRows } from "../../repositories/kronos/kronosTrackerRepository.js";
-import { getOrCreateUtilizationCacheEntry } from "../cache/utilizationCacheService.js";
+} from "../calls/callKpiService.js";
+import { buildWfmUtilizationKpiDashboard } from "../occupancy/occupancyKpiService.js";
+import { getCallCenterOperationsAccountsWithMappings } from "../../../kronos/kronosAccountScopeService.js";
+import { normalizeKronosAccountName } from "../../../kronos/kronosAccountDirectoryService.js";
+import { getKronosOptimizedAttendanceEmployeeDayRows } from "../../../../repositories/kronos/kronosTrackerRepository.js";
+import { getOrCreateUtilizationCacheEntry } from "../../../cache/utilizationCacheService.js";
 
 function normalizeDate(value) {
   const text = String(value || "").trim();
@@ -177,7 +177,7 @@ async function loadWfmUtilizationKpiDashboard(resolved) {
       metadata: {
         status: "NO_OCCUPANCY_DATA",
         source: "KRONOS_API",
-        fetchMode: "EMPLOYEE_TRACKER_RELATIONSHIP_LOCAL_DATE_FILTER",
+        fetchMode: "OPTIMIZED_DATE_FILTERED_ATTENDANCE",
         storageMode: "LIVE_ONLY",
         shiftTimeBasis: "KRONOS_TRACKER_LOGIN_TO_LOGOUT",
         accountName: "US Visa",
@@ -215,7 +215,7 @@ async function loadWfmUtilizationKpiDashboard(resolved) {
         metadata: {
           status: "ACCOUNT_UNAVAILABLE",
           source: "KRONOS_API",
-          fetchMode: "EMPLOYEE_TRACKER_RELATIONSHIP_LOCAL_DATE_FILTER",
+          fetchMode: "OPTIMIZED_DATE_FILTERED_ATTENDANCE",
           storageMode: "LIVE_ONLY",
           shiftTimeBasis: "KRONOS_TRACKER_LOGIN_TO_LOGOUT",
           accountName: "US Visa",
@@ -238,11 +238,13 @@ async function loadWfmUtilizationKpiDashboard(resolved) {
       });
     }
 
-    // Preserve the previously faster Utilization path: fetch tracker history only
-    // for occupancy-targeted employees and reuse the per-employee 30-minute cache.
-    // Headcount and Absenteeism remain on the bulk/date-filtered attendance endpoint.
+    // Reuse the same account/date-scoped /employee-attendance dataset as Absenteeism.
+    // The repository shares both its in-flight request and 30-minute raw attendance
+    // cache across KPI callers, then filters the common rows to Utilization's
+    // occupancy-targeted employee codes in memory. The Utilization calculation below
+    // remains unchanged.
     const attendanceStartedAt = Date.now();
-    const trackerDataset = await getKronosUtilizationTrackerEmployeeDayRows({
+    const trackerDataset = await getKronosOptimizedAttendanceEmployeeDayRows({
       kronosAccountId: usVisaAccount.kronosMapping.kronosAccountId,
       employeeUids: targetEmployeeUids,
       dateFrom,
@@ -329,7 +331,7 @@ async function loadWfmUtilizationKpiDashboard(resolved) {
       taskOrder,
     });
   } catch (error) {
-    console.error("Tracker-based utilization fetch failed:", {
+    console.error("Attendance-based utilization fetch failed:", {
       code: error?.code,
       status: error?.status,
       message: error?.message,
@@ -345,12 +347,12 @@ async function loadWfmUtilizationKpiDashboard(resolved) {
       metadata: {
         status: "UNAVAILABLE",
         source: "KRONOS_API",
-        fetchMode: "EMPLOYEE_TRACKER_RELATIONSHIP_LOCAL_DATE_FILTER",
+        fetchMode: "OPTIMIZED_DATE_FILTERED_ATTENDANCE",
         storageMode: "LIVE_ONLY",
         shiftTimeBasis: "KRONOS_TRACKER_LOGIN_TO_LOGOUT",
         trackerPresenceBasis: "VALID_GY_TRACKER_LOGIN",
         accountName: "US Visa",
-        message: "Live Kronos tracker data is currently unavailable.",
+        message: "Live Kronos attendance data is currently unavailable.",
         occupancyEmployeeDays: dailyOccupancyRows.length,
         targetedEmployeeCount: targetEmployeeRanges.length,
         validEmployeeDays: 0,

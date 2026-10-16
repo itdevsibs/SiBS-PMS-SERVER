@@ -462,9 +462,9 @@ function emptyDataset({ requestedEmployeeCount = 0 } = {}) {
  * Shared KPI data adapter. The formulas remain in absenteeismKpiService.js.
  * - Kronos account/date attendance comes from /employee-attendance.
  * - PMS ledger supplies the target/Task Order employee codes.
- * - Kronos /employee-directory?account_ids=... supplies gy_emp_id in bulk.
+ * - employee-attendance.employee_id is reused directly as gy_emp_id whenever available.
+ * - Kronos /employee-directory?account_ids=... is only a fallback for unresolved roster employees.
  * - Date-filtered /employee-schedules supplies schedule rows per matched agent.
- * Attendance and directory calls run together after the account is resolved.
  */
 export async function getKronosAbsenteeismEmployeeDayRows({
   employeeUids = [], dateFrom = null, dateTo = null, accountName = "US Visa",
@@ -478,29 +478,20 @@ export async function getKronosAbsenteeismEmployeeDayRows({
 
   const kronosAccountId = await resolveKronosAccountId(accountName);
   let attendance;
-  let employeeDirectory;
   try {
-    [attendance, employeeDirectory] = await Promise.all([
-      getKronosOptimizedAttendanceEmployeeDayRows({
-        kronosAccountId,
-        employeeUids: employeeCodes,
-        dateFrom: from,
-        dateTo: to,
-      }),
-      fetchAccountEmployeeDirectory(kronosAccountId),
-    ]);
+    attendance = await getKronosOptimizedAttendanceEmployeeDayRows({
+      kronosAccountId,
+      employeeUids: employeeCodes,
+      dateFrom: from,
+      dateTo: to,
+    });
   } catch (error) {
-    error.stage ??= "ATTENDANCE_OR_EMPLOYEE_DIRECTORY_FETCH";
+    error.stage ??= "ATTENDANCE_FETCH";
     throw error;
   }
 
   const targetSet = new Set(employeeCodes);
   const verifiedIds = new Map();
-  for (const uid of employeeCodes) {
-    const directoryEntry = employeeDirectory.byUid.get(uid);
-    if (directoryEntry?.gyEmpId) verifiedIds.set(uid, directoryEntry.gyEmpId);
-  }
-
   const presenceKeys = new Set();
   const presentRows = [];
   for (const record of attendance.rows) {
@@ -528,6 +519,39 @@ export async function getKronosAbsenteeismEmployeeDayRows({
       shiftSeconds: record.shiftSeconds,
       shiftStatus: record.shiftStatus,
     });
+  }
+
+  // employee-attendance already exposes the same internal employee ID expected
+  // by /employee-schedules. Only employees that never produced an attendance row
+  // (or whose attendance row omitted the ID) need the bulk directory fallback.
+  let employeeDirectory = {
+    byUid: new Map(),
+    sourceRows: 0,
+    requestCount: 0,
+  };
+  const unresolvedEmployeeCodes = employeeCodes.filter((uid) => !verifiedIds.has(uid));
+  if (unresolvedEmployeeCodes.length) {
+    try {
+      employeeDirectory = await fetchAccountEmployeeDirectory(kronosAccountId);
+    } catch (error) {
+      error.stage ??= "EMPLOYEE_DIRECTORY_FALLBACK_FETCH";
+      throw error;
+    }
+
+    // Preserve the existing conflict protection whenever the fallback directory
+    // is consulted, while filling only IDs that attendance could not resolve.
+    for (const uid of employeeCodes) {
+      const directoryEntry = employeeDirectory.byUid.get(uid);
+      if (!directoryEntry?.gyEmpId) continue;
+      const priorId = verifiedIds.get(uid);
+      if (priorId && priorId !== directoryEntry.gyEmpId) {
+        unavailable(
+          `Conflicting Kronos internal IDs for employee ${uid}.`,
+          "KRONOS_EMPLOYEE_ID_CONFLICT",
+        );
+      }
+      if (!priorId) verifiedIds.set(uid, directoryEntry.gyEmpId);
+    }
   }
 
   // Only employees verified under the selected Kronos account are schedule

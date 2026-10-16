@@ -2,15 +2,15 @@ import {
   getAgentOccupancyKpiDateBounds,
   getAgentOccupancyKpiRows,
   listAgentOccupancyValidTaskOrders,
-} from "../../repositories/usVisa/usVisaOccupancyKpiRepository.js";
-import { normalizeUsVisaTaskOrderId } from "../../config/usVisaTaskOrders.js";
+} from "../../../../repositories/usVisa/usVisaOccupancyKpiRepository.js";
+import { normalizeUsVisaTaskOrderId } from "../../../../config/usVisaTaskOrders.js";
 import {
   normalizeCallKpiPeriod,
   resolveCallKpiDateRange,
   resolveDefaultCallKpiDateRange,
-} from "./callKpiService.js";
+} from "../calls/callKpiService.js";
 import { buildWfmOccupancyKpiDashboard } from "./occupancyKpiService.js";
-import { getOrCreateOccupancyCacheEntry } from "../cache/occupancyCacheService.js";
+import { getOrCreateOccupancyCacheEntry } from "../../../cache/occupancyCacheService.js";
 
 function normalizeDate(value) {
   const text = String(value || "").trim();

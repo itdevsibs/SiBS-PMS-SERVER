@@ -4,7 +4,7 @@ import {
   getCallKpiPeriodBucket,
   normalizeCallKpiPeriod,
   parseCallKpiDateOnly,
-} from "./callKpiService.js";
+} from "../calls/callKpiService.js";
 import {
   calculateEmailBusinessMinutes,
   getEmailSlaTargetMinutes,
@@ -15,7 +15,7 @@ import {
   normalizeEmailCountryFilter,
   normalizeEmailCountryFromOwner,
 } from "./emailCountryService.js";
-import { getUsVisaTaskOrder } from "../../config/usVisaTaskOrders.js";
+import { getUsVisaTaskOrder } from "../../../../config/usVisaTaskOrders.js";
 
 export const WFM_EMAIL_KPI_TARGETS = Object.freeze({
   slaBusinessDays: 2,

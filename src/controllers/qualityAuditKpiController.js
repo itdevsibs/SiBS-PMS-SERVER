@@ -1,4 +1,4 @@
-import { getWfmQualityAuditKpiDashboard } from "../services/kpi/qualityAuditKpiQueryService.js";
+import { getWfmQualityAuditKpiDashboard } from "../services/kpi/usVisa/qualityAudit/qualityAuditKpiQueryService.js";
 
 const BAD_REQUEST_CODES = new Set([
   "INVALID_CUSTOM_DATE_RANGE",

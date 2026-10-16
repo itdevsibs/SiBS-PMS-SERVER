@@ -1,5 +1,4 @@
 import {
-  findOccupancyDailyMatches,
   getKronosAttendanceSheetScheduleData,
 } from "../../repositories/kronos/kronosAttendanceRepository.js";
 import {
@@ -17,6 +16,125 @@ import { resolveCallCenterOperationsAccountScope } from "./kronosAccountScopeSer
 const ATTENDANCE_ENDPOINT = "/api/v1/employee-attendance";
 const TRACKER_HISTORY_ENDPOINT = "/api/v1/employee-tracker-history";
 const TEAM_LEADERS_KRONOS_ACCOUNT_ID = 78;
+
+function getManilaTodayIso() {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Manila",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+
+// Attendance Sheet ONLY. Do not reuse this cache in Headcount, Absenteeism,
+// Utilization or any other KPI. No credentials or HR data are written to disk.
+const ATTENDANCE_SHEET_CACHE_MS = 10 * 60 * 1000;
+const ATTENDANCE_SHEET_TODAY_CACHE_MS = 10 * 60 * 1000;
+const ATTENDANCE_SHEET_MAX_CACHE_DAYS = 30;
+const attendanceSheetCache = new Map();
+
+function elapsedMs(start) {
+  return Math.round(Number(process.hrtime.bigint() - start) / 1e6);
+}
+
+function positiveInternalId(value) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function rawField(row, paths) {
+  for (const path of paths) {
+    const value = String(path).split(".").reduce((current, key) => current?.[key], row);
+    if (value !== undefined && value !== null && String(value).trim() !== "") return value;
+  }
+  return null;
+}
+
+// /employee-attendance already returns the internal employee_id on the optimized
+// view. Reuse it for Attendance Sheet schedule resolution instead of calling
+// /api/v1/employees/{code} again for the same employee.
+function getAttendanceScheduleSeeds(rows = [], defaultKronosAccountId = null) {
+  const byUid = new Map();
+  for (const row of rows) {
+    const uid = normalizeEmployeeUid(row?.employeeUid ?? row?.gyEmpCode);
+    if (!uid) continue;
+    let gyEmpId = null;
+    let employeeName = String(row?.employeeName || "").trim();
+    let kronosAccountId = positiveInternalId(row?.kronosAccountId) ||
+      positiveInternalId(defaultKronosAccountId);
+
+    for (const raw of Array.isArray(row?.rawJson) ? row.rawJson : []) {
+      const candidateId = positiveInternalId(rawField(raw, [
+        "gy_emp_id", "employee.gy_emp_id", "employee_id", "employee.employee_id",
+      ]));
+      if (gyEmpId && candidateId && gyEmpId !== candidateId) {
+        const error = new Error(`Conflicting Kronos internal IDs in attendance for ${uid}.`);
+        error.code = "ATTENDANCE_SHEET_EMPLOYEE_ID_CONFLICT";
+        error.status = 502;
+        throw error;
+      }
+      gyEmpId ||= candidateId;
+      employeeName ||= String(rawField(raw, [
+        "gy_emp_fullname", "employee.gy_emp_fullname", "employee_name", "full_name",
+      ]) || "").trim();
+      kronosAccountId ||= positiveInternalId(rawField(raw, [
+        "gy_acc_id", "employee.gy_acc_id", "account_id", "account.gy_acc_id",
+      ]));
+    }
+
+    if (!gyEmpId) continue;
+    const previous = byUid.get(uid);
+    if (previous?.gyEmpId && previous.gyEmpId !== gyEmpId) {
+      const error = new Error(`Conflicting Kronos internal IDs in attendance for ${uid}.`);
+      error.code = "ATTENDANCE_SHEET_EMPLOYEE_ID_CONFLICT";
+      error.status = 502;
+      throw error;
+    }
+    byUid.set(uid, {
+      employeeUid: uid,
+      gyEmpCode: uid,
+      gyEmpId,
+      employeeName: employeeName || previous?.employeeName || "",
+      kronosAccountId: kronosAccountId || previous?.kronosAccountId || null,
+    });
+  }
+  return [...byUid.values()];
+}
+
+async function getCachedAttendanceSheetDay(accountId, workDate) {
+  const key = `${accountId}|${workDate}`;
+  const now = Date.now();
+  const existing = attendanceSheetCache.get(key);
+  if (existing && (existing.expiresAt > now || existing.inFlight)) {
+    const cacheStatus = existing.inFlight ? "SHARED_REQUEST" : "HIT";
+    return { dataset: await existing.promise, cacheStatus };
+  }
+
+  const cacheEntry = { promise: null, expiresAt: 0, inFlight: true };
+  // Store the pending promise before awaiting it to deduplicate concurrent UI requests.
+  cacheEntry.promise = buildAttendanceSheetDay(accountId, workDate);
+  attendanceSheetCache.delete(key);
+  attendanceSheetCache.set(key, cacheEntry);
+  while (attendanceSheetCache.size > ATTENDANCE_SHEET_MAX_CACHE_DAYS) {
+    attendanceSheetCache.delete(attendanceSheetCache.keys().next().value);
+  }
+  try {
+    const dataset = await cacheEntry.promise;
+    const ttl = workDate === getManilaTodayIso()
+      ? ATTENDANCE_SHEET_TODAY_CACHE_MS
+      : ATTENDANCE_SHEET_CACHE_MS;
+    cacheEntry.expiresAt = Date.now() + ttl;
+    cacheEntry.inFlight = false;
+    return { dataset, cacheStatus: "MISS" };
+  } catch (error) {
+    if (attendanceSheetCache.get(key) === cacheEntry) attendanceSheetCache.delete(key);
+    throw error;
+  }
+}
+
 
 function normalizePage(value, fallback = 1) {
   const parsed = Number(value);
@@ -224,10 +342,13 @@ async function fetchAttendancePages({
   dateTo,
   limit = 100,
   maxPages = 2000,
+  // Only the Attendance Sheet enables strict validation before caching.
+  strictPagination = false,
 }) {
   const allRows = [];
   let page = 1;
   let totalPages = null;
+  let reportedTotal = null;
   let requestCount = 0;
 
   while (page <= maxPages) {
@@ -241,9 +362,26 @@ async function fetchAttendancePages({
       limit,
     });
     requestCount += result.requestCount;
-    allRows.push(...result.rows);
-
     const pagination = result.pagination;
+    if (strictPagination) {
+      const meta = result.payload?.pagination;
+      const pageCount = Number(meta?.totalPages ?? meta?.total_pages);
+      const remoteTotal = Number(meta?.totalRecords ?? meta?.total ?? NaN);
+      if (result.payload?.success === false || !Array.isArray(result.payload?.data) ||
+          !meta || pagination.currentPage !== page ||
+          !Number.isSafeInteger(pageCount) || pageCount < 0 ||
+          (totalPages !== null && pageCount !== totalPages) ||
+          (Number.isFinite(remoteTotal) &&
+            (!Number.isSafeInteger(remoteTotal) || remoteTotal < 0 ||
+             (reportedTotal !== null && remoteTotal !== reportedTotal)))) {
+        const error = new Error(`Incomplete Kronos Attendance Sheet pagination at page ${page}.`);
+        error.code = "ATTENDANCE_SHEET_INCOMPLETE_PAGE";
+        error.status = 502;
+        throw error;
+      }
+      if (Number.isFinite(remoteTotal)) reportedTotal ??= remoteTotal;
+    }
+    allRows.push(...result.rows);
     if (pagination.totalPages > 0) totalPages = pagination.totalPages;
 
     const hasNext =
@@ -253,8 +391,22 @@ async function fetchAttendancePages({
           ? page < totalPages
           : result.rows.length >= pagination.limit;
 
+    if (strictPagination && ((hasNext && result.rows.length === 0) ||
+        (totalPages !== null && hasNext !== (page < totalPages)))) {
+      const error = new Error(`Incomplete Kronos Attendance Sheet response at page ${page}.`);
+      error.code = "ATTENDANCE_SHEET_INCOMPLETE_PAGE";
+      error.status = 502;
+      throw error;
+    }
     if (!hasNext || result.rows.length === 0) break;
     page += 1;
+  }
+
+  if (strictPagination && reportedTotal !== null && allRows.length !== reportedTotal) {
+    const error = new Error(`Incomplete Kronos Attendance Sheet: received ${allRows.length} of ${reportedTotal} records.`);
+    error.code = "ATTENDANCE_SHEET_INCOMPLETE_PAGE";
+    error.status = 502;
+    throw error;
   }
 
   if (page > maxPages) {
@@ -615,6 +767,8 @@ export async function getLiveAttendanceShiftRows({
   search = null,
   dateFrom,
   dateTo,
+  // Default false: existing KPI callers retain precisely their old fetch path.
+  strictPagination = false,
 }) {
   const range = validateDateRange(dateFrom, dateTo);
   const scope = await resolveCallCenterOperationsAccountScope(accountId);
@@ -627,6 +781,7 @@ export async function getLiveAttendanceShiftRows({
     search,
     dateFrom: range.dateFrom,
     dateTo: range.dateTo,
+    strictPagination,
   });
 
   const fieldConfiguration = getAttendanceFieldConfiguration(remoteRows);
@@ -679,37 +834,47 @@ export async function getLiveAttendanceShiftRows({
   };
 }
 
-export async function getLiveAttendance({
-  accountId,
-  gyEmpCode = null,
-  search = null,
-  dateFrom,
-  dateTo,
-  page = 1,
-  limit = 50,
-}) {
+// The sheet uses its own date-scoped data assembly. Shared KPI attendance
+// retrieval functions above remain unchanged.
+async function buildAttendanceSheetDay(accountId, workDate) {
+  const startedAt = process.hrtime.bigint();
+  const attendanceStart = process.hrtime.bigint();
+
+  // Attendance first: the optimized attendance view already gives us employee_id,
+  // which is the exact internal ID required by employee-schedules. Reuse those
+  // IDs before consulting employee-directory for no-attendance roster members.
   const dataset = await getLiveAttendanceShiftRows({
     accountId,
-    gyEmpCode,
-    search,
-    dateFrom,
-    dateTo,
+    dateFrom: workDate,
+    dateTo: workDate,
+    strictPagination: true,
   });
+  const attendanceMs = elapsedMs(attendanceStart);
 
-  const [occupancyMatches, scheduleData] = await Promise.all([
-    findOccupancyDailyMatches({
-      employeeUids: dataset.rows.map((row) => row.employeeUid),
-      dateFrom: dataset.range.dateFrom,
-      dateTo: dataset.range.dateTo,
-    }),
-    getKronosAttendanceSheetScheduleData({
-      kronosAccountId: dataset.scope.kronosMapping?.kronosAccountId,
-      accountName: dataset.scope.accountName,
-      employeeUids: dataset.rows.map((row) => row.employeeUid),
-      dateFrom: dataset.range.dateFrom,
-      dateTo: dataset.range.dateTo,
-    }),
-  ]);
+  const scheduleStart = process.hrtime.bigint();
+  const seedEmployees = getAttendanceScheduleSeeds(
+    dataset.rows,
+    dataset.scope.kronosMapping?.kronosAccountId,
+  );
+  const attendanceEmployeeUids = [...new Set(
+    dataset.rows.map((row) => normalizeEmployeeUid(row.employeeUid)).filter(Boolean),
+  )];
+
+  // The schedule adapter uses attendance employee_id first and only falls back
+  // to employee-directory for US Visa roster employees that have no attendance
+  // row. Those schedule-only employees are later unioned into the sheet so an
+  // eligible historical shift with no punch can still display as Absent.
+  const scheduleData = await getKronosAttendanceSheetScheduleData({
+    kronosAccountId: dataset.scope.kronosMapping?.kronosAccountId,
+    accountName: dataset.scope.accountName,
+    employeeUids: attendanceEmployeeUids,
+    seedEmployees,
+    includeAccountPopulation: true,
+    dateFrom: workDate,
+    dateTo: workDate,
+  });
+  const scheduleMs = elapsedMs(scheduleStart);
+  const joinStart = process.hrtime.bigint();
 
   const { schedules: accountSchedules, teamLeaders } = scheduleData;
   const teamLeadersByUid = new Map(
@@ -743,10 +908,7 @@ export async function getLiveAttendance({
       leaderPunchRows = normalized.filter((row) => {
         const uid = normalizeEmployeeUid(row.employeeUid);
         const key = `${uid}|${row.workDate}`;
-        return teamLeadersByUid.has(uid) && !existingKeys.has(key) &&
-          (!search || `${uid} ${teamLeadersByUid.get(uid).employeeName}`.toLowerCase()
-            .includes(String(search).toLowerCase().trim())) &&
-          (!gyEmpCode || uid === normalizeEmployeeUid(gyEmpCode));
+        return teamLeadersByUid.has(uid) && !existingKeys.has(key);
       }).map((row) => {
         const leader = teamLeadersByUid.get(normalizeEmployeeUid(row.employeeUid));
         return {
@@ -768,13 +930,6 @@ export async function getLiveAttendance({
   }
   const attendanceRows = [...dataset.rows, ...leaderPunchRows];
 
-  const occupancyByKey = new Map(
-    occupancyMatches.map((match) => [
-      `${normalizeEmployeeUid(match.employeeUid)}|${match.productionDate}`,
-      match,
-    ]),
-  );
-
   const scheduleByKey = new Map(
     accountSchedules.map((sched) => [
       `${normalizeEmployeeUid(sched.employeeUid)}|${sched.schedDay}`,
@@ -788,22 +943,10 @@ export async function getLiveAttendance({
     ),
   );
 
-function getManilaTodayIso() {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "Asia/Manila",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
-  const values = Object.fromEntries(parts.map((p) => [p.type, p.value]));
-  return `${values.year}-${values.month}-${values.day}`;
-}
-
   const todayIso = getManilaTodayIso();
 
   const joinedRows = attendanceRows.map((row) => {
     const uid = normalizeEmployeeUid(row.employeeUid);
-    const occupancy = occupancyByKey.get(`${uid}|${row.workDate}`) || null;
     const schedule = scheduleByKey.get(`${uid}|${row.workDate}`) || null;
 
     const scheduleIn = schedule?.schedLogin ?? row.scheduleIn ?? null;
@@ -836,31 +979,16 @@ function getManilaTodayIso() {
       scheduleOut: isRestDay ? "Rest Day" : scheduleOut,
       scheduleMode: schedule?.schedMode ?? null,
       status,
-      occupancyRowCount: occupancy?.occupancyRowCount || 0,
-      occupancyDataMatched: Boolean(occupancy?.occupancyRowCount),
-      occupancy,
     };
   });
 
-  // Inject scheduled employees who have no live punch in dataset so they appear accurately for completed dates.
-  // For current date (today) or future dates, we do NOT inject them as absent because their shifts are not finished yet.
+  // Include employees with schedules but no punches even today; do not mark
+  // today's or future incomplete shifts absent.
   if (Array.isArray(accountSchedules) && accountSchedules.length > 0) {
     let missingEmployees = accountSchedules.filter((sched) => {
-      const isPastDate = String(sched.schedDay) < todayIso;
-      if (!isPastDate) return false; // Do not include unclocked employees on today's date
       const key = `${normalizeEmployeeUid(sched.employeeUid)}|${sched.schedDay}`;
       return !presentKeys.has(key);
     });
-
-    if (search || gyEmpCode) {
-      const term = String(search || gyEmpCode).toLowerCase().trim().replace(/^sib-\s*/i, "");
-      missingEmployees = missingEmployees.filter((sched) => {
-        const empCode = String(sched.gyEmpCode || "").toLowerCase();
-        const empUid = String(sched.employeeUid || "").toLowerCase();
-        const empName = String(sched.employeeName || "").toLowerCase();
-        return empCode.includes(term) || empUid.includes(term) || empName.includes(term);
-      });
-    }
 
     if (missingEmployees.length > 0) {
       const missingLedgers = await findEmployeeLedgersByGyEmpCodes(
@@ -886,7 +1014,7 @@ function getManilaTodayIso() {
           lastLogoffAt: null,
           otHours: 0,
           totalHours: 0,
-          status: isRestDay ? "Rest Day" : "Absent",
+          status: isRestDay ? "Rest Day" : sched.schedDay < todayIso ? "Absent" : null,
           shiftSeconds: 0,
           shiftStatus: "INCOMPLETE",
           sourceRowCount: 0,
@@ -904,9 +1032,6 @@ function getManilaTodayIso() {
           employeeMappingStatus: ledger ? "MATCHED_LEDGER" : "UNMATCHED_LEDGER",
           taskOrderId: ledger?.taskOrderId || null,
           scheduleMode: sched.schedMode ?? null,
-          occupancyRowCount: 0,
-          occupancyDataMatched: false,
-          occupancy: null,
         });
       }
 
@@ -917,31 +1042,68 @@ function getManilaTodayIso() {
     }
   }
 
-  const safePage = normalizePage(page);
-  const safeLimit = normalizeLimit(limit, 50);
-  const total = joinedRows.length;
-  const totalPages = total ? Math.ceil(total / safeLimit) : 0;
-  const offset = (safePage - 1) * safeLimit;
-  const data = joinedRows.slice(offset, offset + safeLimit);
-
-  return {
+  const finalDataset = {
     scope: dataset.scope,
     sourceEndpoint: dataset.sourceEndpoint,
     sourceRows: dataset.sourceRows + leaderPunchRows.reduce((count, row) => count + (row.sourceRowCount || 0), 0),
-    normalizedRows: total,
+    normalizedRows: joinedRows.length,
     completeShiftRows: dataset.completeShiftRows,
     incompleteShiftRows: dataset.incompleteShiftRows,
     matchedEmployeeLedgerRows: dataset.matchedEmployeeLedgerRows,
-    occupancyMatchedRows: joinedRows.filter((row) => row.occupancyDataMatched).length,
     fieldConfiguration: dataset.fieldConfiguration,
     discoveredFields: dataset.discoveredFields,
-    data,
-    pagination: {
-      currentPage: safePage,
-      totalPages,
-      total,
-      limit: safeLimit,
-    },
+    rows: joinedRows,
     storageMode: "LIVE_ONLY",
+    performance: {
+      attendanceMs,
+      scheduleMs,
+      joinMs: elapsedMs(joinStart),
+      totalMs: elapsedMs(startedAt),
+      ...(scheduleData.diagnostics || {}),
+    },
+  };
+  return finalDataset;
+}
+
+export async function getLiveAttendance({
+  accountId,
+  gyEmpCode = null,
+  search = null,
+  dateFrom,
+  dateTo,
+  page = 1,
+  limit = 50,
+}) {
+  const range = validateDateRange(dateFrom, dateTo);
+  if (range.dateFrom !== range.dateTo) {
+    const error = new Error("Attendance Sheet supports one selected date per request.");
+    error.code = "ATTENDANCE_SHEET_SINGLE_DATE_REQUIRED";
+    error.status = 400;
+    throw error;
+  }
+  const requestStart = process.hrtime.bigint();
+  const { dataset, cacheStatus } = await getCachedAttendanceSheetDay(accountId, range.dateFrom);
+  const code = normalizeEmployeeUid(gyEmpCode);
+  const term = String(search || "").trim().replace(/^SIB-\s*/i, "").toLowerCase();
+  const filteredRows = !code && !term ? dataset.rows : dataset.rows.filter((row) => {
+    const uid = normalizeEmployeeUid(row.employeeUid);
+    if (code && uid !== code) return false;
+    return !term || `${uid} ${row.gyEmpCode || ""} ${row.employeeName || ""}`
+      .toLowerCase().includes(term);
+  });
+  const safePage = normalizePage(page);
+  const safeLimit = normalizeLimit(limit, 50);
+  const total = filteredRows.length;
+  const totalPages = total ? Math.ceil(total / safeLimit) : 0;
+  const offset = (safePage - 1) * safeLimit;
+  const durationMs = elapsedMs(requestStart);
+  return {
+    ...dataset,
+    // Do not expose the unpaginated cached rows through the API.
+    rows: undefined,
+    data: filteredRows.slice(offset, offset + safeLimit),
+    normalizedRows: total,
+    pagination: { currentPage: safePage, totalPages, total, limit: safeLimit },
+    performance: { ...dataset.performance, cacheStatus, requestMs: durationMs },
   };
 }

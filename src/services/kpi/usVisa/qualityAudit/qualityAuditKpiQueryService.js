@@ -2,13 +2,13 @@ import {
   getQualityAuditKpiDateBounds,
   getQualityAuditKpiRows,
   listQualityAuditCountries,
-} from "../../repositories/usVisa/usVisaQualityAuditKpiRepository.js";
-import { normalizeUsVisaTaskOrderId } from "../../config/usVisaTaskOrders.js";
+} from "../../../../repositories/usVisa/usVisaQualityAuditKpiRepository.js";
+import { normalizeUsVisaTaskOrderId } from "../../../../config/usVisaTaskOrders.js";
 import {
   normalizeCallKpiPeriod,
   resolveCallKpiDateRange,
   resolveDefaultCallKpiDateRange,
-} from "./callKpiService.js";
+} from "../calls/callKpiService.js";
 import {
   buildQualityAuditAvailableCountries,
   buildWfmQualityAuditKpiDashboard,

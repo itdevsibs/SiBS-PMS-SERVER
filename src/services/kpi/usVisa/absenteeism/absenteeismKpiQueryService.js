@@ -1,8 +1,8 @@
-import { getKronosAbsenteeismEmployeeDayRows } from "../../repositories/kronos/kronosAbsenteeismRepository.js";
-import { findUsVisaRosterEmployeeUids } from "../../repositories/usVisa/usVisaEmployeeScopeRepository.js";
+import { getKronosAbsenteeismEmployeeDayRows } from "../../../../repositories/kronos/kronosAbsenteeismRepository.js";
+import { findUsVisaRosterEmployeeUids } from "../../../../repositories/usVisa/usVisaEmployeeScopeRepository.js";
 import { buildWfmAbsenteeismKpiDashboard } from "./absenteeismKpiService.js";
-import { resolveOccupancyDateRange } from "./occupancyKpiQueryService.js";
-import { getOrCreateAbsenteeismCacheEntry } from "../cache/absenteeismCacheService.js";
+import { resolveOccupancyDateRange } from "../occupancy/occupancyKpiQueryService.js";
+import { getOrCreateAbsenteeismCacheEntry } from "../../../cache/absenteeismCacheService.js";
 
 function normalizeTaskOrderCacheValue(taskOrder) {
   return Array.isArray(taskOrder)
