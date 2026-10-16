@@ -3,7 +3,7 @@ import {
   normalizeCallKpiPeriod,
   parseCallKpiDateOnly,
   seedCallKpiReferencePeriodBuckets,
-} from "./callKpiService.js";
+} from "../calls/callKpiService.js";
 
 function toFiniteNumber(value) {
   const number = Number(value);

@@ -1,4 +1,4 @@
-import { getWfmEmailKpiDashboard } from "../services/kpi/emailKpiQueryService.js";
+import { getWfmEmailKpiDashboard } from "../services/kpi/usVisa/email/emailKpiQueryService.js";
 
 const BAD_REQUEST_CODES = new Set([
   "INVALID_CUSTOM_DATE_RANGE",

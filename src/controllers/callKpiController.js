@@ -6,8 +6,8 @@ import {
 import {
   getSkillStatisticsByBatchId,
 } from "../repositories/usVisa/usVisaSkillStatisticsRepository.js";
-import { getWfmCallKpiDashboard } from "../services/kpi/callKpiQueryService.js";
-import { chooseCallKpiDataGrain } from "../services/kpi/callKpiService.js";
+import { getWfmCallKpiDashboard } from "../services/kpi/usVisa/calls/callKpiQueryService.js";
+import { chooseCallKpiDataGrain } from "../services/kpi/usVisa/calls/callKpiService.js";
 import {
   getDistinctSkillsByCountry,
   getCallsReportData,

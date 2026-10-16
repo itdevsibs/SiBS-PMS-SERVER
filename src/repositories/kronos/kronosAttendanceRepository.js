@@ -1,88 +1,24 @@
-import { pmsDb, pmsTables } from "../../config/db.js";
+import { getKronosApiResponse } from "../../services/kronos/kronosApiClient.js";
 import { findUsVisaRosterEmployeeUids } from "../usVisa/usVisaEmployeeScopeRepository.js";
 
 function normalizeEmployeeUid(value) {
   return String(value || "").trim().replace(/^SIB-\s*/i, "").trim();
 }
 
-// This repository only reads the existing Agent Occupancy data so the live
-// Kronos attendance response can be joined in memory. It does not store any
-// Kronos attendance data in PMS.
-export async function findOccupancyDailyMatches({
-  employeeUids = [],
-  dateFrom,
-  dateTo,
-} = {}) {
-  const normalizedUids = [
-    ...new Set(employeeUids.map(normalizeEmployeeUid).filter(Boolean)),
-  ];
-
-  if (!normalizedUids.length || !dateFrom || !dateTo) return [];
-
-  const placeholders = normalizedUids.map(() => "?").join(", ");
-  const [rows] = await pmsDb.query(
-    `
-      SELECT
-        REPLACE(UPPER(TRIM(ao.employee_uid)), 'SIB-', '') AS employee_uid,
-        ao.production_date,
-        COUNT(*) AS occupancy_row_count,
-        COALESCE(SUM(ao.talking_seconds), 0) AS talking_seconds,
-        COALESCE(SUM(ao.hold_seconds), 0) AS hold_seconds,
-        COALESCE(SUM(ao.after_call_seconds), 0) AS after_call_seconds,
-        COALESCE(SUM(ao.wrapup_seconds), 0) AS wrapup_seconds,
-        COALESCE(SUM(ao.email_seconds), 0) AS email_seconds,
-        COALESCE(SUM(ao.chatting_seconds), 0) AS chatting_seconds,
-        COALESCE(SUM(ao.available_idle_seconds), 0) AS available_idle_seconds
-      FROM ${pmsTables.usVisaRawAgentOccupancy} ao
-      INNER JOIN ${pmsTables.usVisaImportBatches} b
-        ON b.id = ao.batch_id
-      WHERE b.status IN ('COMPLETED', 'COMPLETED_WITH_ERRORS')
-        AND ao.mapping_status = 'MATCHED'
-        AND ao.production_date IS NOT NULL
-        AND ao.production_date BETWEEN ? AND ?
-        AND REPLACE(UPPER(TRIM(ao.employee_uid)), 'SIB-', '') IN (${placeholders})
-      GROUP BY
-        REPLACE(UPPER(TRIM(ao.employee_uid)), 'SIB-', ''),
-        ao.production_date
-    `,
-    [dateFrom, dateTo, ...normalizedUids.map((uid) => uid.toUpperCase())],
-  );
-
-  return rows.map((row) => ({
-    employeeUid: normalizeEmployeeUid(row.employee_uid),
-    productionDate:
-      row.production_date instanceof Date
-        ? row.production_date.toISOString().slice(0, 10)
-        : String(row.production_date || "").slice(0, 10),
-    occupancyRowCount: Number(row.occupancy_row_count || 0),
-    talkingSeconds: Number(row.talking_seconds || 0),
-    holdSeconds: Number(row.hold_seconds || 0),
-    afterCallSeconds: Number(row.after_call_seconds || 0),
-    wrapupSeconds: Number(row.wrapup_seconds || 0),
-    emailSeconds: Number(row.email_seconds || 0),
-    chattingSeconds: Number(row.chatting_seconds || 0),
-    availableIdleSeconds: Number(row.available_idle_seconds || 0),
-  }));
-}
-
-
-import { getKronosApiResponse } from "../../services/kronos/kronosApiClient.js";
-
 const EMPLOYEE_DIRECTORY_ENDPOINT = "/api/v1/employee-directory";
 const EMPLOYEE_SCHEDULE_ENDPOINT = "/api/v1/employee-schedules";
-const EMPLOYEE_RESOURCE_ENDPOINT = "/api/v1/employees";
 // Kronos keeps Team Leaders under a separate organizational account.
 // Only verified US Visa roster members may cross this account boundary.
 const TEAM_LEADERS_KRONOS_ACCOUNT_ID = 78;
 const API_PAGE_SIZE = 100;
 const MAX_API_PAGES = 200;
 const SCHEDULE_FETCH_CONCURRENCY = 3;
+const SCHEDULE_MAX_ATTEMPTS = 3;
+const SCHEDULE_RETRY_DELAY_MS = 250;
 const DIRECTORY_CACHE_MS = 2 * 60 * 1000;
 const SCHEDULE_CACHE_MS = 60 * 1000;
-const EMPLOYEE_ID_CACHE_MS = 60 * 60 * 1000;
 const directoryCache = new Map();
 const scheduleCache = new Map();
-const employeeIdCache = new Map();
 
 function positiveId(value) {
   const parsed = Number(value);
@@ -109,6 +45,23 @@ function scheduleSourceError(message, code = "KRONOS_SCHEDULE_API_INCOMPLETE") {
   error.code = code;
   error.status = 502;
   return error;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientScheduleError(error) {
+  const status = Number(error?.status || 0);
+  return (
+    error?.code === "KRONOS_API_TIMEOUT" ||
+    error?.code === "KRONOS_TRANSPORT_FAILED" ||
+    status === 429 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504
+  );
 }
 
 // Cache only completed, validated API results. A rejected request is never cached.
@@ -188,119 +141,165 @@ async function fetchAllApiPages(endpoint, filters, context) {
   throw scheduleSourceError(`Kronos ${context} exceeded ${MAX_API_PAGES} pages.`);
 }
 
+// Schedule calls use local quiet retries so one flaky employee schedule does not
+// flood the server console with per-attempt HTTP 500 warnings. Final failures are
+// summarized once by the Attendance Sheet diagnostics instead.
+async function fetchAllSchedulePages(employee, dateFrom, dateTo) {
+  const rows = [];
+  let expectedPages = null;
+  let expectedTotal = null;
+  let requestCount = 0;
+  let retryCount = 0;
+
+  for (let page = 1; page <= MAX_API_PAGES; page += 1) {
+    let payload = null;
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= SCHEDULE_MAX_ATTEMPTS; attempt += 1) {
+      requestCount += 1;
+      try {
+        payload = await getKronosApiResponse(EMPLOYEE_SCHEDULE_ENDPOINT, {
+          params: {
+            gy_emp_id: employee.gyEmpId,
+            date_from: dateFrom,
+            date_to: dateTo,
+            page,
+            limit: API_PAGE_SIZE,
+          },
+          retryTransient: false,
+        });
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        if (!isTransientScheduleError(error) || attempt >= SCHEDULE_MAX_ATTEMPTS) break;
+        retryCount += 1;
+        await delay(SCHEDULE_RETRY_DELAY_MS * 2 ** (attempt - 1));
+      }
+    }
+
+    if (lastError) {
+      lastError.attendanceSheetScheduleStats = { requestCount, retryCount };
+      throw lastError;
+    }
+
+    const result = apiPageRows(payload, page, `employee ${employee.employeeUid} schedules`);
+    if (expectedPages !== null && result.pages !== expectedPages) {
+      throw scheduleSourceError(`Kronos employee ${employee.employeeUid} schedule page count changed while reading.`);
+    }
+    if (expectedTotal !== null && Number.isFinite(result.total) && result.total !== expectedTotal) {
+      throw scheduleSourceError(`Kronos employee ${employee.employeeUid} schedule row count changed while reading.`);
+    }
+    expectedPages = result.pages;
+    if (Number.isFinite(result.total)) expectedTotal ??= result.total;
+    rows.push(...result.rows);
+
+    if (page === expectedPages || expectedPages === 0) {
+      if (expectedTotal !== null && rows.length !== expectedTotal) {
+        throw scheduleSourceError(
+          `Incomplete Kronos employee ${employee.employeeUid} schedules: received ${rows.length} of ${expectedTotal} rows.`,
+        );
+      }
+      return { rows, requestCount, retryCount };
+    }
+    if (result.rows.length === 0) {
+      throw scheduleSourceError(`Kronos employee ${employee.employeeUid} schedules returned an empty intermediate page.`);
+    }
+  }
+
+  throw scheduleSourceError(`Kronos employee ${employee.employeeUid} schedules exceeded ${MAX_API_PAGES} pages.`);
+}
+
 // The optimized directory applies the account filter on the Kronos API side.
 // Unlike tracker data, its population includes employees with no login records.
 function isUsVisaAccount(value) {
   return /^US[\s_-]*VISA$/i.test(String(value || "").trim());
 }
 
-// The employee-directory API is intended for display and does not guarantee
-// gy_emp_code in every row. Never infer the public code from gy_emp_id or name.
-async function getAccountEmployees(accountId, { allowMissingCodes = false } = {}) {
-  return cachedRead(directoryCache, `${accountId}|${allowMissingCodes ? "roster" : "strict"}`,
-    DIRECTORY_CACHE_MS, async () => {
-      const rows = await fetchAllApiPages(
-        EMPLOYEE_DIRECTORY_ENDPOINT, { account_ids: accountId }, "employee directory",
-      );
-      const byUid = new Map();
-      let missingCodes = 0;
-      for (const row of rows) {
-        const returnedAccountId = positiveId(getField(row, [
-          "gy_acc_id", "employee.gy_acc_id", "account_id", "account.gy_acc_id",
-        ]));
-        if (returnedAccountId && returnedAccountId !== accountId) {
-          throw scheduleSourceError("Kronos employee directory returned another account's employee.");
-        }
-        const uid = normalizeEmployeeUid(getField(row, [
-          "gy_emp_code", "employee.gy_emp_code", "employee_code", "emp_code",
-          "employee.employee_code", "employee.emp_code", "employee_code_number",
-          "sibs_id", "employee.sibs_id", "employeeUid", "employee_uid",
-        ]));
-        if (!uid) {
-          missingCodes += 1;
-          continue;
-        }
-        const internalId = positiveId(getField(row, [
-          "gy_emp_id", "employee.gy_emp_id",
-        ]));
-        const name = String(getField(row, [
-          "gy_emp_fullname", "employee.gy_emp_fullname", "employee_name", "full_name",
-        ]) || "").trim();
-        const previous = byUid.get(uid);
-        if (previous?.gyEmpId && internalId && previous.gyEmpId !== internalId) {
-          throw scheduleSourceError(`Conflicting internal IDs for Kronos employee ${uid}.`);
-        }
-        byUid.set(uid, {
-          employeeUid: uid,
-          gyEmpCode: uid,
-          gyEmpId: internalId || previous?.gyEmpId || null,
-          employeeName: name || previous?.employeeName || "",
-        });
+async function getAccountEmployees(accountId) {
+  return cachedRead(directoryCache, String(accountId), DIRECTORY_CACHE_MS, async () => {
+    const rows = await fetchAllApiPages(
+      EMPLOYEE_DIRECTORY_ENDPOINT, { account_ids: accountId }, `employee directory ${accountId}`,
+    );
+    const byUid = new Map();
+    let missingCodes = 0;
+    let missingInternalIds = 0;
+
+    for (const row of rows) {
+      const returnedAccountId = positiveId(getField(row, [
+        "gy_acc_id", "employee.gy_acc_id", "account_id", "account.gy_acc_id",
+      ]));
+      if (returnedAccountId && returnedAccountId !== accountId) {
+        throw scheduleSourceError("Kronos employee directory returned another account's employee.");
       }
-      if (missingCodes > 0 && !allowMissingCodes) {
-        throw scheduleSourceError(
-          `Kronos employee directory omitted the employee code in ${missingCodes} row(s); cannot safely resolve their schedules.`,
-        );
+
+      const uid = normalizeEmployeeUid(getField(row, [
+        "gy_emp_code", "employee.gy_emp_code", "employee_code", "emp_code",
+        "employee.employee_code", "employee.emp_code", "employee_code_number",
+        // Kronos documents gy_user_code as the same public employee identity as
+        // gy_emp_code. The optimized directory may expose the joined user code
+        // instead of duplicating the employee code column.
+        "gy_user_code", "user.gy_user_code", "employee.gy_user_code", "user_code",
+        "sibs_id", "employee.sibs_id", "employeeUid", "employee_uid",
+      ]));
+      if (!uid) {
+        missingCodes += 1;
+        continue;
       }
-      if (missingCodes > 0) {
-        console.warn("Kronos employee directory omitted public employee codes; using the US Visa roster and verified employee API for coverage.", {
-          accountId, missingCodeRows: missingCodes, totalDirectoryRows: rows.length,
-        });
+
+      // The optimized views use employee_id on some deployments and gy_emp_id
+      // on others. Both represent the internal ID required by employee-schedules.
+      const internalId = positiveId(getField(row, [
+        "gy_emp_id", "employee.gy_emp_id", "employee_id", "employee.employee_id",
+      ]));
+      if (!internalId) missingInternalIds += 1;
+
+      const name = String(getField(row, [
+        "gy_emp_fullname", "employee.gy_emp_fullname", "employee_name", "full_name",
+      ]) || "").trim();
+      const previous = byUid.get(uid);
+      if (previous?.gyEmpId && internalId && previous.gyEmpId !== internalId) {
+        throw scheduleSourceError(`Conflicting internal IDs for Kronos employee ${uid}.`);
       }
-      return [...byUid.values()];
-    });
+      byUid.set(uid, {
+        employeeUid: uid,
+        gyEmpCode: uid,
+        gyEmpId: internalId || previous?.gyEmpId || null,
+        employeeName: name || previous?.employeeName || "",
+        kronosAccountId: accountId,
+        employeeRole: null,
+      });
+    }
+
+    return {
+      employees: [...byUid.values()],
+      sourceRows: rows.length,
+      missingCodes,
+      missingInternalIds,
+    };
+  });
 }
 
-async function resolveInternalId(employee, expectedAccountId, { allowUsVisaTeamLeader = false } = {}) {
-  if (employee.gyEmpId) return { ...employee, kronosAccountId: expectedAccountId, employeeRole: null };
-  const uid = employee.employeeUid;
-  const details = await cachedRead(employeeIdCache, uid, EMPLOYEE_ID_CACHE_MS, async () => {
-    const payload = await getKronosApiResponse(
-      `${EMPLOYEE_RESOURCE_ENDPOINT}/${encodeURIComponent(uid)}`, { retryTransient: true },
-    );
-    const row = payload?.data || {};
-    const returnedCode = normalizeEmployeeUid(getField(row, [
-      "gy_emp_code", "employee.gy_emp_code", "employee_code", "emp_code",
-    ]));
-    const resolved = positiveId(getField(row, ["gy_emp_id", "employee.gy_emp_id"]));
-    const returnedAccountId = positiveId(getField(row, [
-      "gy_acc_id", "employee.gy_acc_id", "account_id",
-    ]));
-    if (returnedCode !== uid || !resolved) {
-      throw scheduleSourceError(`Unable to resolve verified Kronos ID for ${uid}.`, "KRONOS_EMPLOYEE_ID_UNRESOLVED");
-    }
-    return { id: resolved, accountId: returnedAccountId, name: String(getField(row, [
-      "gy_emp_fullname", "employee.gy_emp_fullname", "employee_name", "full_name",
-    ]) || "").trim() };
-  });
-  if (details.accountId && details.accountId !== expectedAccountId) {
-    // US Visa Team Leaders belong to Kronos account 78. Allow this exception
-    // only when the employee was explicitly found in the date-scoped US Visa
-    // PMS roster, not just because their employee code appeared in attendance.
-    if (allowUsVisaTeamLeader && expectedAccountId === 20 &&
-        details.accountId === TEAM_LEADERS_KRONOS_ACCOUNT_ID) {
-      return {
-        ...employee,
-        gyEmpId: details.id,
-        employeeName: employee.employeeName || details.name,
-        kronosAccountId: TEAM_LEADERS_KRONOS_ACCOUNT_ID,
-        employeeRole: "TEAM_LEADER",
-      };
-    }
-    console.warn("Skipping Kronos schedule candidate assigned to another account", {
-      employeeUid: uid,
-      expectedAccountId,
-      actualAccountId: details.accountId,
-    });
-    return null;
+function mergeEmployeeCandidate(map, employee, { preferIncoming = false } = {}) {
+  const uid = normalizeEmployeeUid(employee?.employeeUid ?? employee?.gyEmpCode);
+  if (!uid) return;
+  const incomingId = positiveId(employee?.gyEmpId);
+  const current = map.get(uid);
+
+  if (current?.gyEmpId && incomingId && current.gyEmpId !== incomingId) {
+    throw scheduleSourceError(`Conflicting internal IDs for Kronos employee ${uid}.`);
   }
-  return {
-    ...employee,
-    gyEmpId: details.id,
-    employeeName: employee.employeeName || details.name,
-    kronosAccountId: details.accountId || expectedAccountId,
-    employeeRole: null,
-  };
+
+  map.set(uid, {
+    employeeUid: uid,
+    gyEmpCode: uid,
+    gyEmpId: incomingId || current?.gyEmpId || null,
+    employeeName: preferIncoming
+      ? String(employee?.employeeName || current?.employeeName || "").trim()
+      : String(current?.employeeName || employee?.employeeName || "").trim(),
+    kronosAccountId: positiveId(employee?.kronosAccountId) || current?.kronosAccountId || null,
+    employeeRole: employee?.employeeRole || current?.employeeRole || null,
+  });
 }
 
 function normalizeSchedule(row, employee, dateFrom, dateTo) {
@@ -310,7 +309,9 @@ function normalizeSchedule(row, employee, dateFrom, dateTo) {
   if (!schedDay || schedDay < dateFrom || schedDay > dateTo) {
     throw scheduleSourceError(`Unexpected or missing schedule date for ${employee.employeeUid}.`);
   }
-  const apiEmployeeId = positiveId(getField(row, ["gy_emp_id", "schedule.gy_emp_id"]));
+  const apiEmployeeId = positiveId(getField(row, [
+    "gy_emp_id", "schedule.gy_emp_id", "employee_id", "schedule.employee_id",
+  ]));
   if (apiEmployeeId && apiEmployeeId !== employee.gyEmpId) {
     throw scheduleSourceError(`Schedule employee ID mismatch for ${employee.employeeUid}.`);
   }
@@ -330,74 +331,249 @@ function normalizeSchedule(row, employee, dateFrom, dateTo) {
 }
 
 async function getEmployeeSchedules(employee, dateFrom, dateTo) {
-  return cachedRead(scheduleCache, `${employee.gyEmpId}|${dateFrom}|${dateTo}`,
-    SCHEDULE_CACHE_MS, async () => {
-      const rows = await fetchAllApiPages(EMPLOYEE_SCHEDULE_ENDPOINT, {
-        gy_emp_id: employee.gyEmpId,
-        date_from: dateFrom,
-        date_to: dateTo,
-      }, `employee ${employee.employeeUid} schedules`);
-      return rows.map((row) => normalizeSchedule(row, employee, dateFrom, dateTo));
-    });
+  const key = `${employee.gyEmpId}|${dateFrom}|${dateTo}`;
+  const existing = scheduleCache.get(key);
+  if (existing && existing.expiresAt > Date.now()) {
+    return { ...(await existing.promise), cacheHit: true };
+  }
+
+  const promise = (async () => {
+    const fetched = await fetchAllSchedulePages(employee, dateFrom, dateTo);
+    return {
+      schedules: fetched.rows.map((row) => normalizeSchedule(row, employee, dateFrom, dateTo)),
+      requestCount: fetched.requestCount,
+      retryCount: fetched.retryCount,
+    };
+  })();
+  scheduleCache.set(key, { promise, expiresAt: Date.now() + SCHEDULE_CACHE_MS });
+
+  try {
+    const result = await promise;
+    return { ...result, cacheHit: false };
+  } catch (error) {
+    if (scheduleCache.get(key)?.promise === promise) scheduleCache.delete(key);
+    throw error;
+  } finally {
+    if (scheduleCache.size > 5000) scheduleCache.delete(scheduleCache.keys().next().value);
+  }
+}
+
+function emptyScheduleResult() {
+  return {
+    schedules: [],
+    teamLeaders: [],
+    coveredEmployeeUids: [],
+    unresolvedEmployeeUids: [],
+    scheduleFailures: [],
+    diagnostics: {
+      directoryRows: 0,
+      teamLeaderDirectoryRows: 0,
+      directoryMissingCodes: 0,
+      directoryMissingInternalIds: 0,
+      candidateEmployees: 0,
+      unresolvedEmployees: 0,
+      scheduleRequests: 0,
+      scheduleRetries: 0,
+      scheduleFailures: 0,
+      scheduleCacheHits: 0,
+      scheduleCacheMisses: 0,
+    },
+  };
 }
 
 /**
- * Fetches every employee's scheduled days from Kronos API only.
- * This includes absent/rest-day employees who have no tracker records.
- * Both sources are account/date scoped; no direct kronosDb queries.
+ * Attendance Sheet schedule adapter only.
+ *
+ * Internal employee IDs are resolved in bulk from employee-directory and from
+ * employee-attendance seed rows. This path intentionally NEVER calls
+ * /api/v1/employees/{code}. Verified US Visa Team Leaders are resolved from
+ * account 78's bulk directory and only when the PMS US Visa roster contains
+ * their employee code.
  */
 export async function getKronosAttendanceSheetScheduleData({
   kronosAccountId,
   accountName = "",
   employeeUids = [],
+  seedEmployees = [],
+  includeAccountPopulation = true,
   dateFrom,
   dateTo,
 } = {}) {
   const accountId = positiveId(kronosAccountId);
   if (!accountId || !dateOnly(dateFrom) || !dateOnly(dateTo) || dateFrom > dateTo) {
-    return { schedules: [], teamLeaders: [] };
+    return emptyScheduleResult();
   }
-  // The API directory is a display endpoint. When it omits employee codes,
-  // US Visa's date-scoped PMS roster supplies the public codes. Schedules and
-  // individual employee ID verification still come exclusively from Kronos API.
+
   const isUsVisa = isUsVisaAccount(accountName);
-  const [employees, rosterUids] = await Promise.all([
-    getAccountEmployees(accountId, { allowMissingCodes: isUsVisa }),
-    isUsVisa ? findUsVisaRosterEmployeeUids({ dateFrom, dateTo }) : Promise.resolve([]),
-  ]);
-  const byUid = new Map(employees.map((employee) => [employee.employeeUid, employee]));
+  const rosterUids = isUsVisa
+    ? await findUsVisaRosterEmployeeUids({ dateFrom, dateTo })
+    : [];
   const rosterUidSet = new Set(rosterUids.map(normalizeEmployeeUid).filter(Boolean));
-  // Include no-login US Visa roster employees; attendance-only historical codes
-  // are added separately. Never map employee codes by display name or gy_emp_id.
-  for (const rawUid of [...rosterUids, ...employeeUids]) {
-    const uid = normalizeEmployeeUid(rawUid);
-    if (uid && !byUid.has(uid)) {
-      byUid.set(uid, { employeeUid: uid, gyEmpCode: uid, gyEmpId: null, employeeName: "" });
+
+  // Attendance is the first-choice identity source because /employee-attendance
+  // already exposes employee_id, which is the gy_emp_id required by
+  // /employee-schedules. Directory is only consulted for no-attendance roster
+  // employees or other explicitly requested employees that remain unresolved.
+  const seedByUid = new Map();
+  for (const seed of seedEmployees) {
+    mergeEmployeeCandidate(seedByUid, seed, { preferIncoming: true });
+  }
+
+  const requestedUidSet = new Set(employeeUids.map(normalizeEmployeeUid).filter(Boolean));
+  const requiredUids = includeAccountPopulation && isUsVisa
+    ? new Set([...rosterUidSet, ...requestedUidSet, ...seedByUid.keys()])
+    : new Set([...requestedUidSet, ...seedByUid.keys()]);
+
+  const candidates = new Map();
+  for (const seed of seedByUid.values()) {
+    const seedAccountId = positiveId(seed.kronosAccountId);
+    const uid = seed.employeeUid;
+    if (!seedAccountId || seedAccountId === accountId) {
+      mergeEmployeeCandidate(candidates, {
+        ...seed,
+        kronosAccountId: accountId,
+        employeeRole: null,
+      }, { preferIncoming: true });
+    } else if (
+      isUsVisa &&
+      seedAccountId === TEAM_LEADERS_KRONOS_ACCOUNT_ID &&
+      rosterUidSet.has(uid)
+    ) {
+      mergeEmployeeCandidate(candidates, {
+        ...seed,
+        kronosAccountId: TEAM_LEADERS_KRONOS_ACCOUNT_ID,
+        employeeRole: "TEAM_LEADER",
+      }, { preferIncoming: true });
     }
   }
-  const resolvedEmployees = await mapWithConcurrency([...byUid.values()],
-    SCHEDULE_FETCH_CONCURRENCY, (employee) => resolveInternalId(employee, accountId, {
-      allowUsVisaTeamLeader: isUsVisa && rosterUidSet.has(employee.employeeUid),
-    }));
-  const allEmployees = resolvedEmployees.filter(Boolean);
+
+  let accountDirectory = {
+    employees: [],
+    sourceRows: 0,
+    missingCodes: 0,
+    missingInternalIds: 0,
+  };
+  let teamLeaderDirectory = {
+    employees: [],
+    sourceRows: 0,
+    missingCodes: 0,
+    missingInternalIds: 0,
+  };
+
+  let unresolvedUids = [...requiredUids].filter((uid) => !candidates.get(uid)?.gyEmpId);
+
+  // Primary-account directory fallback for employees that had no attendance row.
+  if (unresolvedUids.length) {
+    accountDirectory = await getAccountEmployees(accountId);
+    const accountByUid = new Map(
+      accountDirectory.employees.map((employee) => [employee.employeeUid, employee]),
+    );
+    for (const uid of unresolvedUids) {
+      const employee = accountByUid.get(uid);
+      if (!employee?.gyEmpId) continue;
+      mergeEmployeeCandidate(candidates, {
+        ...employee,
+        kronosAccountId: accountId,
+        employeeRole: null,
+      });
+    }
+  }
+
+  unresolvedUids = [...requiredUids].filter((uid) => !candidates.get(uid)?.gyEmpId);
+
+  // US Visa Team Leaders live under Kronos account 78. Query that directory only
+  // when a verified US Visa roster employee still cannot be resolved in account 20.
+  const unresolvedRosterUids = unresolvedUids.filter((uid) => rosterUidSet.has(uid));
+  if (isUsVisa && unresolvedRosterUids.length) {
+    teamLeaderDirectory = await getAccountEmployees(TEAM_LEADERS_KRONOS_ACCOUNT_ID);
+    const leaderByUid = new Map(
+      teamLeaderDirectory.employees.map((employee) => [employee.employeeUid, employee]),
+    );
+    for (const uid of unresolvedRosterUids) {
+      const leader = leaderByUid.get(uid);
+      if (!leader?.gyEmpId) continue;
+      mergeEmployeeCandidate(candidates, {
+        ...leader,
+        kronosAccountId: TEAM_LEADERS_KRONOS_ACCOUNT_ID,
+        employeeRole: "TEAM_LEADER",
+      });
+    }
+  }
+
+  const unresolvedEmployeeUids = [...requiredUids].filter(
+    (uid) => !candidates.get(uid)?.gyEmpId,
+  );
+  const allEmployees = [...candidates.values()].filter((employee) => employee.gyEmpId);
   const teamLeaders = allEmployees.filter((employee) => employee.employeeRole === "TEAM_LEADER");
-  const results = await mapWithConcurrency(allEmployees, SCHEDULE_FETCH_CONCURRENCY,
-    (employee) => getEmployeeSchedules(employee, dateFrom, dateTo));
+
+  const results = await mapWithConcurrency(
+    allEmployees,
+    SCHEDULE_FETCH_CONCURRENCY,
+    async (employee) => {
+      try {
+        const result = await getEmployeeSchedules(employee, dateFrom, dateTo);
+        return { employee, ...result, error: null };
+      } catch (error) {
+        const stats = error?.attendanceSheetScheduleStats || {};
+        return {
+          employee,
+          schedules: [],
+          requestCount: Number(stats.requestCount || error?.attempts || 1),
+          retryCount: Number(stats.retryCount || 0),
+          cacheHit: false,
+          error,
+        };
+      }
+    },
+  );
 
   const byEmployeeDay = new Map();
-  for (const schedule of results.flat()) {
-    const key = `${schedule.employeeUid}|${schedule.schedDay}`;
-    const existing = byEmployeeDay.get(key);
-    // The Attendance Sheet has one row per employee/day. For duplicate schedule
-    // versions, use the highest schedule ID rather than injecting duplicate rows.
-    if (!existing || (schedule.scheduleId || 0) >= (existing.scheduleId || 0)) {
-      byEmployeeDay.set(key, schedule);
+  for (const result of results) {
+    for (const schedule of result.schedules) {
+      const key = `${schedule.employeeUid}|${schedule.schedDay}`;
+      const existing = byEmployeeDay.get(key);
+      // The Attendance Sheet has one row per employee/day. For duplicate schedule
+      // versions, use the highest schedule ID rather than injecting duplicate rows.
+      if (!existing || (schedule.scheduleId || 0) >= (existing.scheduleId || 0)) {
+        byEmployeeDay.set(key, schedule);
+      }
     }
   }
-  return { schedules: [...byEmployeeDay.values()], teamLeaders };
+
+  const scheduleFailures = results
+    .filter((result) => result.error)
+    .map((result) => ({
+      employeeUid: result.employee.employeeUid,
+      status: Number(result.error?.status || 0) || null,
+      code: result.error?.code || "KRONOS_SCHEDULE_FETCH_FAILED",
+    }));
+
+  const diagnostics = {
+    directoryRows: accountDirectory.sourceRows,
+    teamLeaderDirectoryRows: teamLeaderDirectory.sourceRows,
+    directoryMissingCodes: accountDirectory.missingCodes + teamLeaderDirectory.missingCodes,
+    directoryMissingInternalIds:
+      accountDirectory.missingInternalIds + teamLeaderDirectory.missingInternalIds,
+    candidateEmployees: allEmployees.length,
+    unresolvedEmployees: unresolvedEmployeeUids.length,
+    scheduleRequests: results.reduce((sum, result) => sum + Number(result.requestCount || 0), 0),
+    scheduleRetries: results.reduce((sum, result) => sum + Number(result.retryCount || 0), 0),
+    scheduleFailures: scheduleFailures.length,
+    scheduleCacheHits: results.filter((result) => result.cacheHit).length,
+    scheduleCacheMisses: results.filter((result) => !result.cacheHit).length,
+  };
+
+  return {
+    schedules: [...byEmployeeDay.values()],
+    teamLeaders,
+    coveredEmployeeUids: allEmployees.map((employee) => employee.employeeUid),
+    unresolvedEmployeeUids,
+    scheduleFailures,
+    diagnostics,
+  };
 }
 
-// Backwards-compatible schedule-only interface for existing consumers.
+// Backwards-compatible schedule-only interface for existing Attendance Sheet consumers.
 export async function findKronosScheduledEmployeesByAccount(options = {}) {
   const { schedules } = await getKronosAttendanceSheetScheduleData(options);
   return schedules;

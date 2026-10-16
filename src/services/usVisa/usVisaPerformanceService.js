@@ -1,9 +1,9 @@
 import {
   getUsVisaAgentCallKpiDashboard,
-} from "../kpi/usVisa/usVisaAgentCallKpiService.js";
+} from "../kpi/usVisa/calls/agentCallKpiService.js";
 import {
   getUsVisaKpiComparison,
-} from "../kpi/usVisa/usVisaKpiComparisonService.js";
+} from "../kpi/usVisa/calls/kpiComparisonService.js";
 import {
   resolveUsVisaOrgRole,
   resolveUsVisaOrgScope,

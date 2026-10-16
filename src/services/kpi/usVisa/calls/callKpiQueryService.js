@@ -2,7 +2,7 @@ import {
   getCallKpiDateBounds,
   getDailyCallKpiRows,
   listAvailableCallKpiDataGrains,
-} from "../../repositories/callKpiRepository.js";
+} from "../../../../repositories/callKpiRepository.js";
 import {
   buildWfmCallKpiDashboard,
   chooseCallKpiDataGrain,
@@ -13,7 +13,7 @@ import {
 import {
   getUsVisaTaskOrderCountries,
   normalizeUsVisaTaskOrder,
-} from "./usVisa/usVisaTaskOrderFilter.js";
+} from "./taskOrderFilter.js";
 
 const DEFAULT_SOURCE_SYSTEM = "US_VISA";
 const SUPPORTED_SOURCE_SYSTEMS = new Set([

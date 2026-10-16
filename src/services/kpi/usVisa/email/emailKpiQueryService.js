@@ -2,17 +2,17 @@ import {
   getEmailKpiDateBounds,
   getEmailKpiRows,
   listEmailKpiOwnerValues,
-} from "../../repositories/usVisa/usVisaEmailKpiRepository.js";
+} from "../../../../repositories/usVisa/usVisaEmailKpiRepository.js";
 import {
   getUsVisaCountryHolidayCoverage,
   listUsVisaCountryHolidays,
-} from "../../repositories/usVisa/usVisaCountryHolidayRepository.js";
-import { normalizeUsVisaTaskOrderId } from "../../config/usVisaTaskOrders.js";
+} from "../../../../repositories/usVisa/usVisaCountryHolidayRepository.js";
+import { normalizeUsVisaTaskOrderId } from "../../../../config/usVisaTaskOrders.js";
 import {
   normalizeCallKpiPeriod,
   resolveCallKpiDateRange,
   resolveDefaultCallKpiDateRange,
-} from "./callKpiService.js";
+} from "../calls/callKpiService.js";
 import {
   buildEmailKpiAvailableCountries,
   buildWfmEmailKpiDashboard,

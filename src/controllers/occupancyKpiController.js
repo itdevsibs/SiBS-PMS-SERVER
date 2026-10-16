@@ -1,6 +1,6 @@
-import { getWfmOccupancyKpiDashboard } from "../services/kpi/occupancyKpiQueryService.js";
-import { getWfmUtilizationKpiDashboard } from "../services/kpi/utilizationKpiQueryService.js";
-import { getWfmAbsenteeismKpiDashboard } from "../services/kpi/absenteeismKpiQueryService.js";
+import { getWfmOccupancyKpiDashboard } from "../services/kpi/usVisa/occupancy/occupancyKpiQueryService.js";
+import { getWfmUtilizationKpiDashboard } from "../services/kpi/usVisa/utilization/utilizationKpiQueryService.js";
+import { getWfmAbsenteeismKpiDashboard } from "../services/kpi/usVisa/absenteeism/absenteeismKpiQueryService.js";
 
 const BAD_REQUEST_CODES = new Set([
   "INVALID_CUSTOM_DATE_RANGE",

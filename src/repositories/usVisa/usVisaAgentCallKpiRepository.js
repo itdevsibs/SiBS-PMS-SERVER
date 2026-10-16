@@ -3,7 +3,7 @@ import { pmsDb, pmsTables } from "../../config/db.js";
 import {
   buildAgentHandleAvailableSql,
   buildAgentHandleSecondsSql,
-} from "../../services/kpi/ahtCalculationService.js";
+} from "../../services/kpi/usVisa/calls/ahtCalculationService.js";
 
 const SUCCESSFUL_BATCH_STATUSES = ["COMPLETED", "COMPLETED_WITH_ERRORS"];
 
