@@ -840,9 +840,9 @@ async function buildAttendanceSheetDay(accountId, workDate) {
   const startedAt = process.hrtime.bigint();
   const attendanceStart = process.hrtime.bigint();
 
-  // Attendance first: the optimized attendance view already gives us employee_id,
-  // which is the exact internal ID required by employee-schedules. Reuse those
-  // IDs before consulting employee-directory for no-attendance roster members.
+  // Attendance first: it provides the day's punch population and identity seeds.
+  // Schedule retrieval now calls employee-schedules by gy_emp_code; directory data
+  // remains only for account/Team Leader verification and no-attendance identities.
   const dataset = await getLiveAttendanceShiftRows({
     accountId,
     dateFrom: workDate,
@@ -860,10 +860,9 @@ async function buildAttendanceSheetDay(accountId, workDate) {
     dataset.rows.map((row) => normalizeEmployeeUid(row.employeeUid)).filter(Boolean),
   )];
 
-  // The schedule adapter uses attendance employee_id first and only falls back
-  // to employee-directory for US Visa roster employees that have no attendance
-  // row. Those schedule-only employees are later unioned into the sheet so an
-  // eligible historical shift with no punch can still display as Absent.
+  // The schedule adapter queries schedules by employee code and keeps the existing
+  // directory fallback for account/Team Leader verification. Schedule-only employees
+  // are later unioned into the sheet so a historical no-punch shift can show Absent.
   const scheduleData = await getKronosAttendanceSheetScheduleData({
     kronosAccountId: dataset.scope.kronosMapping?.kronosAccountId,
     accountName: dataset.scope.accountName,

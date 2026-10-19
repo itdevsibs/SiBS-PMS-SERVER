@@ -276,13 +276,13 @@ async function fetchAccountEmployeeDirectory(accountId) {
   return { ...data, requestCount: sharedPending ? 0 : data.requestCount };
 }
 
-function findCoveringSchedule(map, gyEmpId, from, to, { cache = false } = {}) {
+function findCoveringSchedule(map, employeeUid, from, to, { cache = false } = {}) {
   let match = null;
   let shortest = Infinity;
   const now = Date.now();
   for (const [key, entry] of map) {
     const [id, start, end] = key.split("|");
-    if (Number(id) !== gyEmpId || start > from || end < to) continue;
+    if (id !== employeeUid || start > from || end < to) continue;
     if (cache && entry.expiresAt <= now) {
       map.delete(key);
       continue;
@@ -296,10 +296,10 @@ function findCoveringSchedule(map, gyEmpId, from, to, { cache = false } = {}) {
   return match;
 }
 
-async function fetchEmployeeSchedulePagesUncached(gyEmpId, dateFrom, dateTo) {
+async function fetchEmployeeSchedulePagesUncached(employeeUid, dateFrom, dateTo) {
   return fetchPageCollection(
     OPTIMIZED_SCHEDULE_ENDPOINT,
-    { gy_emp_id: gyEmpId, date_from: dateFrom, date_to: dateTo },
+    { gy_emp_code: employeeUid, date_from: dateFrom, date_to: dateTo },
     {
       context: "SCHEDULE_PAGE_FETCH",
       maxPages: MAX_SCHEDULE_PAGES,
@@ -308,15 +308,15 @@ async function fetchEmployeeSchedulePagesUncached(gyEmpId, dateFrom, dateTo) {
   );
 }
 
-async function fetchEmployeeSchedulePages(gyEmpId, dateFrom, dateTo) {
-  const id = positiveInteger(gyEmpId);
+async function fetchEmployeeSchedulePages(employeeUid, dateFrom, dateTo) {
+  const uid = normalizeTrackerEmployeeUid(employeeUid);
   const from = normalizeDate(dateFrom);
   const to = normalizeDate(dateTo);
-  if (!id || !from || !to || from > to) {
+  if (!uid || !from || !to || from > to) {
     unavailable("Invalid employee schedule filters.", "KRONOS_SCHEDULE_FILTER_INVALID");
   }
 
-  const cached = findCoveringSchedule(scheduleCache, id, from, to, { cache: true });
+  const cached = findCoveringSchedule(scheduleCache, uid, from, to, { cache: true });
   if (cached) {
     return {
       rows: cached.data.rows.filter((row) => {
@@ -327,13 +327,13 @@ async function fetchEmployeeSchedulePages(gyEmpId, dateFrom, dateTo) {
     };
   }
 
-  const key = `${id}|${from}|${to}`;
-  let pendingEntry = findCoveringSchedule(scheduleInFlight, id, from, to);
+  const key = `${uid}|${from}|${to}`;
+  let pendingEntry = findCoveringSchedule(scheduleInFlight, uid, from, to);
   let pending = pendingEntry?.promise || pendingEntry || null;
   let sharedPending = true;
   if (!pending) {
     sharedPending = false;
-    pending = fetchEmployeeSchedulePagesUncached(id, from, to)
+    pending = fetchEmployeeSchedulePagesUncached(uid, from, to)
       .then((data) => {
         scheduleCache.set(key, { data, expiresAt: Date.now() + SCHEDULE_CACHE_MS });
         while (scheduleCache.size > SCHEDULE_CACHE_MAX_ENTRIES) {
@@ -462,9 +462,9 @@ function emptyDataset({ requestedEmployeeCount = 0 } = {}) {
  * Shared KPI data adapter. The formulas remain in absenteeismKpiService.js.
  * - Kronos account/date attendance comes from /employee-attendance.
  * - PMS ledger supplies the target/Task Order employee codes.
- * - employee-attendance.employee_id is reused directly as gy_emp_id whenever available.
- * - Kronos /employee-directory?account_ids=... is only a fallback for unresolved roster employees.
- * - Date-filtered /employee-schedules supplies schedule rows per matched agent.
+ * - employee-attendance.employee_id / employee-directory still verify account membership.
+ * - Kronos /employee-directory?account_ids=... remains a fallback for unresolved roster employees.
+ * - Date-filtered /employee-schedules is queried directly by gy_emp_code per matched agent.
  */
 export async function getKronosAbsenteeismEmployeeDayRows({
   employeeUids = [], dateFrom = null, dateTo = null, accountName = "US Visa",
@@ -521,9 +521,9 @@ export async function getKronosAbsenteeismEmployeeDayRows({
     });
   }
 
-  // employee-attendance already exposes the same internal employee ID expected
-  // by /employee-schedules. Only employees that never produced an attendance row
-  // (or whose attendance row omitted the ID) need the bulk directory fallback.
+  // Attendance IDs are still useful for verifying account membership. Employees
+  // that never produced an attendance row (or whose attendance row omitted the ID)
+  // use the bulk directory fallback. Schedule retrieval itself now uses gy_emp_code.
   let employeeDirectory = {
     byUid: new Map(),
     sourceRows: 0,
@@ -563,7 +563,7 @@ export async function getKronosAbsenteeismEmployeeDayRows({
     SCHEDULE_CONCURRENCY,
     async (uid) => {
       const gyEmpId = verifiedIds.get(uid);
-      const result = await fetchEmployeeSchedulePages(gyEmpId, from, to);
+      const result = await fetchEmployeeSchedulePages(uid, from, to);
       return { uid, gyEmpId, ...result };
     },
   );
@@ -659,7 +659,7 @@ export async function getKronosAbsenteeismEmployeeDayRows({
       schedules: OPTIMIZED_SCHEDULE_ENDPOINT,
       employeeResource: null,
     },
-    fetchMode: "OPTIMIZED_ATTENDANCE_DIRECTORY_PLUS_DATE_FILTERED_SCHEDULES",
+    fetchMode: "OPTIMIZED_ATTENDANCE_DIRECTORY_PLUS_EMPLOYEE_CODE_SCHEDULES",
     storageMode: "LIVE_ONLY",
     presenceBasis: "KRONOS_TRACKER_LOGIN",
     accountFilter: accountName,
