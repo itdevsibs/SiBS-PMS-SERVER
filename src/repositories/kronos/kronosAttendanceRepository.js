@@ -160,7 +160,7 @@ async function fetchAllSchedulePages(employee, dateFrom, dateTo) {
       try {
         payload = await getKronosApiResponse(EMPLOYEE_SCHEDULE_ENDPOINT, {
           params: {
-            gy_emp_id: employee.gyEmpId,
+            gy_emp_code: employee.employeeUid,
             date_from: dateFrom,
             date_to: dateTo,
             page,
@@ -247,8 +247,8 @@ async function getAccountEmployees(accountId) {
         continue;
       }
 
-      // The optimized views use employee_id on some deployments and gy_emp_id
-      // on others. Both represent the internal ID required by employee-schedules.
+      // Keep the internal ID when available for identity/account consistency checks.
+      // Schedule requests themselves now use gy_emp_code.
       const internalId = positiveId(getField(row, [
         "gy_emp_id", "employee.gy_emp_id", "employee_id", "employee.employee_id",
       ]));
@@ -312,7 +312,7 @@ function normalizeSchedule(row, employee, dateFrom, dateTo) {
   const apiEmployeeId = positiveId(getField(row, [
     "gy_emp_id", "schedule.gy_emp_id", "employee_id", "schedule.employee_id",
   ]));
-  if (apiEmployeeId && apiEmployeeId !== employee.gyEmpId) {
+  if (employee.gyEmpId && apiEmployeeId && apiEmployeeId !== employee.gyEmpId) {
     throw scheduleSourceError(`Schedule employee ID mismatch for ${employee.employeeUid}.`);
   }
   const rawMode = getField(row, ["gy_sched_mode", "schedule.gy_sched_mode", "sched_mode"]);
@@ -331,7 +331,7 @@ function normalizeSchedule(row, employee, dateFrom, dateTo) {
 }
 
 async function getEmployeeSchedules(employee, dateFrom, dateTo) {
-  const key = `${employee.gyEmpId}|${dateFrom}|${dateTo}`;
+  const key = `${employee.employeeUid}|${dateFrom}|${dateTo}`;
   const existing = scheduleCache.get(key);
   if (existing && existing.expiresAt > Date.now()) {
     return { ...(await existing.promise), cacheHit: true };
@@ -384,11 +384,10 @@ function emptyScheduleResult() {
 /**
  * Attendance Sheet schedule adapter only.
  *
- * Internal employee IDs are resolved in bulk from employee-directory and from
- * employee-attendance seed rows. This path intentionally NEVER calls
- * /api/v1/employees/{code}. Verified US Visa Team Leaders are resolved from
- * account 78's bulk directory and only when the PMS US Visa roster contains
- * their employee code.
+ * Schedules are queried directly with gy_emp_code. employee-directory and
+ * employee-attendance seed rows are still used for account/Team Leader identity
+ * verification, but the schedule endpoint no longer depends on an internal
+ * gy_emp_id lookup. This path intentionally NEVER calls /api/v1/employees/{code}.
  */
 export async function getKronosAttendanceSheetScheduleData({
   kronosAccountId,
@@ -410,10 +409,9 @@ export async function getKronosAttendanceSheetScheduleData({
     : [];
   const rosterUidSet = new Set(rosterUids.map(normalizeEmployeeUid).filter(Boolean));
 
-  // Attendance is the first-choice identity source because /employee-attendance
-  // already exposes employee_id, which is the gy_emp_id required by
-  // /employee-schedules. Directory is only consulted for no-attendance roster
-  // employees or other explicitly requested employees that remain unresolved.
+  // Attendance and directory data remain identity/account verification sources.
+  // /employee-schedules itself is now queried by public gy_emp_code, so schedule
+  // retrieval no longer depends on resolving an internal gy_emp_id first.
   const seedByUid = new Map();
   for (const seed of seedEmployees) {
     mergeEmployeeCandidate(seedByUid, seed, { preferIncoming: true });
@@ -445,6 +443,20 @@ export async function getKronosAttendanceSheetScheduleData({
         employeeRole: "TEAM_LEADER",
       }, { preferIncoming: true });
     }
+  }
+
+  // Every requested/roster employee code can now be sent directly to
+  // /employee-schedules. Directory resolution enriches account/role/internal-ID
+  // metadata but no longer gates whether a schedule request can be attempted.
+  for (const uid of requiredUids) {
+    if (candidates.has(uid)) continue;
+    mergeEmployeeCandidate(candidates, {
+      employeeUid: uid,
+      gyEmpCode: uid,
+      gyEmpId: null,
+      kronosAccountId: accountId,
+      employeeRole: null,
+    });
   }
 
   let accountDirectory = {
@@ -503,7 +515,7 @@ export async function getKronosAttendanceSheetScheduleData({
   const unresolvedEmployeeUids = [...requiredUids].filter(
     (uid) => !candidates.get(uid)?.gyEmpId,
   );
-  const allEmployees = [...candidates.values()].filter((employee) => employee.gyEmpId);
+  const allEmployees = [...candidates.values()].filter((employee) => employee.employeeUid);
   const teamLeaders = allEmployees.filter((employee) => employee.employeeRole === "TEAM_LEADER");
 
   const results = await mapWithConcurrency(
