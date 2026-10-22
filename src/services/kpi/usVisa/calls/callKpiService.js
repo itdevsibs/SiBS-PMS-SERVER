@@ -1,6 +1,7 @@
 import { calculateAverageHandleSeconds } from "./ahtCalculationService.js";
 
 const GRAIN_PREFERENCE = [
+  "CALL_DETAIL",
   "SKILL_15_MINUTE",
   "SKILL_30_MINUTE",
   "SKILL_DAY",

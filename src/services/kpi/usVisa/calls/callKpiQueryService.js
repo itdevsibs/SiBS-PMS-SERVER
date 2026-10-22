@@ -24,6 +24,7 @@ const SUPPORTED_SOURCE_SYSTEMS = new Set([
   "HERODASH",
 ]);
 const SUPPORTED_GRAINS = new Set([
+  "CALL_DETAIL",
   "SKILL_DAY",
   "SKILL_15_MINUTE",
   "SKILL_30_MINUTE",
@@ -39,6 +40,12 @@ function normalizeDate(value) {
 function normalizeRequestedGrain(value) {
   const grain = String(value || "auto").trim().toUpperCase();
   if (!grain || grain === "AUTO") return null;
+
+  // Saved pre-EOD graph filters may still reference a Skill Statistics grain.
+  // Calls now have one canonical detail grain, so transparently move those
+  // requests to the Call Report (EOD) source instead of returning no data.
+  if (grain.startsWith("SKILL_")) return "CALL_DETAIL";
+
   return SUPPORTED_GRAINS.has(grain) ? grain : null;
 }
 
@@ -124,6 +131,7 @@ export async function getWfmCallKpiDashboard(query = {}) {
 
   const rawGrains = await listAvailableCallKpiDataGrains({
     sourceSystem,
+    taskOrder,
     taskOrderCountries,
     country,
     skill,
@@ -196,6 +204,7 @@ export async function getWfmCallKpiDashboard(query = {}) {
     sourceSystem,
     sourceGrainMap: requestedGrain ? sourceGrainMap : null,
     dataGrain: requestedGrain ? primaryDataGrain : null,
+    taskOrder,
     taskOrderCountries,
     country,
     skill,
@@ -252,6 +261,7 @@ export async function getWfmCallKpiDashboard(query = {}) {
     dataGrain: requestedGrain ? primaryDataGrain : null,
     dateFrom,
     dateTo,
+    taskOrder,
     taskOrderCountries,
     country,
     skill,

@@ -1,372 +1,187 @@
 import { pmsDb, pmsTables } from "../config/db.js";
-import {
-  buildUsVisaTaskOrderCountrySqlFilter,
-} from "../services/kpi/usVisa/calls/taskOrderFilter.js";
-import {
-  buildSkillHandleDenominatorSql,
-  buildSkillHandleSecondsSql,
-} from "../services/kpi/usVisa/calls/ahtCalculationService.js";
 
 const KPI_BATCH_STATUSES = ["COMPLETED", "COMPLETED_WITH_ERRORS"];
+const DIRECT_TASK_ORDERS = new Set(["TO4", "TO10", "TO12", "TO14", "TO16"]);
 
-function appendFinestAvailableGrainFilter({
-  conditions,
-  values,
-  rowAlias = "s",
-}) {
-  const grainRankSql = (alias) => `
-    CASE ${alias}.data_grain
-      WHEN 'SKILL_15_MINUTE' THEN 1
-      WHEN 'SKILL_30_MINUTE' THEN 2
-      WHEN 'SKILL_DAY' THEN 3
-      WHEN 'SKILL_REPORT_SUMMARY' THEN 4
-      ELSE 99
-    END
-  `;
-
-  conditions.push(`
-    NOT EXISTS (
-      SELECT 1
-      FROM ${pmsTables.usVisaRawSkillStatistics} finer
-      INNER JOIN ${pmsTables.usVisaImportBatches} finer_batch
-        ON finer_batch.id = finer.batch_id
-      WHERE finer.source_system = ${rowAlias}.source_system
-        AND finer.production_date = ${rowAlias}.production_date
-        AND COALESCE(TRIM(finer.source_skill_name), '') = COALESCE(TRIM(${rowAlias}.source_skill_name), '')
-        AND finer_batch.status IN (${KPI_BATCH_STATUSES.map(() => "?").join(", ")})
-        AND ${grainRankSql("finer")} < ${grainRankSql(rowAlias)}
-    )
-  `);
-  values.push(...KPI_BATCH_STATUSES);
-}
-
-function appendTaskOrderCountryFilter({
-  conditions,
-  values,
-  sourceSystem,
-  taskOrderCountries = [],
-}) {
-  const filter = buildUsVisaTaskOrderCountrySqlFilter(
-    sourceSystem,
-    taskOrderCountries,
-  );
-
-  if (!filter.condition) return;
-
-  conditions.push(filter.condition);
-  values.push(...filter.values);
-}
-
-function appendCountryFilter({
-  conditions,
-  values,
-  sourceSystem,
-  country,
-}) {
-  if (!country) return;
-  const rawList = Array.isArray(country)
-    ? country
-    : String(country)
-        .split(",")
-        .map((c) => c.trim())
-        .filter(Boolean);
-
-  const normalizedCountries = [
-    ...new Set(
-      rawList
-        .map((c) => c.toLowerCase())
-        .filter((c) => c && c !== "all" && c !== "all countries"),
-    ),
-  ];
-
-  if (!normalizedCountries.length) return;
-
-  const normalizedSourceSystem = String(sourceSystem || "").trim().toUpperCase();
-  const placeholders = normalizedCountries.map(() => "?").join(", ");
-
-  if (normalizedSourceSystem === "HERODASH") {
-    conditions.push(`LOWER(TRIM(s.country_region)) IN (${placeholders})`);
-    values.push(...normalizedCountries);
-  } else if (normalizedSourceSystem === "FUSECOM" || normalizedSourceSystem === "FUSENET") {
-    conditions.push(
-      `(LOWER(TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX(s.source_skill_name, ' - ', 1), '::', -1))) IN (${placeholders}) OR LOWER(TRIM(s.country_region)) IN (${placeholders}))`,
-    );
-    values.push(...normalizedCountries, ...normalizedCountries);
-  } else {
-    const likeClauses = normalizedCountries
-      .map(() => "LOWER(TRIM(s.source_skill_name)) LIKE ?")
-      .join(" OR ");
-    conditions.push(
-      `(LOWER(TRIM(s.country_region)) IN (${placeholders}) OR ${likeClauses})`,
-    );
-    values.push(
-      ...normalizedCountries,
-      ...normalizedCountries.map((c) => `%${c}%`),
-    );
-  }
-}
-
-function appendSourceSystemFilter({
-  conditions,
-  values,
-  sourceSystem,
-}) {
+function appendSourceSystemFilter({ conditions, values, sourceSystem }) {
   if (!sourceSystem) return;
   const rawList = Array.isArray(sourceSystem)
     ? sourceSystem
     : String(sourceSystem)
         .split(",")
-        .map((s) => s.trim().toUpperCase())
+        .map((item) => item.trim().toUpperCase())
         .filter(Boolean);
-
   const filtered = rawList.filter(
-    (s) => s && s !== "US_VISA" && s !== "US VISA" && s !== "ALL",
+    (item) => item && item !== "US_VISA" && item !== "US VISA" && item !== "ALL",
   );
   if (!filtered.length) return;
 
   if (filtered.length === 1) {
-    conditions.push("s.source_system = ?");
+    conditions.push("c.source_system = ?");
     values.push(filtered[0]);
-  } else {
-    const placeholders = filtered.map(() => "?").join(", ");
-    conditions.push(`s.source_system IN (${placeholders})`);
-    values.push(...filtered);
+    return;
   }
+
+  conditions.push(`c.source_system IN (${filtered.map(() => "?").join(", ")})`);
+  values.push(...filtered);
 }
 
-function appendSourceGrainFilter({
-  conditions,
-  values,
-  sourceGrainMap,
-  sourceSystem,
-  dataGrain,
-}) {
-  if (sourceGrainMap && Object.keys(sourceGrainMap).length > 0) {
-    const clauses = [];
-    for (const [src, grain] of Object.entries(sourceGrainMap)) {
-      if (grain) {
-        clauses.push("(s.source_system = ? AND s.data_grain = ?)");
-        values.push(src, grain);
-      } else {
-        clauses.push("s.source_system = ?");
-        values.push(src);
-      }
-    }
-    if (clauses.length > 0) {
-      conditions.push(`(${clauses.join(" OR ")})`);
-      return;
-    }
-  }
-
-  appendSourceSystemFilter({
-    conditions,
-    values,
-    sourceSystem,
-  });
-
-  if (dataGrain) {
-    conditions.push("s.data_grain = ?");
-    values.push(dataGrain);
-  }
-}
-
-function appendSkillFilter({
-  conditions,
-  values,
-  skill,
-}) {
-  if (!skill) return;
-  const rawList = Array.isArray(skill)
-    ? skill
-    : String(skill)
+function normalizeFilterList(value, ignored = []) {
+  const ignoredSet = new Set(ignored.map((item) => String(item).toLowerCase()));
+  const raw = Array.isArray(value)
+    ? value
+    : String(value || "")
         .split(",")
-        .map((s) => s.trim())
+        .map((item) => item.trim())
         .filter(Boolean);
 
-  const skillsToProcess = rawList.filter(
-    (s) => s && s.toUpperCase() !== "ALL" && s.toUpperCase() !== "ALL SKILLS",
-  );
-  if (!skillsToProcess.length) return;
+  return [...new Set(
+    raw
+      .map((item) => String(item).trim())
+      .filter((item) => item && !ignoredSet.has(item.toLowerCase())),
+  )];
+}
 
-  const skillClauses = [];
-  const skillValues = [];
+function appendTaskOrderFilter({
+  conditions,
+  values,
+  taskOrder,
+  taskOrderCountries = [],
+}) {
+  const taskOrders = normalizeFilterList(taskOrder, ["all", "all task orders"])
+    .map((item) => item.toUpperCase());
 
-  for (const item of skillsToProcess) {
+  const direct = taskOrders.filter((item) => DIRECT_TASK_ORDERS.has(item));
+  if (direct.length) {
+    conditions.push(`UPPER(TRIM(c.task_order_id)) IN (${direct.map(() => "?").join(", ")})`);
+    values.push(...direct);
+    return;
+  }
+
+  // Preserve the legacy virtual NESAMI subgroup filters (TO18/TO22/OTHER)
+  // by applying their country lists when requested by the existing UI.
+  const countries = normalizeFilterList(taskOrderCountries)
+    .map((item) => item.toLowerCase());
+  if (countries.length) {
+    conditions.push(`LOWER(TRIM(c.country_region)) IN (${countries.map(() => "?").join(", ")})`);
+    values.push(...countries);
+  }
+}
+
+function appendCountryFilter({ conditions, values, country }) {
+  const countries = normalizeFilterList(country, ["all", "all countries"])
+    .map((item) => item.toLowerCase());
+  if (!countries.length) return;
+
+  conditions.push(`LOWER(TRIM(c.country_region)) IN (${countries.map(() => "?").join(", ")})`);
+  values.push(...countries);
+}
+
+function appendSkillFilter({ conditions, values, skill }) {
+  const skills = normalizeFilterList(skill, ["all", "all skills"]);
+  if (!skills.length) return;
+
+  const clauses = [];
+  for (const item of skills) {
     const key = item.toLowerCase().replace(/[\s_-]+/g, "");
 
     if (key === "englishall" || key === "english" || key === "allenglish") {
-      skillClauses.push(
-        "(s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?)",
-      );
-      skillValues.push("%English%", "%English%");
+      clauses.push("LOWER(c.skill_name_raw) LIKE ?");
+      values.push("%english%");
     } else if (key === "englishniv") {
-      skillClauses.push(
-        "((s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?) AND (s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?))",
-      );
-      skillValues.push("%English%", "%English%", "%NIV%", "%NIV%");
+      clauses.push("(LOWER(c.skill_name_raw) LIKE ? AND UPPER(c.skill_name_raw) LIKE ?)");
+      values.push("%english%", "%NIV%");
     } else if (key === "englishiv") {
-      skillClauses.push(
-        "((s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?) AND (s.source_skill_name REGEXP '(^|[^A-Za-z])IV($|[^A-Za-z])' OR s.skill_group_name REGEXP '(^|[^A-Za-z])IV($|[^A-Za-z])') AND s.source_skill_name NOT LIKE ? AND (s.skill_group_name IS NULL OR s.skill_group_name NOT LIKE ?))",
-      );
-      skillValues.push("%English%", "%English%", "%NIV%", "%NIV%");
+      clauses.push("(LOWER(c.skill_name_raw) LIKE ? AND UPPER(c.skill_name_raw) REGEXP '(^|[^A-Z])IV($|[^A-Z])' AND UPPER(c.skill_name_raw) NOT LIKE ?)");
+      values.push("%english%", "%NIV%");
     } else if (key === "englishacs") {
-      skillClauses.push(
-        "((s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?) AND (s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?))",
-      );
-      skillValues.push("%English%", "%English%", "%ACS%", "%ACS%");
+      clauses.push("(LOWER(c.skill_name_raw) LIKE ? AND UPPER(c.skill_name_raw) LIKE ?)");
+      values.push("%english%", "%ACS%");
     } else if (key === "nonenglish") {
-      skillClauses.push(
-        "(s.source_skill_name NOT LIKE ? AND (s.skill_group_name IS NULL OR s.skill_group_name NOT LIKE ?))",
-      );
-      skillValues.push("%English%", "%English%");
+      clauses.push("LOWER(c.skill_name_raw) NOT LIKE ?");
+      values.push("%english%");
     } else if (key === "nonenglishiv") {
-      skillClauses.push(
-        "(s.source_skill_name NOT LIKE ? AND (s.skill_group_name IS NULL OR s.skill_group_name NOT LIKE ?) AND (s.source_skill_name REGEXP '(^|[^A-Za-z])IV($|[^A-Za-z])' OR s.skill_group_name REGEXP '(^|[^A-Za-z])IV($|[^A-Za-z])') AND s.source_skill_name NOT LIKE ? AND (s.skill_group_name IS NULL OR s.skill_group_name NOT LIKE ?))",
-      );
-      skillValues.push("%English%", "%English%", "%NIV%", "%NIV%");
+      clauses.push("(LOWER(c.skill_name_raw) NOT LIKE ? AND UPPER(c.skill_name_raw) REGEXP '(^|[^A-Z])IV($|[^A-Z])' AND UPPER(c.skill_name_raw) NOT LIKE ?)");
+      values.push("%english%", "%NIV%");
     } else {
-      const clean = item.replace(/^.*?::\s*/, "").replace(/^(VCH|GSS)\s+/i, "").trim();
-      let country = "";
-      let language = "";
-      let queue = "";
-
-      const qMatch = clean.match(/\b(ACS|NIV|IV)\b/i);
-      if (qMatch) queue = qMatch[1].toUpperCase();
-
-      if (clean.includes("-")) {
-        const parts = clean.split("-");
-        country = parts[0].trim();
-        const rest = parts.slice(1).join("-").trim();
-        language = rest.replace(/\b(ACS|NIV|IV)\b/i, "").replace(/\bCALL\b/i, "").trim();
-      } else {
-        const words = clean.split(/\s+/);
-        if (words.length >= 2) {
-          country = words[0].replace(/_/g, " ").trim();
-          language = words.slice(1).join(" ").replace(/\b(ACS|NIV|IV)\b/i, "").trim();
-        }
-      }
-
-      const clauses = ["s.source_skill_name LIKE ?"];
-      const vals = [`%${item}%`];
-
-      if (country) {
-        const cPattern = `%${country.replace(/[\s_]+/g, "%")}%`;
-        const subClauses = ["s.source_skill_name LIKE ?"];
-        const subVals = [cPattern];
-
-        if (language) {
-          subClauses.push("(s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?)");
-          subVals.push(`%${language}%`, `%${language}%`);
-        }
-
-        if (queue) {
-          if (queue === "IV") {
-            subClauses.push("(s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?)");
-            subVals.push("%IV%", "%IV%");
-            subClauses.push("s.source_skill_name NOT LIKE ?");
-            subVals.push("%NIV%");
-          } else {
-            subClauses.push("(s.source_skill_name LIKE ? OR s.skill_group_name LIKE ?)");
-            subVals.push(`%${queue}%`, `%${queue}%`);
-          }
-        }
-
-        clauses.push(`(${subClauses.join(" AND ")})`);
-        vals.push(...subVals);
-      }
-
-      skillClauses.push(`(${clauses.join(" OR ")})`);
-      skillValues.push(...vals);
+      clauses.push("LOWER(c.skill_name_raw) LIKE ?");
+      values.push(`%${item.toLowerCase()}%`);
     }
   }
 
-  if (skillClauses.length === 1) {
-    conditions.push(skillClauses[0]);
-    values.push(...skillValues);
-  } else if (skillClauses.length > 1) {
-    conditions.push(`(${skillClauses.join(" OR ")})`);
-    values.push(...skillValues);
-  }
+  if (clauses.length) conditions.push(`(${clauses.join(" OR ")})`);
 }
 
-function buildDateFilters({ dateFrom, dateTo } = {}) {
-  const conditions = [
-    "s.production_date IS NOT NULL",
-    `b.status IN (${KPI_BATCH_STATUSES.map(() => "?").join(", ")})`,
-  ];
-
-  const values = [...KPI_BATCH_STATUSES];
-
-  if (dateFrom) {
-    conditions.push("DATE(s.production_date) >= ?");
-    values.push(dateFrom);
-  }
-
-  if (dateTo) {
-    conditions.push("DATE(s.production_date) <= ?");
-    values.push(dateTo);
-  }
-
-  return { conditions, values };
-}
-
-export async function listAvailableCallKpiDataGrains({
+function buildBaseFilters({
   sourceSystem = "US_VISA",
-  dataGrain,
   dateFrom,
   dateTo,
+  taskOrder = null,
   taskOrderCountries = [],
   country = null,
   skill = null,
 } = {}) {
-  const { conditions, values } = buildDateFilters({
-    dateFrom,
-    dateTo,
-  });
+  const conditions = [
+    "c.production_date IS NOT NULL",
+    `b.status IN (${KPI_BATCH_STATUSES.map(() => "?").join(", ")})`,
+    "p.report_type = 'CALL_REPORT_EOD'",
+  ];
+  const values = [...KPI_BATCH_STATUSES];
 
-  appendSourceSystemFilter({
-    conditions,
-    values,
-    sourceSystem,
-  });
-
-  appendTaskOrderCountryFilter({
-    conditions,
-    values,
-    sourceSystem,
-    taskOrderCountries,
-  });
-
-  appendCountryFilter({
-    conditions,
-    values,
-    sourceSystem,
-    country,
-  });
-
-  appendSkillFilter({
-    conditions,
-    values,
-    skill,
-  });
-
-  if (dataGrain) {
-    conditions.push("s.data_grain = ?");
-    values.push(dataGrain);
+  if (dateFrom) {
+    conditions.push("DATE(c.production_date) >= ?");
+    values.push(dateFrom);
+  }
+  if (dateTo) {
+    conditions.push("DATE(c.production_date) <= ?");
+    values.push(dateTo);
   }
 
-  conditions.push("s.calls_offered IS NOT NULL");
+  appendSourceSystemFilter({ conditions, values, sourceSystem });
+  appendTaskOrderFilter({ conditions, values, taskOrder, taskOrderCountries });
+  appendCountryFilter({ conditions, values, country });
+  appendSkillFilter({ conditions, values, skill });
+
+  return { conditions, values };
+}
+
+function getCanonicalJoinSql() {
+  return `
+    FROM ${pmsTables.usVisaRawCalls} c
+    INNER JOIN ${pmsTables.usVisaImportBatches} b
+      ON b.id = c.batch_id
+    INNER JOIN ${pmsTables.usVisaImportProfiles} p
+      ON p.id = c.import_profile_id
+  `;
+}
+
+export async function listAvailableCallKpiDataGrains({
+  sourceSystem = "US_VISA",
+  dateFrom,
+  dateTo,
+  taskOrder = null,
+  taskOrderCountries = [],
+  country = null,
+  skill = null,
+} = {}) {
+  const { conditions, values } = buildBaseFilters({
+    sourceSystem,
+    dateFrom,
+    dateTo,
+    taskOrder,
+    taskOrderCountries,
+    country,
+    skill,
+  });
 
   const [rows] = await pmsDb.query(
     `
       SELECT DISTINCT
-        s.source_system,
-        s.data_grain
-      FROM ${pmsTables.usVisaRawSkillStatistics} s
-      INNER JOIN ${pmsTables.usVisaImportBatches} b
-        ON b.id = s.batch_id
+        c.source_system,
+        'CALL_DETAIL' AS data_grain
+      ${getCanonicalJoinSql()}
       WHERE ${conditions.join("\n        AND ")}
-      ORDER BY s.source_system, s.data_grain
+      ORDER BY c.source_system
     `,
     values,
   );
@@ -376,61 +191,25 @@ export async function listAvailableCallKpiDataGrains({
 
 export async function getCallKpiDateBounds({
   sourceSystem = "US_VISA",
-  sourceGrainMap,
-  dataGrain,
+  taskOrder = null,
   taskOrderCountries = [],
   country = null,
   skill = null,
 } = {}) {
-  const conditions = [
-    "s.production_date IS NOT NULL",
-    `b.status IN (${KPI_BATCH_STATUSES.map(() => "?").join(", ")})`,
-  ];
-
-  const values = [...KPI_BATCH_STATUSES];
-
-  appendSourceGrainFilter({
-    conditions,
-    values,
-    sourceGrainMap,
+  const { conditions, values } = buildBaseFilters({
     sourceSystem,
-    dataGrain,
-  });
-
-  appendTaskOrderCountryFilter({
-    conditions,
-    values,
-    sourceSystem,
+    taskOrder,
     taskOrderCountries,
-  });
-
-  appendCountryFilter({
-    conditions,
-    values,
-    sourceSystem,
     country,
-  });
-
-  appendSkillFilter({
-    conditions,
-    values,
     skill,
   });
 
   const [rows] = await pmsDb.query(
     `
       SELECT
-        DATE_FORMAT(
-          MIN(s.production_date),
-          '%Y-%m-%d'
-        ) AS min_date,
-        DATE_FORMAT(
-          MAX(s.production_date),
-          '%Y-%m-%d'
-        ) AS max_date
-      FROM ${pmsTables.usVisaRawSkillStatistics} s
-      INNER JOIN ${pmsTables.usVisaImportBatches} b
-        ON b.id = s.batch_id
+        DATE_FORMAT(MIN(c.production_date), '%Y-%m-%d') AS min_date,
+        DATE_FORMAT(MAX(c.production_date), '%Y-%m-%d') AS max_date
+      ${getCanonicalJoinSql()}
       WHERE ${conditions.join("\n        AND ")}
     `,
     values,
@@ -444,224 +223,80 @@ export async function getCallKpiDateBounds({
 
 export async function getDailyCallKpiRows({
   sourceSystem = "US_VISA",
-  sourceGrainMap,
-  dataGrain,
   dateFrom,
   dateTo,
+  taskOrder = null,
   taskOrderCountries = [],
   country = null,
   skill = null,
 } = {}) {
-  const { conditions, values } = buildDateFilters({
+  const { conditions, values } = buildBaseFilters({
+    sourceSystem,
     dateFrom,
     dateTo,
-  });
-
-  appendSourceGrainFilter({
-    conditions,
-    values,
-    sourceGrainMap,
-    sourceSystem,
-    dataGrain,
-  });
-
-  if (
-    !dataGrain &&
-    (!sourceGrainMap || Object.keys(sourceGrainMap).length === 0)
-  ) {
-    appendFinestAvailableGrainFilter({
-      conditions,
-      values,
-    });
-  }
-
-  appendTaskOrderCountryFilter({
-    conditions,
-    values,
-    sourceSystem,
+    taskOrder,
     taskOrderCountries,
-  });
-
-  appendCountryFilter({
-    conditions,
-    values,
-    sourceSystem,
     country,
-  });
-
-  appendSkillFilter({
-    conditions,
-    values,
     skill,
   });
 
   const [rows] = await pmsDb.query(
     `
       SELECT
-        DATE_FORMAT(
-          s.production_date,
-          '%Y-%m-%d'
-        ) AS production_date,
-
-        SUM(
-          COALESCE(s.calls_offered, 0)
-        ) AS calls_offered,
-
-        SUM(
-          COALESCE(s.calls_handled, 0)
-        ) AS calls_handled,
-
-        SUM(
-          COALESCE(s.handled_within_slt, 0)
-        ) AS handled_within_slt,
-
-        SUM(
-          CASE
-            WHEN s.queue_seconds IS NOT NULL AND s.queue_seconds > 0 THEN s.queue_seconds
-            WHEN s.asa_seconds IS NOT NULL AND s.asa_seconds > 0 THEN (s.asa_seconds * COALESCE(s.calls_handled, s.calls_offered, 0))
-            WHEN s.source_system != 'HERODASH' AND s.queue_seconds IS NOT NULL AND s.queue_seconds > 0 THEN s.queue_seconds
-            WHEN s.source_system = 'HERODASH' AND s.asa_seconds IS NOT NULL AND s.asa_seconds > 0
-              THEN (s.asa_seconds * COALESCE(s.calls_handled, s.calls_offered, 0))
-            WHEN s.source_system != 'HERODASH' AND s.queue_seconds IS NOT NULL AND s.queue_seconds > 0
-              THEN s.queue_seconds
-            WHEN s.asa_seconds IS NOT NULL AND s.asa_seconds > 0
-              THEN (s.asa_seconds * COALESCE(s.calls_handled, s.calls_offered, 0))
-            WHEN s.source_system != 'HERODASH' AND s.queue_seconds IS NOT NULL AND s.queue_seconds > 0
-              THEN s.queue_seconds
-            ELSE 0
-          END
-        ) AS queue_seconds,
-
-        SUM(
-          ${buildSkillHandleSecondsSql("s")}
-        ) AS handle_seconds_numerator,
-
-        SUM(
-          ${buildSkillHandleDenominatorSql("s")}
-        ) AS handle_seconds_denominator
-
-      FROM ${pmsTables.usVisaRawSkillStatistics} s
-
-      INNER JOIN ${pmsTables.usVisaImportBatches} b
-        ON b.id = s.batch_id
-
+        DATE_FORMAT(c.production_date, '%Y-%m-%d') AS production_date,
+        SUM(CASE WHEN c.is_answered = 1 OR c.is_abandoned = 1 THEN 1 ELSE 0 END) AS calls_offered,
+        SUM(CASE WHEN c.is_answered = 1 THEN 1 ELSE 0 END) AS calls_handled,
+        SUM(CASE WHEN c.is_answered = 1 AND c.is_within_sla = 1 THEN 1 ELSE 0 END) AS handled_within_slt,
+        SUM(CASE WHEN c.is_answered = 1 THEN COALESCE(c.queue_seconds, 0) ELSE 0 END) AS queue_seconds,
+        0 AS handle_seconds_numerator,
+        0 AS handle_seconds_denominator
+      ${getCanonicalJoinSql()}
       WHERE ${conditions.join("\n        AND ")}
-
-      GROUP BY
-        DATE_FORMAT(
-          s.production_date,
-          '%Y-%m-%d'
-        )
-
-      ORDER BY
-        DATE_FORMAT(
-          s.production_date,
-          '%Y-%m-%d'
-        ) ASC
+      GROUP BY DATE_FORMAT(c.production_date, '%Y-%m-%d')
+      ORDER BY DATE_FORMAT(c.production_date, '%Y-%m-%d') ASC
     `,
     values,
   );
 
   return rows.map((row) => ({
     productionDate: row.production_date,
-
-    callsOffered: Number(
-      row.calls_offered || 0,
-    ),
-
-    callsHandled: Number(
-      row.calls_handled || 0,
-    ),
-
-    handledWithinSlt: Number(
-      row.handled_within_slt || 0,
-    ),
-
-    queueSeconds: Number(
-      row.queue_seconds || 0,
-    ),
-
-    handleSecondsNumerator: Number(
-      row.handle_seconds_numerator || 0,
-    ),
-
-    handleSecondsDenominator: Number(
-      row.handle_seconds_denominator || 0,
-    ),
+    callsOffered: Number(row.calls_offered || 0),
+    callsHandled: Number(row.calls_handled || 0),
+    handledWithinSlt: Number(row.handled_within_slt || 0),
+    queueSeconds: Number(row.queue_seconds || 0),
+    // AHT is intentionally not derived from Call Report EOD. It will be
+    // supplied by the Documented Calls phase so the existing KPI is not
+    // silently redefined.
+    handleSecondsNumerator: 0,
+    handleSecondsDenominator: 0,
   }));
 }
 
 export async function getDistinctSkillsByCountry() {
-  const [rows] = await pmsDb.query(`
-    SELECT DISTINCT
-      s.source_system,
-      s.country_region,
-      s.source_skill_name
-    FROM ${pmsTables.usVisaRawSkillStatistics} s
-    WHERE s.source_skill_name IS NOT NULL AND TRIM(s.source_skill_name) != ''
-    ORDER BY s.source_skill_name ASC
-  `);
+  const [rows] = await pmsDb.query(
+    `
+      SELECT DISTINCT
+        c.source_system,
+        c.country_region,
+        c.skill_name_raw AS source_skill_name
+      ${getCanonicalJoinSql()}
+      WHERE p.report_type = 'CALL_REPORT_EOD'
+        AND c.skill_name_raw IS NOT NULL
+        AND TRIM(c.skill_name_raw) != ''
+      ORDER BY c.skill_name_raw ASC
+    `,
+  );
 
   const skillsByCountry = {};
 
-  for (const r of rows) {
-    const rawSkill = r.source_skill_name.trim();
-    const normalizedSkill = rawSkill
-      .replace(/\s+-\s+/, " - ")
-      .replace(/\s+/g, " ")
-      .replace(/\s+CALL\s+/i, " ")
-      .replace(/-CALL\s+/i, "- ");
+  for (const row of rows) {
+    const rawSkill = String(row.source_skill_name || "").trim();
+    const parsed = parseSkillCountryAndLanguage(rawSkill, row.country_region);
+    const normalizedCountry = parsed.country || "Other";
 
-    let country = r.country_region ? r.country_region.trim() : "";
-    if (!country) {
-      const clean = normalizedSkill
-        .replace(/^.*?::\s*/, "")
-        .replace(/^(VCH|GSS)\s+/i, "")
-        .trim();
-      if (clean.includes("-")) {
-        country = clean.split("-")[0].trim();
-      } else {
-        const words = clean.split(/\s+/);
-        country = words[0].replace(/_/g, " ").trim();
-      }
-    }
-
-    country = country.replace(/&/g, " & ").replace(/\s+/g, " ").trim();
-    let normCountry = country
-      .split(" ")
-      .map((w) => {
-        if (w.toLowerCase() === "&" || w.toLowerCase() === "and") return "&";
-        if (w.toLowerCase() === "of") return "of";
-        return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
-      })
-      .join(" ");
-
-    if (normCountry.toLowerCase() === "south korea") normCountry = "Korea";
-    if (
-      normCountry.toLowerCase() === "bosnia & herzegovina" ||
-      normCountry.toLowerCase() === "bosnia&herzegovina"
-    ) {
-      normCountry = "Bosnia and Herzegovina";
-    }
-    if (normCountry.toLowerCase() === "rep. of moldova") normCountry = "Moldova";
-
-    let displaySkill = normalizedSkill;
-    if (displaySkill.includes("-") && !displaySkill.startsWith("GSS 2.0 ::")) {
-      const parts = displaySkill.split("-");
-      displaySkill = `GSS 2.0 :: ${normCountry} - ${parts.slice(1).join("-").trim()}`;
-    }
-
-    if (!skillsByCountry[normCountry]) {
-      skillsByCountry[normCountry] = [];
-    }
-    const already = skillsByCountry[normCountry].some((s) => {
-      return (
-        s.toLowerCase().replace(/[^a-z0-9]/g, "") ===
-        displaySkill.toLowerCase().replace(/[^a-z0-9]/g, "")
-      );
-    });
-    if (!already) {
-      skillsByCountry[normCountry].push(displaySkill);
+    if (!skillsByCountry[normalizedCountry]) skillsByCountry[normalizedCountry] = [];
+    if (!skillsByCountry[normalizedCountry].includes(rawSkill)) {
+      skillsByCountry[normalizedCountry].push(rawSkill);
     }
   }
 
@@ -678,11 +313,8 @@ export function parseSkillCountryAndLanguage(skillName = "", countryRegion = nul
   let language = "";
   let skill = "NIV";
 
-  // Extract skill suffix (ACS, IV, NIV)
   const skillMatch = clean.match(/\b(ACS|NIV|IV)\b/i);
-  if (skillMatch) {
-    skill = skillMatch[1].toUpperCase();
-  }
+  if (skillMatch) skill = skillMatch[1].toUpperCase();
 
   if (clean.includes(" - ")) {
     const parts = clean.split(" - ");
@@ -695,8 +327,8 @@ export function parseSkillCountryAndLanguage(skillName = "", countryRegion = nul
     const rest = parts.slice(1).join("-").trim();
     language = rest.replace(/\b(ACS|NIV|IV)\b/gi, "").replace(/\bCALL\b/gi, "").trim();
   } else {
-    const words = clean.split(/\s+/);
-    if (!country && words.length >= 2) country = words[0];
+    const words = clean.split(/\s+/).filter(Boolean);
+    if (!country && words.length) country = words[0].replace(/_/g, " ");
     language = words.slice(1).join(" ").replace(/\b(ACS|NIV|IV)\b/gi, "").replace(/\bCALL\b/gi, "").trim();
   }
 
@@ -704,10 +336,10 @@ export function parseSkillCountryAndLanguage(skillName = "", countryRegion = nul
     country = country.replace(/&/g, " & ").replace(/\s+/g, " ").trim();
     country = country
       .split(" ")
-      .map((w) => {
-        if (w.toLowerCase() === "&" || w.toLowerCase() === "and") return "&";
-        if (w.toLowerCase() === "of") return "of";
-        return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+      .map((word) => {
+        if (word.toLowerCase() === "&" || word.toLowerCase() === "and") return "&";
+        if (word.toLowerCase() === "of") return "of";
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
       })
       .join(" ");
 
@@ -726,76 +358,53 @@ export async function getCallsReportData({
   dateFrom,
   dateTo,
   country,
+  sourceSystem = "US_VISA",
+  taskOrder = null,
+  taskOrderCountries = [],
+  skill = null,
 } = {}) {
-  const conditions = [
-    "s.production_date IS NOT NULL",
-    `b.status IN (${KPI_BATCH_STATUSES.map(() => "?").join(", ")})`,
-  ];
-  const values = [...KPI_BATCH_STATUSES];
-
-  if (dateFrom) {
-    conditions.push("DATE(s.production_date) >= ?");
-    values.push(dateFrom);
-  }
-  if (dateTo) {
-    conditions.push("DATE(s.production_date) <= ?");
-    values.push(dateTo);
-  }
-  if (country && country !== "All Countries") {
-    appendCountryFilter({
-      conditions,
-      values,
-      sourceSystem: "US_VISA",
-      country,
-    });
-  }
-
-  appendFinestAvailableGrainFilter({
-    conditions,
-    values,
+  const { conditions, values } = buildBaseFilters({
+    sourceSystem,
+    dateFrom,
+    dateTo,
+    taskOrder,
+    taskOrderCountries,
+    country: country && country !== "All Countries" ? country : null,
+    skill,
   });
 
   const [rawRows] = await pmsDb.query(
     `
       SELECT
-        s.source_skill_name,
-        s.country_region,
-        SUM(COALESCE(s.calls_offered, 0)) AS calls_received,
-        SUM(COALESCE(s.calls_handled, 0)) AS calls_answered,
-        SUM(COALESCE(s.calls_abandoned, 0)) AS calls_abandoned,
-        SUM(COALESCE(s.abandoned_outside_slt, 0)) AS calls_abandoned_after_sl,
-        SUM(COALESCE(s.handled_within_slt, 0)) AS calls_answered_within_sl,
-        SUM(COALESCE(s.calls_handled, 0) * COALESCE(s.avg_handle_seconds, 0)) AS total_handle_seconds
-      FROM ${pmsTables.usVisaRawSkillStatistics} s
-      INNER JOIN ${pmsTables.usVisaImportBatches} b
-        ON b.id = s.batch_id
+        c.skill_name_raw AS source_skill_name,
+        c.country_region,
+        SUM(CASE WHEN c.is_answered = 1 OR c.is_abandoned = 1 THEN 1 ELSE 0 END) AS calls_received,
+        SUM(CASE WHEN c.is_answered = 1 THEN 1 ELSE 0 END) AS calls_answered,
+        SUM(CASE WHEN c.is_abandoned = 1 THEN 1 ELSE 0 END) AS calls_abandoned,
+        SUM(CASE WHEN c.is_abandoned = 1 AND COALESCE(c.queue_seconds, 0) > 60 THEN 1 ELSE 0 END) AS calls_abandoned_after_sl,
+        SUM(CASE WHEN c.is_answered = 1 AND c.is_within_sla = 1 THEN 1 ELSE 0 END) AS calls_answered_within_sl
+      ${getCanonicalJoinSql()}
       WHERE ${conditions.join("\n        AND ")}
-      GROUP BY s.source_skill_name, s.country_region
+      GROUP BY c.skill_name_raw, c.country_region
     `,
     values,
   );
 
-  // Group by Country, Language, and Skill
   const grouped = new Map();
 
   for (const row of rawRows) {
-    const { country: parsedCountry, language: parsedLanguage, skill: parsedSkill } = parseSkillCountryAndLanguage(
-      row.source_skill_name,
-      row.country_region,
-    );
-    const key = `${parsedCountry}|${parsedLanguage}|${parsedSkill}`;
-
+    const parsed = parseSkillCountryAndLanguage(row.source_skill_name, row.country_region);
+    const key = `${parsed.country}|${parsed.language}|${parsed.skill}`;
     if (!grouped.has(key)) {
       grouped.set(key, {
-        country: parsedCountry,
-        language: parsedLanguage,
-        skill: parsedSkill,
+        country: parsed.country,
+        language: parsed.language,
+        skill: parsed.skill,
         callsReceived: 0,
         callsAnswered: 0,
         callsAbandoned: 0,
         callsAbandonedAfterSl: 0,
         callsAnsweredWithinSl: 0,
-        totalHandleSeconds: 0,
       });
     }
 
@@ -805,41 +414,38 @@ export async function getCallsReportData({
     item.callsAbandoned += Number(row.calls_abandoned || 0);
     item.callsAbandonedAfterSl += Number(row.calls_abandoned_after_sl || 0);
     item.callsAnsweredWithinSl += Number(row.calls_answered_within_sl || 0);
-    item.totalHandleSeconds += Number(row.total_handle_seconds || 0);
   }
 
-  const result = Array.from(grouped.values()).map((item) => {
-    const ahtSeconds = item.callsAnswered > 0 ? Math.round(item.totalHandleSeconds / item.callsAnswered) : 0;
-    const ahtMinutes = Math.floor(ahtSeconds / 60);
-    const ahtRemainder = ahtSeconds % 60;
-    const ahtFormatted = `${String(ahtMinutes).padStart(2, "0")}:${String(ahtRemainder).padStart(2, "0")}`;
+  return [...grouped.values()]
+    .map((item) => {
+      const abandonedRate = item.callsReceived > 0
+        ? (item.callsAbandoned / item.callsReceived) * 100
+        : 0;
+      const serviceLevel = item.callsAnswered > 0
+        ? (item.callsAnsweredWithinSl / item.callsAnswered) * 100
+        : 0;
 
-    const abandonedRate = item.callsReceived > 0
-      ? (item.callsAbandoned / item.callsReceived) * 100
-      : 0;
-
-    const slRate = item.callsReceived > 0
-      ? (item.callsAnsweredWithinSl / item.callsReceived) * 100
-      : 0;
-
-    return {
-      country: item.country,
-      language: item.language,
-      skill: item.skill,
-      callsReceived: item.callsReceived,
-      callsAnswered: item.callsAnswered,
-      callsAbandoned: item.callsAbandoned,
-      callsAbandonedAfterSl: item.callsAbandonedAfterSl,
-      callsAnsweredWithinSl: item.callsAnsweredWithinSl,
-      ahtSeconds,
-      aht: ahtFormatted,
-      abandonedRate: `${abandonedRate.toFixed(2)}%`,
-      abandonedRateNum: abandonedRate,
-      sl: `${slRate.toFixed(2)}%`,
-      slNum: slRate,
-    };
-  });
-
-  return result.sort((a, b) => a.country.localeCompare(b.country) || a.language.localeCompare(b.language) || a.skill.localeCompare(b.skill));
+      return {
+        country: item.country,
+        language: item.language,
+        skill: item.skill,
+        callsReceived: item.callsReceived,
+        callsAnswered: item.callsAnswered,
+        callsAbandoned: item.callsAbandoned,
+        callsAbandonedAfterSl: item.callsAbandonedAfterSl,
+        callsAnsweredWithinSl: item.callsAnsweredWithinSl,
+        // Documented Calls will become the AHT source in the next phase.
+        ahtSeconds: 0,
+        aht: "--",
+        abandonedRate: `${abandonedRate.toFixed(2)}%`,
+        abandonedRateNum: abandonedRate,
+        sl: `${serviceLevel.toFixed(2)}%`,
+        slNum: serviceLevel,
+      };
+    })
+    .sort(
+      (left, right) => left.country.localeCompare(right.country)
+        || left.language.localeCompare(right.language)
+        || left.skill.localeCompare(right.skill),
+    );
 }
-

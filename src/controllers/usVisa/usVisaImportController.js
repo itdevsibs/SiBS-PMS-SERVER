@@ -156,7 +156,8 @@ export function getFatalMessage(result = {}) {
   const isFusecom = /fusecom/i.test(profileCode);
   const isFusenet = /fusenet/i.test(profileCode);
   const isOccupancy = /occupancy/i.test(profileCode);
-  const isAgentLevel = /agent/i.test(profileCode) && !isOccupancy;
+  const isCallReport = /call[_ ]?report/i.test(profileCode);
+  const isAgentLevel = /agent/i.test(profileCode) && !isOccupancy && !isCallReport;
   const isQualityAudit = /quality/i.test(profileCode);
   const profileLabel = result.profile?.profileName || profileCode || "selected";
 
@@ -184,6 +185,18 @@ export function getFatalMessage(result = {}) {
     ) {
       if (isQualityAudit) {
         return "Only US Visa Quality Audit Excel (.xlsx) or CSV (.csv) files with the required QA columns are allowed for this card.";
+      }
+      if (isCallReport) {
+        if (isHerodash) {
+          return "Only HeroDash Call Report (EOD) Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file is missing required call-detail columns.";
+        }
+        if (isFusenet) {
+          return "Only FuseNet Call Report (EOD) Excel (.xlsx) or CSV (.csv) files are allowed for this card. Answered Calls and Calls Abandoned must use the expected headers.";
+        }
+        if (isFusecom) {
+          return "Only FuseCom Call Report (EOD) Excel (.xlsx) or CSV (.csv) files are allowed for this card. Answered Calls and Calls Abandoned must use the expected headers.";
+        }
+        return `Only ${profileLabel} files matching the Call Report (EOD) structure are allowed for this card.`;
       }
       if (isOccupancy) {
         if (isHerodash) {
@@ -510,7 +523,7 @@ export async function getUsVisaImportRawData(req, res) {
       });
     }
 
-    // 1. Get profile and check if Agent Level, Agent Occupancy, Email Raw Data, or Quality Audit
+    // 1. Get profile and check which canonical domain supplies employee mapping metadata.
     const [profileRows] = await pmsDb.query(
       `SELECT profile_code, profile_name, report_type FROM ${pmsTables.usVisaImportProfiles} WHERE id = ?`,
       [batch.importProfileId || batch.import_profile_id],
@@ -518,6 +531,8 @@ export async function getUsVisaImportRawData(req, res) {
     const profile = profileRows[0] || {};
     const reportType = profile.report_type || batch.importProfileReportType || "";
     const isAgentLevel = reportType === "AGENT_LEVEL";
+    const isCallReport = reportType === "CALL_REPORT_EOD";
+    const isChatReport = reportType === "CHAT_REPORT_EOD";
     const isAgentOccupancy = reportType === "AGENT_OCCUPANCY";
     const isEmailRawData =
       reportType === "EMAIL_RAW_DATA" ||
@@ -528,10 +543,14 @@ export async function getUsVisaImportRawData(req, res) {
       profile.profile_code === "US_VISA_QUALITY_AUDIT" ||
       batch.importProfileCode === "US_VISA_QUALITY_AUDIT";
     const supportsSibsFilter =
-      isAgentLevel || isAgentOccupancy || isEmailRawData || isQualityAudit;
-    const mappingTable = isAgentLevel
-      ? pmsTables.usVisaRawAgentInteractions
-      : isAgentOccupancy
+      isAgentLevel || isCallReport || isChatReport || isAgentOccupancy || isEmailRawData || isQualityAudit;
+    const mappingTable = isCallReport
+      ? pmsTables.usVisaRawCalls
+      : isChatReport
+        ? pmsTables.usVisaRawChats
+      : isAgentLevel
+        ? pmsTables.usVisaRawAgentInteractions
+        : isAgentOccupancy
         ? pmsTables.usVisaRawAgentOccupancy
         : isEmailRawData
           ? pmsTables.usVisaRawEmailCases

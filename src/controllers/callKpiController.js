@@ -8,11 +8,13 @@ import {
 } from "../repositories/usVisa/usVisaSkillStatisticsRepository.js";
 import { getWfmCallKpiDashboard } from "../services/kpi/usVisa/calls/callKpiQueryService.js";
 import { chooseCallKpiDataGrain } from "../services/kpi/usVisa/calls/callKpiService.js";
+import { getUsVisaTaskOrderCountries } from "../services/kpi/usVisa/calls/taskOrderFilter.js";
 import {
   getDistinctSkillsByCountry,
   getCallsReportData,
   getCallKpiDateBounds,
 } from "../repositories/callKpiRepository.js";
+import { getDistinctChatSkillsByCountry } from "../repositories/usVisa/usVisaChatKpiRepository.js";
 
 const BAD_REQUEST_CODES = new Set([
   "INVALID_CUSTOM_DATE_RANGE",
@@ -23,23 +25,41 @@ const BAD_REQUEST_CODES = new Set([
 
 export async function getCallsReport(req, res) {
   try {
-    const { date, dateFrom, dateTo, country } = req.query;
+    const {
+      date,
+      dateFrom,
+      dateTo,
+      country,
+      sourceSystem,
+      source,
+      taskOrder,
+      skill,
+    } = req.query;
+    const selectedSource = sourceSystem || source || "US_VISA";
+    const taskOrderCountries = getUsVisaTaskOrderCountries(selectedSource, taskOrder || null);
     let effectiveDateFrom = dateFrom || date || undefined;
     let effectiveDateTo = dateTo || date || undefined;
-    
+
     let data = await getCallsReportData({
       dateFrom: effectiveDateFrom,
       dateTo: effectiveDateTo,
       country: country || undefined,
+      sourceSystem: selectedSource,
+      taskOrder: taskOrder || undefined,
+      taskOrderCountries,
+      skill: skill || undefined,
     });
 
-    // If no records found for the requested date (e.g. current date with no data yet),
-    // default directly to the latest available date in the database
+    // If no records found for the requested date, resolve to the latest date that
+    // still satisfies the current report filters.
     let resolvedDate = date;
     if ((!data || data.length === 0) && !dateFrom && !dateTo) {
       const dateRange = await getCallKpiDateBounds({
-        sourceSystem: "US_VISA",
+        sourceSystem: selectedSource,
+        taskOrder: taskOrder || undefined,
+        taskOrderCountries,
         country: country || undefined,
+        skill: skill || undefined,
       });
       if (dateRange?.maxDate) {
         effectiveDateFrom = dateRange.maxDate;
@@ -49,6 +69,10 @@ export async function getCallsReport(req, res) {
           dateFrom: effectiveDateFrom,
           dateTo: effectiveDateTo,
           country: country || undefined,
+          sourceSystem: selectedSource,
+          taskOrder: taskOrder || undefined,
+          taskOrderCountries,
+          skill: skill || undefined,
         });
       }
     }
@@ -100,7 +124,15 @@ export async function getWfmCallsKpi(req, res) {
 
 export async function getWfmSkills(req, res) {
   try {
-    const skillsByCountry = await getDistinctSkillsByCountry();
+    const [callSkills, chatSkills] = await Promise.all([
+      getDistinctSkillsByCountry(),
+      getDistinctChatSkillsByCountry(),
+    ]);
+    const skillsByCountry = { ...callSkills };
+    for (const [country, skills] of Object.entries(chatSkills || {})) {
+      const current = skillsByCountry[country] || [];
+      skillsByCountry[country] = [...new Set([...current, ...skills])];
+    }
     return res.json({
       success: true,
       data: skillsByCountry,

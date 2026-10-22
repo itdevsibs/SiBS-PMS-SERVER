@@ -7,6 +7,7 @@ import {
   getWfmSkills,
 } from "../controllers/callKpiController.js";
 import { getWfmEmailsKpi } from "../controllers/emailKpiController.js";
+import { getChatReport } from "../controllers/chatKpiController.js";
 import { getWfmQualityAuditKpi } from "../controllers/qualityAuditKpiController.js";
 import {
   getWfmAbsenteeismKpi,
@@ -45,6 +46,12 @@ router.get(
   "/kpis/emails",
   ...requirePerformanceViewer,
   getWfmEmailsKpi,
+);
+
+router.get(
+  "/kpis/chat-report",
+  ...requirePerformanceViewer,
+  getChatReport,
 );
 
 router.get(
