@@ -17,7 +17,7 @@ const ROLE_DASHBOARD_MAP = {
   8: "/dashboard/tl",
   9: "/dashboard/wfm/view-graphs",
   10: "/dashboard/som",
-  11: "/dashboard/employee-master-data",
+  11: "/frontsteps",
 };
 
 function normalizeRole(value = "") {
@@ -60,6 +60,7 @@ function getAccessValue(decoded = {}) {
   if (role === "tl") return 8;
   if (role === "wfm") return 9;
   if (role === "som") return 10;
+  if (role === "frontsteps" || role === "frontstep") return 11;
   if (role === "masterdata") return 11;
 
   return 0;

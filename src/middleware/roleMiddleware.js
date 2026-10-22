@@ -7,6 +7,7 @@ const ROLE_ACCESS_VALUES = {
   wfm: 9,
   som: 10,
   masterdata: 11,
+  frontsteps: 11,
 };
 
 function getUserAccessValue(req) {
