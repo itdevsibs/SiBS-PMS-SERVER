@@ -96,7 +96,7 @@ function getResolvedRole(adminAccess) {
   if (access === 8) return "tl";
   if (access === 9) return "wfm";
   if (access === 10) return "som";
-  if (access === 11) return "masterdata";
+  if (access === 11) return "frontsteps";
 
   return "employee";
 }
@@ -122,7 +122,7 @@ function getDashboardPath(adminAccess) {
       return "/dashboard/som";
 
     case 11:
-      return "/dashboard/employee-master-data";
+      return "/frontsteps";
 
     default:
       return "/dashboard/agent";
