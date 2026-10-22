@@ -131,9 +131,15 @@ export const pmsTables = {
     PMS_DB_NAME,
     "us_visa_raw_skill_statistics",
   ),
+  // Canonical Call Report (EOD) rows.
+  usVisaRawCalls: dbTable(
+    PMS_DB_NAME,
+    "us_visa_raw_calls",
+  ),
+  // Temporary compatibility alias while legacy Agent Level readers are retired.
   usVisaRawAgentInteractions: dbTable(
     PMS_DB_NAME,
-    "us_visa_raw_agent_interactions",
+    "us_visa_raw_calls",
   ),
   usVisaRawAgentOccupancy: dbTable(
     PMS_DB_NAME,
@@ -143,12 +149,22 @@ export const pmsTables = {
     PMS_DB_NAME,
     "us_visa_raw_email_cases",
   ),
+  usVisaRawChats: dbTable(
+    PMS_DB_NAME,
+    "us_visa_raw_chats",
+  ),
   usVisaCountryHolidays: dbTable(
     PMS_DB_NAME,
     "us_visa_country_holidays",
   ),
   usVisaEmployeeLedger: dbTable(
     PMS_DB_NAME, "us_visa_employee_ledger"
+  ),
+  usVisaTaskOrderLedger: dbTable(
+    PMS_DB_NAME, "us_visa_task_order_ledger"
+  ),
+  usVisaTaskOrderLedgerProfiles: dbTable(
+    PMS_DB_NAME, "us_visa_task_order_ledger_profiles"
   ),
   usVisaQualityAudits: dbTable(
     PMS_DB_NAME, "us_visa_quality_audits"

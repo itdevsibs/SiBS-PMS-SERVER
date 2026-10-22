@@ -16,6 +16,12 @@ export const IMPORT_PROFILE_CODES = {
   FUSECOM_AGENT_LEVEL: "FUSECOM_AGENT_LEVEL",
   FUSENET_AGENT_LEVEL: "FUSENET_AGENT_LEVEL",
   HERODASH_AGENT_LEVEL: "HERODASH_AGENT_LEVEL",
+  FUSECOM_CALL_REPORT_EOD: "FUSECOM_CALL_REPORT_EOD",
+  FUSENET_CALL_REPORT_EOD: "FUSENET_CALL_REPORT_EOD",
+  HERODASH_CALL_REPORT_EOD: "HERODASH_CALL_REPORT_EOD",
+  FUSECOM_CHAT_REPORT_EOD: "FUSECOM_CHAT_REPORT_EOD",
+  FUSENET_CHAT_REPORT_EOD: "FUSENET_CHAT_REPORT_EOD",
+  HERODASH_CHAT_REPORT_EOD: "HERODASH_CHAT_REPORT_EOD",
   FUSECOM_AGENT_OCCUPANCY: "FUSECOM_AGENT_OCCUPANCY",
   FUSENET_AGENT_OCCUPANCY: "FUSENET_AGENT_OCCUPANCY",
   HERODASH_AGENT_OCCUPANCY: "HERODASH_AGENT_OCCUPANCY",
@@ -118,6 +124,94 @@ const HERODASH_AGENT_LEVEL_HEADERS = [
   ["Duration (sec)", "Talk Time (sec)", "Talk Time", "Talk Seconds"],
 ];
 
+
+const FUSE_CALL_EOD_ANSWERED_HEADERS = [
+  "Record Number",
+  "Date",
+  "Indice",
+  "Call ID",
+  "Client",
+  "CLID",
+  "Direction",
+  "Arrival Time",
+  "Answer Time",
+  "End Time",
+  "Agent Name",
+  "Agent Login",
+  "Personal ID",
+  "Skill",
+  "VCH",
+  "Duration (sec)",
+  "Disconnect Initiator",
+  "Total Hold Time (sec)",
+  "Total Hold Count",
+  "Media",
+  "Recording",
+];
+
+const FUSE_CALL_EOD_ABANDONED_HEADERS = [
+  "Record Number",
+  "Date",
+  "Indice",
+  "Arrival Time",
+  "End Time",
+  "Client",
+  "CLID",
+  "Direction",
+  "Wait Time",
+  "VCH",
+  "Skill",
+  "Media",
+  "VCH time (sec)",
+];
+
+const HERODASH_CALL_EOD_HEADERS = [
+  "Date",
+  "Call ID",
+  "Direction",
+  "Arrival time in IVR",
+  "Arrival time in queue",
+  "Answer time",
+  "End time",
+  "Agent name",
+  "Skill",
+  "Disconnect initiator",
+  "Duration (sec)",
+  "Total hold time (sec)",
+  "Total hold count",
+];
+
+
+const CHAT_DETAIL_HEADERS = [
+  "Record Number",
+  "Date",
+  "Chat ID",
+  "Skill",
+  "Agent Name",
+  "Personal ID",
+  "Duration",
+  "Applicant Details",
+  "Wait Time",
+  "Start Time",
+  "End Time",
+  "First Response In",
+  "ART",
+  "Query / Response",
+];
+
+const HERODASH_CHAT_DETAIL_HEADERS = [
+  "Date",
+  "Chat ID",
+  "Skill",
+  ["Agent name", "Agent Name"],
+  "Personal ID",
+  "Duration",
+  ["Applicant details", "Applicant Details"],
+  ["Wait time", "Wait Time"],
+  "First Response In",
+  ["Start time", "Start Time"],
+  ["End time", "End Time"],
+];
 
 const COMMON_AGENT_OCCUPANCY_HEADERS = [
   "Record Number",
@@ -381,6 +475,136 @@ export const WORKBOOK_PROFILE_DEFINITIONS = {
         headerRowCandidates: [1],
         requiredHeaders: HERODASH_AGENT_LEVEL_HEADERS,
         ignoredHeaders: COMMON_AGENT_LEVEL_IGNORED_HEADERS,
+      },
+    ],
+  },
+
+  [IMPORT_PROFILE_CODES.FUSECOM_CALL_REPORT_EOD]: {
+    profileCode: IMPORT_PROFILE_CODES.FUSECOM_CALL_REPORT_EOD,
+    sourceSystem: "FUSECOM",
+    requiredSheets: [
+      {
+        sheetName: "Answered Calls",
+        sheetNameCandidates: ["Answered Calls"],
+        dataGrain: "CALL_DETAIL",
+        headerRowNumber: 9,
+        headerRowCandidates: [9],
+        requiredHeaders: FUSE_CALL_EOD_ANSWERED_HEADERS,
+        ignoredHeaders: [],
+        allowUnknownHeaders: true,
+        disableHeaderFallbackForXlsx: true,
+      },
+      {
+        sheetName: "Calls Abandoned",
+        sheetNameCandidates: ["Calls Abandoned"],
+        dataGrain: "CALL_DETAIL",
+        headerRowNumber: 9,
+        headerRowCandidates: [9],
+        requiredHeaders: FUSE_CALL_EOD_ABANDONED_HEADERS,
+        ignoredHeaders: [],
+        allowUnknownHeaders: true,
+        disableHeaderFallbackForXlsx: true,
+      },
+    ],
+  },
+
+  [IMPORT_PROFILE_CODES.FUSENET_CALL_REPORT_EOD]: {
+    profileCode: IMPORT_PROFILE_CODES.FUSENET_CALL_REPORT_EOD,
+    sourceSystem: "FUSENET",
+    requiredSheets: [
+      {
+        sheetName: "Answered Calls",
+        sheetNameCandidates: ["Answered Calls"],
+        dataGrain: "CALL_DETAIL",
+        headerRowNumber: 9,
+        headerRowCandidates: [9],
+        requiredHeaders: FUSE_CALL_EOD_ANSWERED_HEADERS,
+        ignoredHeaders: [],
+        allowUnknownHeaders: true,
+        disableHeaderFallbackForXlsx: true,
+      },
+      {
+        sheetName: "Calls Abandoned",
+        sheetNameCandidates: ["Calls Abandoned"],
+        dataGrain: "CALL_DETAIL",
+        headerRowNumber: 9,
+        headerRowCandidates: [9],
+        requiredHeaders: FUSE_CALL_EOD_ABANDONED_HEADERS,
+        ignoredHeaders: [],
+        allowUnknownHeaders: true,
+        disableHeaderFallbackForXlsx: true,
+      },
+    ],
+  },
+
+  [IMPORT_PROFILE_CODES.HERODASH_CALL_REPORT_EOD]: {
+    profileCode: IMPORT_PROFILE_CODES.HERODASH_CALL_REPORT_EOD,
+    sourceSystem: "HERODASH",
+    requiredSheets: [
+      {
+        sheetName: null,
+        sheetNameCandidates: ["Sheet1"],
+        dataGrain: "CALL_DETAIL",
+        headerRowNumber: 1,
+        headerRowCandidates: [1],
+        requiredHeaders: HERODASH_CALL_EOD_HEADERS,
+        ignoredHeaders: [],
+        allowUnknownHeaders: true,
+      },
+    ],
+  },
+
+
+  [IMPORT_PROFILE_CODES.FUSECOM_CHAT_REPORT_EOD]: {
+    profileCode: IMPORT_PROFILE_CODES.FUSECOM_CHAT_REPORT_EOD,
+    sourceSystem: "FUSECOM",
+    requiredSheets: [
+      {
+        sheetName: "Chat Detail Records",
+        sheetNameCandidates: ["Chat Detail Records"],
+        dataGrain: "CHAT_DETAIL",
+        headerRowNumber: 9,
+        headerRowCandidates: [9],
+        requiredHeaders: CHAT_DETAIL_HEADERS,
+        ignoredHeaders: [],
+        allowUnknownHeaders: false,
+        disableHeaderFallbackForXlsx: true,
+      },
+    ],
+  },
+
+  [IMPORT_PROFILE_CODES.FUSENET_CHAT_REPORT_EOD]: {
+    profileCode: IMPORT_PROFILE_CODES.FUSENET_CHAT_REPORT_EOD,
+    sourceSystem: "FUSENET",
+    requiredSheets: [
+      {
+        sheetName: "Chat Detail Records",
+        sheetNameCandidates: ["Chat Detail Records"],
+        dataGrain: "CHAT_DETAIL",
+        headerRowNumber: 9,
+        headerRowCandidates: [9],
+        requiredHeaders: CHAT_DETAIL_HEADERS,
+        ignoredHeaders: [],
+        allowUnknownHeaders: false,
+        disableHeaderFallbackForXlsx: true,
+      },
+    ],
+  },
+
+  [IMPORT_PROFILE_CODES.HERODASH_CHAT_REPORT_EOD]: {
+    profileCode: IMPORT_PROFILE_CODES.HERODASH_CHAT_REPORT_EOD,
+    sourceSystem: "HERODASH",
+    requiredSheets: [
+      {
+        sheetName: null,
+        sheetNameCandidates: ["Sheet1"],
+        dataGrain: "CHAT_DETAIL",
+        headerRowNumber: 1,
+        headerRowCandidates: [1],
+        requiredHeaders: HERODASH_CHAT_DETAIL_HEADERS,
+        ignoredHeaders: [],
+        allowUnknownHeaders: false,
+        disableHeaderFallbackForXlsx: true,
       },
     ],
   },

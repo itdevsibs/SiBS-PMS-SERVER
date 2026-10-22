@@ -190,7 +190,7 @@ function appendEmployeeFilter({ conditions, values, employeeUid, employeeUids })
 }
 
 function buildWhereFilters(options = {}) {
-  const conditions = [];
+  const conditions = ["p.report_type = 'AGENT_LEVEL'"];
   const values = [];
 
   appendDateFilters({
@@ -267,6 +267,8 @@ export async function getAgentCallKpiFilterOptions(options = {}) {
       FROM ${pmsTables.usVisaRawAgentInteractions} a
       INNER JOIN ${pmsTables.usVisaImportBatches} b
         ON b.id = a.batch_id
+      INNER JOIN ${pmsTables.usVisaImportProfiles} p
+        ON p.id = a.import_profile_id
       WHERE ${whereSql}
         AND a.skill_name_raw IS NOT NULL
         AND TRIM(a.skill_name_raw) <> ''
@@ -291,6 +293,8 @@ export async function getAgentCallKpiDateBounds(options = {}) {
       FROM ${pmsTables.usVisaRawAgentInteractions} a
       INNER JOIN ${pmsTables.usVisaImportBatches} b
         ON b.id = a.batch_id
+      INNER JOIN ${pmsTables.usVisaImportProfiles} p
+        ON p.id = a.import_profile_id
       WHERE ${whereSql}
     `,
     values,
@@ -364,6 +368,8 @@ export async function getAgentCallKpiRows(options = {}) {
       FROM ${pmsTables.usVisaRawAgentInteractions} a
       INNER JOIN ${pmsTables.usVisaImportBatches} b
         ON b.id = a.batch_id
+      INNER JOIN ${pmsTables.usVisaImportProfiles} p
+        ON p.id = a.import_profile_id
       WHERE ${whereSql}
       GROUP BY ${groupColumns.join(", ")}
       ORDER BY ${groupColumns.join(", ")} ASC

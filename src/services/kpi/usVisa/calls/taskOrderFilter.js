@@ -45,6 +45,11 @@ const TASK_ORDER_CONFIG = Object.freeze({
       "switzerland",
     ]),
   }),
+  TO14: Object.freeze({
+    sourceSystem: "FUSENET",
+    label: "NESAMI",
+    countries: Object.freeze([]),
+  }),
   TO16: Object.freeze({
     sourceSystem: "FUSECOM",
     label: "SEURECA",
@@ -145,16 +150,6 @@ export function normalizeUsVisaTaskOrder(sourceSystem, value) {
 
     const config = TASK_ORDER_CONFIG[taskOrder];
     if (!config) {
-      if (rawList.length > 1) continue;
-      throw createInvalidTaskOrderError(normalizedSourceSystem, taskOrder);
-    }
-
-    if (
-      normalizedSourceSystem !== "US_VISA" &&
-      normalizedSourceSystem !== "US VISA" &&
-      config.sourceSystem !== "ALL" &&
-      config.sourceSystem !== normalizedSourceSystem
-    ) {
       if (rawList.length > 1) continue;
       throw createInvalidTaskOrderError(normalizedSourceSystem, taskOrder);
     }
