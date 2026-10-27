@@ -23,6 +23,7 @@ import masterdataRoutes from "./routes/masterdata.js";
 import loginRoutes from "./routes/login.js";
 import superAdminRoutes from "./routes/super-admin.js";
 import kronosRoutes from "./routes/kronos.js";
+import frontstepsPolicyRoutes from "./routes/frontstepsPolicies.js";
 import {
   initializeKronosTokenService,
   stopKronosTokenService,
@@ -332,6 +333,14 @@ app.use(
 app.use(
   "/api/masterdata",
   masterdataRoutes
+);
+
+/*
+  FrontSteps Policy Documents Repository
+*/
+app.use(
+  "/api/frontsteps",
+  frontstepsPolicyRoutes
 );
 
 /* ================================
