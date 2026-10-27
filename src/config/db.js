@@ -172,6 +172,9 @@ export const pmsTables = {
   wfmHistoryLogs: dbTable(
     PMS_DB_NAME, "wfm_history_logs"
   ),
+  frontstepsPoliciesRepository: dbTable(
+    PMS_DB_NAME, "frontsteps_policies_repository"
+  ),
 };
 
 // ============================================================
