@@ -14,6 +14,7 @@ import { testDbConnections } from "./config/db.js";
 import employeeRoutes from "./routes/employees.js";
 import sampleRoutes from "./routes/sample.js";
 import usVisaImportRoutes from "./routes/usVisa/usVisaImports.js";
+import frontStepsImportRoutes from "./routes/frontSteps/frontStepsImports.js";
 import userRoutes from "./routes/users.js";
 import performanceRoutes from "./routes/performance.js";
 import historyRoutes from "./routes/history.js";
@@ -317,6 +318,12 @@ app.use(
 app.use(
   "/api/us-visa",
   usVisaImportRoutes
+);
+
+/* FrontSteps import endpoints - separate from US Visa pipeline */
+app.use(
+  "/api/frontsteps",
+  frontStepsImportRoutes
 );
 
 /*
