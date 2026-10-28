@@ -16,13 +16,14 @@ const upload = multer({
   },
   fileFilter(_req, file, cb) {
     const ext = path.extname(file.originalname).toLowerCase();
-    if (ext === ".pdf" || ext === ".docx" || ext === ".doc") {
+    if (ext === ".pdf") {
       cb(null, true);
     } else {
-      cb(new Error("Only PDF and DOCX files are allowed for policies"));
+      cb(new Error("Only PDF files are allowed for policy documents (.pdf)"));
     }
   },
 });
+
 
 /**
  * GET /api/frontsteps/policies
