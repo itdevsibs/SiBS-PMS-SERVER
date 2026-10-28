@@ -112,8 +112,11 @@ router.get("/policies/:id/download", async (req, res) => {
     const mime = doc.mime_type || (doc.file_extension?.toLowerCase() === "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
     const filename = doc.file_name || `policy_${id}.${doc.file_extension || "pdf"}`;
 
+    const isInline = req.query.inline === "true" || req.query.view === "true";
+    const dispositionType = isInline ? "inline" : "attachment";
+
     res.setHeader("Content-Type", mime);
-    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
+    res.setHeader("Content-Disposition", `${dispositionType}; filename="${encodeURIComponent(filename)}"`);
     return res.send(doc.file_content);
   } catch (error) {
     console.error("Error downloading policy:", error);
@@ -243,4 +246,87 @@ router.post("/policies/upload", upload.single("file"), async (req, res) => {
   }
 });
 
+/**
+ * PATCH /api/frontsteps/policies/:id/approve
+ * Update policy approval status (e.g. "Approved" or "Active")
+ */
+router.patch("/policies/:id/approve", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { approval_status = "Approved", approved_by } = req.body || {};
+
+    const [result] = await pmsDb.query(
+      `UPDATE ${pmsTables.frontstepsPoliciesRepository} 
+       SET approval_status = ?, approved_by = ?, updated_at = NOW() 
+       WHERE id = ?`,
+      [approval_status, approved_by || null, id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: "Policy not found." });
+    }
+
+    return res.json({
+      success: true,
+      message: `Policy #${id} has been marked as ${approval_status}.`,
+    });
+  } catch (error) {
+    console.error("Error approving policy:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+/**
+ * DELETE /api/frontsteps/policies/:id
+ * Delete a policy record from repository
+ */
+router.delete("/policies/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check which document code this policy had before deleting
+    const [rows] = await pmsDb.query(
+      `SELECT document_code FROM ${pmsTables.frontstepsPoliciesRepository} WHERE id = ?`,
+      [id]
+    );
+
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Policy not found." });
+    }
+
+    const docCode = rows[0].document_code;
+
+    // Delete record
+    await pmsDb.query(
+      `DELETE FROM ${pmsTables.frontstepsPoliciesRepository} WHERE id = ?`,
+      [id]
+    );
+
+    // If another revision exists, promote the latest one to is_current_version = 1
+    const [remaining] = await pmsDb.query(
+      `SELECT id FROM ${pmsTables.frontstepsPoliciesRepository} 
+       WHERE document_code = ? 
+       ORDER BY created_at DESC 
+       LIMIT 1`,
+      [docCode]
+    );
+
+    if (remaining.length > 0) {
+      await pmsDb.query(
+        `UPDATE ${pmsTables.frontstepsPoliciesRepository} SET is_current_version = 1 WHERE id = ?`,
+        [remaining[0].id]
+      );
+    }
+
+    return res.json({
+      success: true,
+      message: `Policy #${id} deleted successfully.`,
+    });
+  } catch (error) {
+    console.error("Error deleting policy:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 export default router;
+
