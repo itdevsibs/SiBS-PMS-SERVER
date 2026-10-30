@@ -15,7 +15,7 @@ function join(values) {
 export function createQualityAuditIdentityHash(row = {}) {
   return sha256(
     join([
-      row.employee_uid || row.source_employee_uid || row.source_sibs_id_raw,
+      row.sibs_id || row.employee_uid || row.source_sibs_id || row.source_employee_uid || row.source_sibs_id_raw,
       row.call_case_id,
       row.audit_date,
       row.auditor_name,
@@ -29,7 +29,7 @@ export function createQualityAuditContentHash(row = {}) {
     join([
       row.auditor_name,
       row.audit_date,
-      row.employee_uid || row.source_employee_uid || row.source_sibs_id_raw,
+      row.sibs_id || row.employee_uid || row.source_sibs_id || row.source_employee_uid || row.source_sibs_id_raw,
       row.agent_name_raw,
       row.employee_mapping_status,
       row.employee_mapping_method,

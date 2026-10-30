@@ -104,12 +104,12 @@ function mappingIssue(row, context) {
     ...context,
     severity: "WARNING",
     errorType: "EMPLOYEE_MAPPING",
-    errorCode: row.mappedRow.source_employee_uid
+    errorCode: row.mappedRow.source_sibs_id
       ? "QA_EMPLOYEE_NOT_MAPPED"
       : "QA_INVALID_SIBS_ID",
     columnName: "SiBS - ID",
     rawValue: rawSibsId,
-    errorMessage: row.mappedRow.source_employee_uid
+    errorMessage: row.mappedRow.source_sibs_id
       ? "No employee record matched the normalized SiBS ID."
       : "The SiBS ID is blank or invalid and could not be matched.",
     existingRowId: null,
@@ -117,11 +117,11 @@ function mappingIssue(row, context) {
 }
 
 function applyEmployeeMatch(row, employeeByUid) {
-  const uid = row.mappedRow.source_employee_uid;
+  const uid = row.mappedRow.source_sibs_id;
   const employee = uid ? employeeByUid.get(uid) : null;
   if (!employee) return { row, employee: null };
 
-  row.mappedRow.employee_uid = employee.employeeUid;
+  row.mappedRow.sibs_id = employee.employeeUid;
   row.mappedRow.employee_mapping_status = "MATCHED";
   row.mappedRow.employee_mapping_method = "SIBS_ID";
 
@@ -129,8 +129,8 @@ function applyEmployeeMatch(row, employeeByUid) {
 }
 
 function buildCanonicalRow(row, batch, profile) {
-  const { source_employee_uid, source_sibs_id_raw, data_grain, ...canonical } = row.mappedRow;
-  void source_employee_uid;
+  const { source_sibs_id, source_sibs_id_raw, data_grain, ...canonical } = row.mappedRow;
+  void source_sibs_id;
   void source_sibs_id_raw;
   void data_grain;
   return {
@@ -160,7 +160,7 @@ async function processChunk({ rowChunk, batch, profile, sheetName, counters, see
   }));
 
   const employeeUids = [
-    ...new Set(mappedRows.map((row) => row.mappedRow.source_employee_uid).filter(Boolean)),
+    ...new Set(mappedRows.map((row) => row.mappedRow.source_sibs_id).filter(Boolean)),
   ];
   const employees = await findQualityAuditKronosEmployeesByUids(employeeUids);
   const employeeByUid = new Map(employees.map((employee) => [employee.employeeUid, employee]));

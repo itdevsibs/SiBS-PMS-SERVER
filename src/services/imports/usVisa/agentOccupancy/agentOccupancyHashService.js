@@ -110,7 +110,15 @@ export function createAgentOccupancyIdentityHash(row = {}) {
 }
 
 export function createAgentOccupancyContentHash(row = {}) {
-  return hash(CONTENT_FIELDS.map((fieldName) => [fieldName, normalize(row[fieldName])]));
+  return hash(CONTENT_FIELDS.map((fieldName) => {
+    // Older FuseNet imports stored the manually selected TO in source_task_order.
+    // Preserve the hash of an otherwise identical historical row without
+    // fabricating a source value in the newly imported canonical record.
+    const value = fieldName === "source_task_order" && row.source_system === "FUSENET"
+      ? (row.source_task_order || row.task_order_id)
+      : row[fieldName];
+    return [fieldName, normalize(value)];
+  }));
 }
 
 export function getAgentOccupancyContentFields() {

@@ -116,16 +116,16 @@ export async function getAgentOccupancyKpiRows({
         DATE_FORMAT(ao.production_date, '%Y-%m-%d') AS production_date,
         CASE
           WHEN UPPER(TRIM(COALESCE(ao.mapping_status, ''))) = 'MATCHED'
-            AND ao.employee_uid IS NOT NULL
-            AND TRIM(ao.employee_uid) <> ''
+            AND ao.sibs_id IS NOT NULL
+            AND TRIM(ao.sibs_id) <> ''
           THEN 'MATCHED'
           ELSE 'UNMATCHED'
         END AS mapping_status,
         CASE
           WHEN UPPER(TRIM(COALESCE(ao.mapping_status, ''))) = 'MATCHED'
-            AND ao.employee_uid IS NOT NULL
-            AND TRIM(ao.employee_uid) <> ''
-          THEN TRIM(ao.employee_uid)
+            AND ao.sibs_id IS NOT NULL
+            AND TRIM(ao.sibs_id) <> ''
+          THEN TRIM(ao.sibs_id)
           ELSE NULL
         END AS employee_uid,
         COALESCE(SUM(ao.talking_seconds), 0) AS talking_seconds,
@@ -142,16 +142,16 @@ export async function getAgentOccupancyKpiRows({
         ao.production_date,
         CASE
           WHEN UPPER(TRIM(COALESCE(ao.mapping_status, ''))) = 'MATCHED'
-            AND ao.employee_uid IS NOT NULL
-            AND TRIM(ao.employee_uid) <> ''
+            AND ao.sibs_id IS NOT NULL
+            AND TRIM(ao.sibs_id) <> ''
           THEN 'MATCHED'
           ELSE 'UNMATCHED'
         END,
         CASE
           WHEN UPPER(TRIM(COALESCE(ao.mapping_status, ''))) = 'MATCHED'
-            AND ao.employee_uid IS NOT NULL
-            AND TRIM(ao.employee_uid) <> ''
-          THEN TRIM(ao.employee_uid)
+            AND ao.sibs_id IS NOT NULL
+            AND TRIM(ao.sibs_id) <> ''
+          THEN TRIM(ao.sibs_id)
           ELSE NULL
         END
     `,
@@ -218,8 +218,8 @@ export async function getAgentOccupancyDailyKpiRows({
   appendTaskOrderFilter(conditions, values, taskOrder);
 
   conditions.push("ao.mapping_status = 'MATCHED'");
-  conditions.push("ao.employee_uid IS NOT NULL");
-  conditions.push("TRIM(ao.employee_uid) <> ''");
+  conditions.push("ao.sibs_id IS NOT NULL");
+  conditions.push("TRIM(ao.sibs_id) <> ''");
 
   if (dateFrom) {
     conditions.push("ao.production_date >= ?");
@@ -233,7 +233,7 @@ export async function getAgentOccupancyDailyKpiRows({
   const [rows] = await pmsDb.query(
     `
       SELECT
-        REPLACE(UPPER(TRIM(ao.employee_uid)), 'SIB-', '') AS employee_uid,
+        REPLACE(UPPER(TRIM(ao.sibs_id)), 'SIB-', '') AS employee_uid,
         DATE_FORMAT(ao.production_date, '%Y-%m-%d') AS production_date,
         COALESCE(SUM(ao.talking_seconds), 0) AS talking_seconds,
         COALESCE(SUM(ao.hold_seconds), 0) AS hold_seconds,
@@ -246,7 +246,7 @@ export async function getAgentOccupancyDailyKpiRows({
       INNER JOIN ${pmsTables.usVisaImportBatches} b ON b.id = ao.batch_id
       WHERE ${conditions.join("\n        AND ")}
       GROUP BY
-        REPLACE(UPPER(TRIM(ao.employee_uid)), 'SIB-', ''),
+        REPLACE(UPPER(TRIM(ao.sibs_id)), 'SIB-', ''),
         ao.production_date
       ORDER BY ao.production_date ASC, employee_uid ASC
     `,

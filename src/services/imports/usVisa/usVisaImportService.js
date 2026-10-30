@@ -36,6 +36,36 @@ const DEFAULT_ROW_CHUNK_SIZE = 1000;
 const US_VISA_IMPORT_LOCK_NAME = "sibs:pms:us-visa:raw-import";
 const US_VISA_IMPORT_LOCK_TIMEOUT_SECONDS = 120;
 
+/**
+ * Return only safe SQL diagnostics. mysql2's error.sql can contain interpolated
+ * workbook values and employee identifiers, so NEVER log or return it verbatim.
+ * This identifies which table/statement failed during an import and whether
+ * the application's SQL header itself still names employee_uid.
+ */
+export function getSafeImportSqlErrorContext(error = {}) {
+  const sql = typeof error.sql === "string" ? error.sql : "";
+  const operation = sql.match(/^\s*(INSERT|REPLACE|SELECT|UPDATE|DELETE)\b/i)?.[1]?.toUpperCase() || null;
+  const tableMatch = operation === "INSERT" || operation === "REPLACE"
+    ? sql.match(/\bINTO\s+((?:`?[A-Za-z0-9_]+`?\.)?`?[A-Za-z0-9_]+`?)/i)
+    : operation === "UPDATE"
+      ? sql.match(/\bUPDATE\s+((?:`?[A-Za-z0-9_]+`?\.)?`?[A-Za-z0-9_]+`?)/i)
+      : sql.match(/\bFROM\s+((?:`?[A-Za-z0-9_]+`?\.)?`?[A-Za-z0-9_]+`?)/i);
+  const table = tableMatch?.[1]?.replace(/`/g, "") || null;
+  // For INSERT/REPLACE inspect only column names, not interpolated row values.
+  const fieldList = (operation === "INSERT" || operation === "REPLACE")
+    ? sql.match(/\bINTO\s+(?:`?[A-Za-z0-9_]+`?\.)?`?[A-Za-z0-9_]+`?\s*\(([^)]*)\)\s*VALUES\b/i)?.[1] || ""
+    : "";
+  const hasLegacyInsertColumn = /(?:^|[,\s`])employee_uid(?:[,\s`]|$)/i.test(fieldList);
+  return {
+    code: String(error.code || "").slice(0, 64) || null,
+    errno: Number.isInteger(error.errno) ? error.errno : null,
+    sqlState: String(error.sqlState || "").slice(0, 12) || null,
+    operation,
+    table,
+    hasLegacyInsertColumn,
+  };
+}
+
 function reportImportProgress(progressToken, patch = {}) {
   if (!progressToken) return null;
   return updateImportProgress(progressToken, patch);
@@ -399,24 +429,34 @@ export async function importUsVisaRawWorkbook(options = {}) {
     let chatTaskOrder = null;
 
     if (isAgentOccupancy) {
-      try {
-        occupancyTaskOrder = assertUsVisaTaskOrderForSource(
-          profile.sourceSystem || getProfileSourceSystem(profileCode),
-          options.taskOrderId,
-        );
-      } catch (error) {
-        return {
-          batch: null,
-          rejected: true,
-          code: error.code || "TASK_ORDER_MISMATCH",
-          message: error.message,
-          profile,
-          profileCode,
-          fileHash,
-          worksheetNames: [],
-          workbookValidation: null,
-          counters,
-        };
+      const occupancySourceSystem = String(
+        profile.sourceSystem || getProfileSourceSystem(profileCode) || "",
+      )
+        .trim()
+        .toUpperCase();
+
+      // FuseCom and FuseNet Occupancy resolve TO per row from employee scope;
+      // ignore any legacy client-supplied Task Order for these two profiles.
+      if (!["FUSECOM", "FUSENET"].includes(occupancySourceSystem)) {
+        try {
+          occupancyTaskOrder = assertUsVisaTaskOrderForSource(
+            occupancySourceSystem,
+            options.taskOrderId,
+          );
+        } catch (error) {
+          return {
+            batch: null,
+            rejected: true,
+            code: error.code || "TASK_ORDER_MISMATCH",
+            message: error.message,
+            profile,
+            profileCode,
+            fileHash,
+            worksheetNames: [],
+            workbookValidation: null,
+            counters,
+          };
+        }
       }
     }
 
@@ -807,6 +847,13 @@ export async function importUsVisaRawWorkbook(options = {}) {
       counters,
     };
   } catch (error) {
+    if (error?.code === "ER_BAD_FIELD_ERROR") {
+      console.error("US VISA import SQL column mismatch (safe diagnostics):", {
+        batchId: batch?.id || null,
+        importProfileIdOrCode,
+        ...getSafeImportSqlErrorContext(error),
+      });
+    }
     if (batch?.id) {
       if (error instanceof WorkbookReaderError) {
         console.error("US VISA workbook reader error:", {

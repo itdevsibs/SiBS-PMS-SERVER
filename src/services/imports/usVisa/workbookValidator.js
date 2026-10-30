@@ -25,6 +25,8 @@ export const IMPORT_PROFILE_CODES = {
   FUSECOM_AGENT_OCCUPANCY: "FUSECOM_AGENT_OCCUPANCY",
   FUSENET_AGENT_OCCUPANCY: "FUSENET_AGENT_OCCUPANCY",
   HERODASH_AGENT_OCCUPANCY: "HERODASH_AGENT_OCCUPANCY",
+  HERODASH_AGENT_ACTIVITY_PRODUCTIVE_BREAKS: "HERODASH_AGENT_ACTIVITY_PRODUCTIVE_BREAKS",
+  HERODASH_AGENT_PERFORMANCE_BY_SKILL: "HERODASH_AGENT_PERFORMANCE_BY_SKILL",
   US_VISA_EMAIL_RAW_DATA: "US_VISA_EMAIL_RAW_DATA",
   US_VISA_QUALITY_AUDIT: "US_VISA_QUALITY_AUDIT",
 };
@@ -361,6 +363,29 @@ const HERODASH_AGENT_OCCUPANCY_IGNORED_HEADERS = [
 ];
 
 
+const HERODASH_AGENT_ACTIVITY_REQUIRED_HEADERS = [
+  "Date",
+  ["Agent name", "Agent Name"],
+  ["Start time", "Start Time"],
+  ["End time", "End Time"],
+  "Duration",
+  "Status",
+];
+
+const HERODASH_AGENT_PERFORMANCE_BY_SKILL_REQUIRED_HEADERS = [
+  ["Agent Name", "Agent name"],
+  "Skill",
+  ["Answered calls", "Answered Calls"],
+  ["Total talking time", "Total Talking Time"],
+  ["Total hold time", "Total Hold Time"],
+  ["Total wrap-up time", "Total wrap up time", "Total Wrap-up Time"],
+  ["Total handling time", "Total Handling Time"],
+  ["Average talking time", "Average Talking Time"],
+  ["Average wrap-up time", "Average wrap up time", "Average Wrap-up Time"],
+  ["Average hold time", "Average Hold Time"],
+  ["Average handing time", "Average handling time", "Average Handling Time"],
+];
+
 const EMAIL_RAW_DATA_COMMON_HEADERS = [
   "(Do Not Modify) Case",
   "(Do Not Modify) Row Checksum",
@@ -648,6 +673,42 @@ export const WORKBOOK_PROFILE_DEFINITIONS = {
       },
     ],
   },
+  [IMPORT_PROFILE_CODES.HERODASH_AGENT_ACTIVITY_PRODUCTIVE_BREAKS]: {
+    profileCode: IMPORT_PROFILE_CODES.HERODASH_AGENT_ACTIVITY_PRODUCTIVE_BREAKS,
+    sourceSystem: "HERODASH",
+    requiredSheets: [
+      {
+        sheetName: "Sheet1",
+        sheetNameCandidates: ["Sheet1"],
+        dataGrain: "AGENT_ACTIVITY_INTERVAL",
+        headerRowNumber: 1,
+        headerRowCandidates: [1],
+        requiredHeaders: HERODASH_AGENT_ACTIVITY_REQUIRED_HEADERS,
+        ignoredHeaders: [],
+        allowUnknownHeaders: false,
+        disableHeaderFallbackForXlsx: true,
+      },
+    ],
+  },
+
+  [IMPORT_PROFILE_CODES.HERODASH_AGENT_PERFORMANCE_BY_SKILL]: {
+    profileCode: IMPORT_PROFILE_CODES.HERODASH_AGENT_PERFORMANCE_BY_SKILL,
+    sourceSystem: "HERODASH",
+    requiredSheets: [
+      {
+        sheetName: "Sheet1",
+        sheetNameCandidates: ["Sheet1"],
+        dataGrain: "AGENT_PERFORMANCE_SKILL",
+        headerRowNumber: 1,
+        headerRowCandidates: [1],
+        requiredHeaders: HERODASH_AGENT_PERFORMANCE_BY_SKILL_REQUIRED_HEADERS,
+        ignoredHeaders: [],
+        allowUnknownHeaders: false,
+        disableHeaderFallbackForXlsx: true,
+      },
+    ],
+  },
+
   [IMPORT_PROFILE_CODES.US_VISA_EMAIL_RAW_DATA]: {
     profileCode: IMPORT_PROFILE_CODES.US_VISA_EMAIL_RAW_DATA,
     sourceSystem: "EMAIL",

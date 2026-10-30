@@ -12,7 +12,7 @@ const CONTENT_FIELDS = [
   "task_order_id",
   "agent_name_raw",
   "personal_id",
-  "employee_uid",
+  "sibs_id",
   "mapping_status",
   "mapping_method",
   "duration_seconds",
@@ -65,6 +65,11 @@ export function createChatIdentityHash(row = {}) {
 
 export function createChatContentHash(row = {}) {
   return stableHash(
-    CONTENT_FIELDS.map((field) => [field, normalize(row[field])]),
+    CONTENT_FIELDS.map((field) => [
+      // Existing persisted Chat hashes use this historical field label.
+      // Only the serialization label is legacy; the data source is sibs_id.
+      field === "sibs_id" ? "employee_uid" : field,
+      normalize(row[field]),
+    ]),
   );
 }

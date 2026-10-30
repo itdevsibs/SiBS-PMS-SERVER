@@ -107,6 +107,35 @@ function getValue(sourceRow, headerName) {
   return map.get(normalizeHeader(headerName));
 }
 
+// The workbook validator accepts alternative source labels for the same
+// employee identity. Read them consistently here as well: an accepted
+// `Agent` header must not silently become a NULL canonical Agent Name.
+function getFirstNonBlankValue(sourceRow, headers = []) {
+  for (const header of headers) {
+    const value = getValue(sourceRow, header);
+    if (value !== null && value !== undefined && String(value).trim() !== "") {
+      return value;
+    }
+  }
+  return null;
+}
+
+function mapSourceIdentity(sourceRow) {
+  const agentName = toStringValue(getFirstNonBlankValue(sourceRow, [
+    "Agent Name", "Agent", "Agent name",
+  ])).value;
+  return {
+    agentName,
+    // Keep these as original source identifiers, not as employee lookup keys.
+    agentLogin: toStringValue(getFirstNonBlankValue(sourceRow, [
+      "Agent Login", "Agent login", "Login",
+    ])).value,
+    personalId: toStringValue(getFirstNonBlankValue(sourceRow, [
+      "Personal ID", "Personal Id", "Agent ID",
+    ])).value,
+  };
+}
+
 function sourceSystemForProfile(profileCode) {
   return SOURCE_SYSTEM_BY_PROFILE[profileCode] || null;
 }
@@ -140,11 +169,15 @@ function baseRow(sourceRow, sourceSystem, grain, options = {}) {
     agent_login: null,
     personal_id: null,
     source_agent_key: null,
-    employee_uid: null,
+    sibs_id: null,
     mapping_status: "UNMATCHED",
     mapping_method: null,
-    source_task_order: options.taskOrderId || null,
-    task_order_id: options.taskOrderId || null,
+    source_task_order: ["FUSECOM", "FUSENET"].includes(sourceSystem)
+      ? null
+      : options.taskOrderId || null,
+    task_order_id: ["FUSECOM", "FUSENET"].includes(sourceSystem)
+      ? null
+      : options.taskOrderId || null,
   };
 }
 
@@ -190,11 +223,12 @@ function mapFuseRow(sourceRow, profileCode, options) {
     }
   }
 
-  mappedRow.agent_name_raw = toStringValue(getValue(sourceRow, "Agent Name")).value;
-  mappedRow.agent_login = toStringValue(getValue(sourceRow, "Agent Login")).value;
-  mappedRow.personal_id = toStringValue(getValue(sourceRow, "Personal ID")).value;
+  const sourceIdentity = mapSourceIdentity(sourceRow);
+  mappedRow.agent_name_raw = sourceIdentity.agentName;
+  mappedRow.agent_login = sourceIdentity.agentLogin;
+  mappedRow.personal_id = sourceIdentity.personalId;
   // Occupancy employee identity is name-based. Keep login/personal ID only for audit.
-  mappedRow.source_agent_key = mappedRow.agent_name_raw;
+  mappedRow.source_agent_key = sourceIdentity.agentName;
 
   for (const [sourceHeader, targetField] of Object.entries(COUNT_FIELDS)) {
     addConvertedValue({ mappedRow, conversionErrors, targetField, sourceHeader, rawValue: getValue(sourceRow, sourceHeader), converter: toIntegerValue });
@@ -214,15 +248,14 @@ function mapHeroDashRow(sourceRow, options) {
   const conversionErrors = [];
   mappedRow.source_file_hash = options.fileHash || null;
 
-  const mappedAgentName = toStringValue(getValue(sourceRow, "Agent Name")).value;
-  const agentLogin = toStringValue(getValue(sourceRow, "Agent login")).value;
+  const sourceIdentity = mapSourceIdentity(sourceRow);
   // Do not substitute Agent Login when Agent Name is missing. Occupancy
   // matching must remain name-based so the source-specific alias and Kronos
   // name fallback both receive the actual agent name from the download.
-  mappedRow.agent_name_raw = mappedAgentName;
-  mappedRow.agent_login = agentLogin;
-  mappedRow.personal_id = toStringValue(getValue(sourceRow, "Personal ID")).value;
-  mappedRow.source_agent_key = mappedAgentName;
+  mappedRow.agent_name_raw = sourceIdentity.agentName;
+  mappedRow.agent_login = sourceIdentity.agentLogin;
+  mappedRow.personal_id = sourceIdentity.personalId;
+  mappedRow.source_agent_key = sourceIdentity.agentName;
 
   addConvertedValue({ mappedRow, conversionErrors, targetField: "answered_sessions", sourceHeader: "Answered call", rawValue: getValue(sourceRow, "Answered call"), converter: toIntegerValue });
   addConvertedValue({ mappedRow, conversionErrors, targetField: "avg_calls_per_hour", sourceHeader: "AVG calls/hour", rawValue: getValue(sourceRow, "AVG calls/hour"), converter: toDecimalValue });

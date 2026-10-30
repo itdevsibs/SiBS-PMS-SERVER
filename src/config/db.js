@@ -153,6 +153,14 @@ export const pmsTables = {
     PMS_DB_NAME,
     "us_visa_raw_chats",
   ),
+  usVisaRawAgentActivity: dbTable(
+    PMS_DB_NAME,
+    "us_visa_raw_agent_activity",
+  ),
+  usVisaRawAgentPerformanceBySkill: dbTable(
+    PMS_DB_NAME,
+    "us_visa_raw_agent_performance_by_skill",
+  ),
   usVisaCountryHolidays: dbTable(
     PMS_DB_NAME,
     "us_visa_country_holidays",

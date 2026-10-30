@@ -185,7 +185,7 @@ function appendEmployeeFilter({ conditions, values, employeeUid, employeeUids })
     return;
   }
 
-  conditions.push(`a.employee_uid IN (${buildInPlaceholders(unique)})`);
+  conditions.push(`a.sibs_id IN (${buildInPlaceholders(unique)})`);
   values.push(...unique);
 }
 
@@ -317,8 +317,8 @@ export async function getAgentCallKpiRows(options = {}) {
   ];
 
   if (groupBy.has("employee")) {
-    groupColumns.push("a.employee_uid");
-    selectColumns.push("a.employee_uid");
+    groupColumns.push("a.sibs_id");
+    selectColumns.push("a.sibs_id AS employee_uid");
   } else {
     selectColumns.push("NULL AS employee_uid");
   }

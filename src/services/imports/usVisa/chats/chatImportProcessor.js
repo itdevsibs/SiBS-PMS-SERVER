@@ -125,6 +125,7 @@ function createConflictImportError(row, context = {}) {
 
 function createEmployeeMappingWarning(row, context = {}) {
   const isAmbiguous = row.mappedRow?.mapping_status === AGENT_MAPPING_STATUSES.AMBIGUOUS;
+  const isMissingAgentName = !String(row.mappedRow?.agent_name_raw || "").trim();
   return {
     batchId: context.batchId,
     rawRowId: context.rawRowId,
@@ -132,30 +133,16 @@ function createEmployeeMappingWarning(row, context = {}) {
     excelRowNumber: context.excelRowNumber,
     severity: "WARNING",
     errorType: "EMPLOYEE_MAPPING",
-    errorCode: isAmbiguous ? "EMPLOYEE_MAPPING_AMBIGUOUS" : "EMPLOYEE_NOT_MAPPED",
+    errorCode: isMissingAgentName
+      ? "CHAT_AGENT_NAME_MISSING"
+      : isAmbiguous ? "EMPLOYEE_MAPPING_AMBIGUOUS" : "EMPLOYEE_NOT_MAPPED",
     columnName: "Agent Name",
     rawValue: row.mappedRow?.agent_name_raw || null,
-    errorMessage: isAmbiguous
-      ? "Chat row matched multiple possible employees and was left unmapped."
-      : "Chat row was imported but its Agent Name is not yet mapped to a SIBS employee.",
-    existingRowId: null,
-  };
-}
-
-function createTaskOrderFallbackWarning(row, context = {}) {
-  return {
-    batchId: context.batchId,
-    rawRowId: context.rawRowId,
-    sheetName: context.sheetName,
-    excelRowNumber: context.excelRowNumber,
-    severity: "WARNING",
-    errorType: "TASK_ORDER_MAPPING",
-    errorCode: "SKILL_COUNTRY_FALLBACK",
-    columnName: "Skill",
-    rawValue: row.mappedRow?.skill_name_raw || null,
-    errorMessage:
-      row.taskResolution?.warning ||
-      "Chat Skill used country fallback for Task Order attribution.",
+    errorMessage: isMissingAgentName
+      ? "Answered chat has no Agent Name in the source row; employee mapping was left unmatched."
+      : isAmbiguous
+        ? "Chat row matched multiple possible employees and was left unmapped."
+        : "Chat row was imported but its Agent Name is not yet mapped to a SIBS employee.",
     existingRowId: null,
   };
 }
@@ -176,7 +163,7 @@ function buildCanonicalRow({ mappedRow, contentHash, batch, rawRowId, profile })
     agentNameRaw: mappedRow.agent_name_raw,
     personalId: mappedRow.personal_id,
     sourceAgentKey: mappedRow.source_agent_key,
-    employeeUid: mappedRow.employee_uid,
+    sibsId: mappedRow.sibs_id,
     mappingStatus: mappedRow.mapping_status,
     mappingMethod: mappedRow.mapping_method,
     durationSeconds: mappedRow.duration_seconds,
@@ -212,7 +199,7 @@ function applyConcurrencyAdjustment(preparedRows = []) {
     mapped.session_count = 1;
     mapped.adjusted_chat_seconds = mapped.duration_seconds;
 
-    const agentKey = String(mapped.employee_uid || mapped.agent_name_raw || "")
+    const agentKey = String(mapped.sibs_id || mapped.agent_name_raw || "")
       .trim()
       .toUpperCase();
     const startMs = toEpoch(mapped.start_at);
@@ -327,7 +314,7 @@ export async function processChatReportWorkbook({
 
     if (String(row.mappedRow.agent_name_raw || "").trim()) {
       const identityMatch = identityResolver.resolve(row.identity);
-      row.mappedRow.employee_uid =
+      row.mappedRow.sibs_id =
         identityMatch.matchStatus === AGENT_MAPPING_STATUSES.MATCHED
           ? identityMatch.employee.employeeUid
           : null;
@@ -456,13 +443,8 @@ export async function processChatReportWorkbook({
       continue;
     }
 
-    if (row.taskResolution?.method === "SKILL_COUNTRY_FALLBACK") {
-      importErrors.push(createTaskOrderFallbackWarning(row, context));
-      counters.warningRows += 1;
-    }
-
     if (
-      String(row.mappedRow.agent_name_raw || "").trim() &&
+      (String(row.mappedRow.agent_name_raw || "").trim() || row.mappedRow.is_answered === 1) &&
       row.mappedRow.mapping_status !== AGENT_MAPPING_STATUSES.MATCHED
     ) {
       importErrors.push(createEmployeeMappingWarning(row, context));
