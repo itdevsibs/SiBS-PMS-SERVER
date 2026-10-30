@@ -173,9 +173,9 @@ export function mapQualityAuditRow(sourceRow = {}) {
     mappedRow: {
       auditor_name: stringValue(sourceRow, HEADERS.auditorName, conversionErrors),
       audit_date: auditDate,
-      source_employee_uid: normalizeQualityAuditEmployeeUid(sourceSibsId),
+      source_sibs_id: normalizeQualityAuditEmployeeUid(sourceSibsId),
       source_sibs_id_raw: sourceSibsId,
-      employee_uid: null,
+      sibs_id: null,
       agent_name_raw: stringValue(sourceRow, HEADERS.agentName, conversionErrors),
       employee_mapping_status: "UNMATCHED",
       employee_mapping_method: null,

@@ -1,5 +1,7 @@
 // Selects the domain processor and supported source file types for a US VISA import profile.
 import { processAgentInteractionWorkbook } from "./agentInteractions/agentInteractionImportProcessor.js";
+import { processAgentActivityWorkbook } from "./agentActivity/agentActivityImportProcessor.js";
+import { processAgentPerformanceBySkillWorkbook } from "./agentPerformanceBySkill/agentPerformanceBySkillImportProcessor.js";
 import { processCallReportWorkbook } from "./calls/callImportProcessor.js";
 import { processChatReportWorkbook } from "./chats/chatImportProcessor.js";
 import { processAgentOccupancyWorkbook } from "./agentOccupancy/agentOccupancyImportProcessor.js";
@@ -18,6 +20,8 @@ export const US_VISA_IMPORT_REPORT_TYPES = Object.freeze({
   AGENT_OCCUPANCY: "AGENT_OCCUPANCY",
   EMAIL_RAW_DATA: "EMAIL_RAW_DATA",
   QUALITY_AUDIT: "QUALITY_AUDIT",
+  AGENT_ACTIVITY_PRODUCTIVE_BREAKS: "AGENT_ACTIVITY_PRODUCTIVE_BREAKS",
+  AGENT_PERFORMANCE_BY_SKILL: "AGENT_PERFORMANCE_BY_SKILL",
 });
 
 const PROCESSORS_BY_REPORT_TYPE = Object.freeze({
@@ -68,6 +72,20 @@ const PROCESSORS_BY_REPORT_TYPE = Object.freeze({
     fileType: "XLSX_OR_CSV",
     supportedExtensions: XLSX_AND_CSV_EXTENSIONS,
     processWorkbook: processQualityAuditWorkbook,
+    processCsv: null,
+  },
+  [US_VISA_IMPORT_REPORT_TYPES.AGENT_ACTIVITY_PRODUCTIVE_BREAKS]: {
+    domain: "AGENT_ACTIVITY_PRODUCTIVE_BREAKS",
+    fileType: "XLSX",
+    supportedExtensions: XLSX_ONLY_EXTENSIONS,
+    processWorkbook: processAgentActivityWorkbook,
+    processCsv: null,
+  },
+  [US_VISA_IMPORT_REPORT_TYPES.AGENT_PERFORMANCE_BY_SKILL]: {
+    domain: "AGENT_PERFORMANCE_BY_SKILL",
+    fileType: "XLSX",
+    supportedExtensions: XLSX_ONLY_EXTENSIONS,
+    processWorkbook: processAgentPerformanceBySkillWorkbook,
     processCsv: null,
   },
 });

@@ -206,7 +206,7 @@ export function mapChatRow(sourceRow = {}, options = {}) {
     agent_name_raw: getString(sourceRow, ["Agent Name", "Agent name", "Agent"]),
     personal_id: getString(sourceRow, ["Personal ID", "Personal Id", "Agent ID"]),
     source_agent_key: getString(sourceRow, ["Agent Name", "Agent name", "Agent"]),
-    employee_uid: null,
+    sibs_id: null,
     mapping_status: "UNMATCHED",
     mapping_method: null,
     duration_seconds: duration.value,

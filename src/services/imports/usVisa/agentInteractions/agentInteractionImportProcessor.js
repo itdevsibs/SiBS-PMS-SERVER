@@ -248,7 +248,7 @@ function createEmployeeMappingWarning(row, context = {}) {
     severity: "WARNING",
     errorType: "EMPLOYEE_MAPPING",
     errorCode: isAmbiguous ? "EMPLOYEE_MAPPING_AMBIGUOUS" : "EMPLOYEE_NOT_MAPPED",
-    columnName: "employee_uid",
+    columnName: "sibs_id",
     rawValue: row.mappedRow?.source_agent_key || row.mappedRow?.agent_name_raw || null,
     errorMessage: isAmbiguous
       ? "Agent Level row matched multiple possible employees and was left unmapped."
@@ -284,7 +284,7 @@ async function prepareAgentInteractionRow({
     sourceAgentKey: mapped.mappedRow.source_agent_key,
   });
 
-  mapped.mappedRow.employee_uid =
+  mapped.mappedRow.sibs_id =
     identityMatch.matchStatus === AGENT_MAPPING_STATUSES.MATCHED
       ? identityMatch.employee.employeeUid
       : null;
@@ -330,7 +330,7 @@ function buildCanonicalRow({
     agentLogin: mappedRow.agent_login,
     personalId: mappedRow.personal_id,
     sourceAgentKey: mappedRow.source_agent_key,
-    employeeUid: mappedRow.employee_uid,
+    sibsId: mappedRow.sibs_id,
     mappingStatus: mappedRow.mapping_status,
     mappingMethod: mappedRow.mapping_method,
     skillNameRaw: mappedRow.skill_name_raw,

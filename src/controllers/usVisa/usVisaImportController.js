@@ -210,6 +210,12 @@ export function getFatalMessage(result = {}) {
         }
         return `Only ${profileLabel} Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file does not match the required Agent Occupancy structure.`;
       }
+      if (isHerodash && /PRODUCTIVE_BREAKS/i.test(profileCode)) {
+        return "The HeroDash Agent Activity – Productive Breaks file is missing required columns. Upload the original .xlsx export.";
+      }
+      if (isHerodash && /PERFORMANCE_BY_SKILL/i.test(profileCode)) {
+        return "The HeroDash Agent Performance By Skill file is missing required columns. Upload the original .xlsx export.";
+      }
       if (isAgentLevel) {
         if (isHerodash) {
           return "Only HeroDash Agent Level Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file is missing required HeroDash Agent Level columns.";
@@ -529,6 +535,7 @@ export async function getUsVisaImportRawData(req, res) {
       [batch.importProfileId || batch.import_profile_id],
     );
     const profile = profileRows[0] || {};
+    const profileCode = profile.profile_code || batch.importProfileCode || "";
     const reportType = profile.report_type || batch.importProfileReportType || "";
     const isAgentLevel = reportType === "AGENT_LEVEL";
     const isCallReport = reportType === "CALL_REPORT_EOD";
@@ -542,9 +549,18 @@ export async function getUsVisaImportRawData(req, res) {
       reportType === "QUALITY_AUDIT" ||
       profile.profile_code === "US_VISA_QUALITY_AUDIT" ||
       batch.importProfileCode === "US_VISA_QUALITY_AUDIT";
+    const isAgentActivity = reportType === "AGENT_ACTIVITY_PRODUCTIVE_BREAKS" ||
+      profileCode === "HERODASH_AGENT_ACTIVITY_PRODUCTIVE_BREAKS";
+    const isAgentPerformanceBySkill = reportType === "AGENT_PERFORMANCE_BY_SKILL" ||
+      profileCode === "HERODASH_AGENT_PERFORMANCE_BY_SKILL";
     const supportsSibsFilter =
-      isAgentLevel || isCallReport || isChatReport || isAgentOccupancy || isEmailRawData || isQualityAudit;
-    const mappingTable = isCallReport
+      isAgentLevel || isCallReport || isChatReport || isAgentOccupancy ||
+      isEmailRawData || isQualityAudit || isAgentActivity || isAgentPerformanceBySkill;
+    const mappingTable = isAgentActivity
+      ? pmsTables.usVisaRawAgentActivity
+      : isAgentPerformanceBySkill
+        ? pmsTables.usVisaRawAgentPerformanceBySkill
+      : isCallReport
       ? pmsTables.usVisaRawCalls
       : isChatReport
         ? pmsTables.usVisaRawChats
@@ -562,7 +578,16 @@ export async function getUsVisaImportRawData(req, res) {
       : isQualityAudit
         ? "employee_mapping_status"
         : "mapping_status";
-    const employeeUidCol = isEmailRawData ? "modified_by_employee_uid" : "employee_uid";
+    const employeeUidCol = isEmailRawData
+      ? "modified_by_sibs_id"
+      : "sibs_id";
+
+    // A duplicate/invalid raw row generally has no canonical mapping row.
+    // A missing canonical row is NOT evidence that the agent is Non-SIBS.
+    const isEligibleForEmployeeClassification =
+      "r.validation_status NOT IN ('DUPLICATE', 'INVALID')";
+    const isSibsSql = `${isEligibleForEmployeeClassification} AND m.${mappingStatusCol} = 'MATCHED'`;
+    const isNonSibsSql = `${isEligibleForEmployeeClassification} AND m.${mappingStatusCol} IS NOT NULL AND m.${mappingStatusCol} <> 'MATCHED'`;
 
     // 2. Get available sheets for this batch
     const [sheetRows] = await pmsDb.query(
@@ -584,14 +609,16 @@ export async function getUsVisaImportRawData(req, res) {
     const sibsFilter = typeof req.query.sibsFilter === "string" ? req.query.sibsFilter.trim().toUpperCase() : "ALL";
 
     // 4. SIBS & Non-SIBS breakdown counts for this sheet
-    let sibsCounts = { all: 0, sibs: 0, nonSibs: 0 };
+    let sibsCounts = { all: 0, sibs: 0, nonSibs: 0, duplicates: 0, invalid: 0 };
     if (supportsSibsFilter && mappingTable) {
       try {
         const [countsRow] = await pmsDb.query(
           `SELECT 
              COUNT(*) AS all_count,
-             SUM(CASE WHEN m.${mappingStatusCol} = 'MATCHED' THEN 1 ELSE 0 END) AS sibs_count,
-             SUM(CASE WHEN m.${mappingStatusCol} != 'MATCHED' OR m.${mappingStatusCol} IS NULL THEN 1 ELSE 0 END) AS non_sibs_count
+             SUM(CASE WHEN ${isSibsSql} THEN 1 ELSE 0 END) AS sibs_count,
+             SUM(CASE WHEN ${isNonSibsSql} THEN 1 ELSE 0 END) AS non_sibs_count,
+             SUM(CASE WHEN r.validation_status = 'DUPLICATE' THEN 1 ELSE 0 END) AS duplicate_count,
+             SUM(CASE WHEN r.validation_status = 'INVALID' THEN 1 ELSE 0 END) AS invalid_count
            FROM ${pmsTables.usVisaRawImportRows} r
            LEFT JOIN ${mappingTable} m ON m.raw_import_row_id = r.id
            WHERE r.batch_id = ? AND r.sheet_name = ?`,
@@ -602,6 +629,8 @@ export async function getUsVisaImportRawData(req, res) {
             all: Number(countsRow[0].all_count) || 0,
             sibs: Number(countsRow[0].sibs_count) || 0,
             nonSibs: Number(countsRow[0].non_sibs_count) || 0,
+            duplicates: Number(countsRow[0].duplicate_count) || 0,
+            invalid: Number(countsRow[0].invalid_count) || 0,
           };
         }
       } catch (countErr) {
@@ -619,9 +648,9 @@ export async function getUsVisaImportRawData(req, res) {
 
     if (supportsSibsFilter && mappingTable) {
       if (sibsFilter === "SIBS") {
-        countSql += ` AND m.${mappingStatusCol} = 'MATCHED'`;
+        countSql += ` AND ${isSibsSql}`;
       } else if (sibsFilter === "NON_SIBS" || sibsFilter === "NON-SIBS") {
-        countSql += ` AND (m.${mappingStatusCol} != 'MATCHED' OR m.${mappingStatusCol} IS NULL)`;
+        countSql += ` AND ${isNonSibsSql}`;
       }
     }
 
@@ -644,7 +673,7 @@ export async function getUsVisaImportRawData(req, res) {
         r.validation_status
     `;
     if (supportsSibsFilter && mappingTable) {
-      rowsSql += `, m.${mappingStatusCol} AS mapping_status, m.${employeeUidCol} AS employee_uid`;
+      rowsSql += `, m.${mappingStatusCol} AS mapping_status, m.${employeeUidCol} AS sibs_id`;
     }
     rowsSql += `
       FROM ${pmsTables.usVisaRawImportRows} r
@@ -657,9 +686,9 @@ export async function getUsVisaImportRawData(req, res) {
 
     if (supportsSibsFilter && mappingTable) {
       if (sibsFilter === "SIBS") {
-        rowsSql += ` AND m.${mappingStatusCol} = 'MATCHED'`;
+        rowsSql += ` AND ${isSibsSql}`;
       } else if (sibsFilter === "NON_SIBS" || sibsFilter === "NON-SIBS") {
-        rowsSql += ` AND (m.${mappingStatusCol} != 'MATCHED' OR m.${mappingStatusCol} IS NULL)`;
+        rowsSql += ` AND ${isNonSibsSql}`;
       }
     }
 
@@ -723,14 +752,23 @@ export async function getUsVisaImportRawData(req, res) {
           data = parsed || {};
         }
       } catch {}
+      const validationStatus = String(r.validation_status || "").toUpperCase();
+      const mappingStatus = r.mapping_status || null;
+      const rowType = validationStatus === "DUPLICATE" ? "DUPLICATE"
+        : validationStatus === "INVALID" ? "INVALID"
+        : mappingStatus === "MATCHED" ? "SIBS"
+        : mappingStatus ? "NON_SIBS" : "UNVERIFIED";
       return {
         id: r.id,
         excelRowNumber: r.excel_row_number,
         sheetName: r.sheet_name,
         validationStatus: r.validation_status,
-        mappingStatus: r.mapping_status || null,
-        isSibs: r.mapping_status === "MATCHED",
-        employeeUid: r.employee_uid || null,
+        mappingStatus,
+        rowType,
+        isSibs: rowType === "SIBS",
+        sibsId: r.sibs_id || null,
+        // Retained for any clients that still read the old API response property.
+        employeeUid: r.sibs_id || null,
         data,
       };
     });

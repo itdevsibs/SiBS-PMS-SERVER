@@ -115,23 +115,30 @@ export function applyOccupancyIdentityAndScope(
   const matchStatus = identityResult.matchStatus || "UNMATCHED";
   result.mapping_status = matchStatus;
   result.mapping_method = identityResult.matchMethod || null;
-  result.employee_uid = identityResult.employee?.employeeUid || null;
+  result.sibs_id = identityResult.employee?.employeeUid || null;
 
-  if (matchStatus !== "MATCHED" || !result.employee_uid) {
+  if (matchStatus !== "MATCHED" || !result.sibs_id) {
     return result;
   }
 
-  const assignments = (scopeIndex.get(normalizeUid(result.employee_uid)) || []).filter((assignment) =>
+  const assignments = (scopeIndex.get(normalizeUid(result.sibs_id)) || []).filter((assignment) =>
     assignmentApplies(result, assignment),
   );
   const sourceTaskOrder = normalizeTaskOrder(result.task_order_id || result.source_task_order);
   const matchingTaskOrderAssignments = sourceTaskOrder
     ? assignments.filter((assignment) => normalizeTaskOrder(assignment.taskOrderId) === sourceTaskOrder)
     : assignments;
-  const selectedAssignment = matchingTaskOrderAssignments[0] || null;
+  // When no TO was selected (FuseCom/FuseNet), do not arbitrarily choose the
+  // first assignment if a person has multiple active Task Orders on this date.
+  const uniqueTaskOrders = [...new Set(matchingTaskOrderAssignments
+    .map((assignment) => normalizeTaskOrder(assignment.taskOrderId))
+    .filter(Boolean))];
+  const selectedAssignment = uniqueTaskOrders.length === 1
+    ? matchingTaskOrderAssignments.find((assignment) => normalizeTaskOrder(assignment.taskOrderId) === uniqueTaskOrders[0])
+    : null;
 
   if (!selectedAssignment) {
-    const metadata = employeeMetadataIndex.get(normalizeUid(result.employee_uid)) || null;
+    const metadata = employeeMetadataIndex.get(normalizeUid(result.sibs_id)) || null;
 
     if (assignments.length === 0 && metadata && isExpectedNonAgent(metadata)) {
       result.mapping_status = "EXCLUDED_NON_AGENT";
@@ -143,6 +150,7 @@ export function applyOccupancyIdentityAndScope(
     }
 
     result.mapping_status = "OUT_OF_SCOPE";
+    result.task_order_id = null;
     return result;
   }
 

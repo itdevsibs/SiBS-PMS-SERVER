@@ -78,7 +78,7 @@ export async function getEmailKpiRows({
         e.task_order_id,
         e.owner_raw,
         e.status,
-        e.modified_by_employee_uid,
+        e.modified_by_sibs_id AS modified_by_employee_uid,
         e.modified_by_mapping_status,
         e.created_on,
         e.resolution_date,

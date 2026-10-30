@@ -73,14 +73,14 @@ export function validateCanonicalChatRow(row = {}, options = {}) {
       CHAT_VALIDATION_ERROR_CODES.TASK_ORDER_SKILL_UNMATCHED,
       "skill_name_raw",
       row.skill_name_raw,
-      "Chat Skill could not be resolved against the active Task Order ledger.",
+      "Country could not be identified from Chat Skill or is not mapped to an active Task Order.",
     ));
   } else if (options.taskResolution?.status === "CONFLICT") {
     issues.push(issue(
       CHAT_VALIDATION_ERROR_CODES.TASK_ORDER_SKILL_CONFLICT,
       "skill_name_raw",
       row.skill_name_raw,
-      options.taskResolution.warning || "Chat Skill conflicts with the active Task Order mapping.",
+      options.taskResolution.warning || "Country parsed from Chat Skill conflicts with the active Task Order mapping.",
     ));
   } else {
     addRequired(issues, row, "task_order_id");

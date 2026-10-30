@@ -66,6 +66,9 @@ function getRecordType(sheetName, sourceRow = {}) {
   const sheet = normalizeSheetName(sheetName);
 
   if (sheet.includes("abandon")) return "ABANDONED";
+  // FuseCom/FuseNet EOD uses an "Answered Calls" worksheet. Do not attempt
+  // to infer its type from an empty row while discovering identity columns.
+  if (sheet.includes("answer")) return "ANSWERED";
   if (sheet.includes("reject")) return "REJECTED";
   if (sheet.includes("outbound")) return "OUTBOUND";
   if (sheet.includes("failed callback")) return "FAILED_CALLBACK";
@@ -128,7 +131,12 @@ export function getCallSourceSystem(profileCode) {
 
 export function getCallIdentityFieldMappings(profileCode, sheetName = "") {
   const sourceSystem = getCallSourceSystem(profileCode);
-  const recordType = getRecordType(sheetName);
+  // Header discovery must not depend on the row's Answer Time: the bulk
+  // identity scanner calls this before reading any source rows. In particular,
+  // getRecordType("Answered Calls", {}) previously returned ABANDONED and
+  // silently discarded Agent Name, Agent Login and Personal ID on every row.
+  // On an actual abandoned sheet these optional columns are simply absent.
+  void sheetName;
 
   if (sourceSystem === "HERODASH") {
     return {
@@ -139,11 +147,11 @@ export function getCallIdentityFieldMappings(profileCode, sheetName = "") {
     };
   }
 
-  if (["ANSWERED", "REJECTED", "OUTBOUND", "FAILED_CALLBACK", "CALLBACK"].includes(recordType)) {
+  if (sourceSystem === "FUSECOM" || sourceSystem === "FUSENET") {
     return {
       agent_name_raw: ["Agent Name", "Agent name", "Agent"],
       agent_login: ["Agent Login", "Login"],
-      personal_id: ["Personal ID", "Personal Id"],
+      personal_id: ["Personal ID", "Personal Id", "Employee ID"],
       source_agent_key: ["Agent Name", "Agent name", "Agent"],
     };
   }
@@ -306,8 +314,8 @@ export function mapCallRow(sourceRow = {}, options = {}) {
     agent_login: agentLogin,
     personal_id: personalId,
     source_agent_key: agentName || null,
-    employee_uid: null,
-    mapping_status: agentName ? "UNMATCHED" : "UNMATCHED",
+    sibs_id: null,
+    mapping_status: "UNMATCHED",
     mapping_method: null,
     skill_name_raw: skill,
     country_region: null,
