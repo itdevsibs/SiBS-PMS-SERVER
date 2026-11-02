@@ -1,5 +1,5 @@
 // Inserts, looks up, and updates normalized US Visa Email Raw Data cases.
-import { pmsDb, pmsTables } from "../../config/db.js";
+import { pmsDb, pmsTables } from "../../../config/db.js";
 
 const INSERT_COLUMNS = [
   "batch_id",

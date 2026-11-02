@@ -1,7 +1,7 @@
 // Resolves current US Visa organizational scope from the unified employee ledger.
 // The repository keeps the previous scope-assignment contract so upload/KPI
 // consumers do not need to change when the legacy scope table is retired.
-import { pmsDb, pmsTables } from "../../config/db.js";
+import { pmsDb, pmsTables } from "../../../config/db.js";
 
 function normalizeUid(value) {
   return String(value || "")

@@ -2,13 +2,13 @@
 import {
   findCallsByIdentityHashes,
   insertCallRowsWithDuplicateProtection,
-} from "../../../../repositories/usVisa/usVisaCallRepository.js";
+} from "../../../../repositories/usVisa/calls/usVisaCallRepository.js";
 import {
   getRawImportRowsByBatchSheetRowNumbers,
   insertRawImportRows,
   updateRawImportValidationStatuses,
-} from "../../../../repositories/usVisa/usVisaRawImportRepository.js";
-import { insertImportErrors } from "../../../../repositories/usVisa/usVisaImportErrorRepository.js";
+} from "../../../../repositories/usVisa/imports/usVisaRawImportRepository.js";
+import { insertImportErrors } from "../../../../repositories/usVisa/imports/usVisaImportErrorRepository.js";
 import {
   IMPORT_ROW_CLASSIFICATIONS,
   classifyPreparedChunkRows,
@@ -478,7 +478,7 @@ export async function processCallReportWorkbook({
   const identityResolutionStartedAt = Date.now();
   const identityResolver = await createBulkAgentIdentityResolver(
     identityCollection.identities,
-    { matchMode: AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY },
+    { matchMode: AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY, allowKronosNameFallback: true },
   );
   const identityResolutionMs = Date.now() - identityResolutionStartedAt;
   const taskOrderResolver = await createCallTaskOrderResolver();

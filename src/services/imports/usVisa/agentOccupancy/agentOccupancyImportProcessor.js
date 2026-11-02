@@ -2,15 +2,15 @@
 import {
   findAgentOccupancyByIdentityHashes,
   insertAgentOccupancyRowsWithDuplicateProtection,
-} from "../../../../repositories/usVisa/usVisaAgentOccupancyRepository.js";
+} from "../../../../repositories/usVisa/occupancy/usVisaAgentOccupancyRepository.js";
 import {
   getRawImportRowsByBatchSheetRowNumbers,
   insertRawImportRows,
   updateRawImportValidationStatuses,
-} from "../../../../repositories/usVisa/usVisaRawImportRepository.js";
-import { insertImportErrors } from "../../../../repositories/usVisa/usVisaImportErrorRepository.js";
-import { findScopeAssignmentsByEmployeeUids } from "../../../../repositories/usVisa/usVisaEmployeeScopeRepository.js";
-import { findOccupancyEmployeeMetadataByUids } from "../../../../repositories/usVisa/usVisaEmployeeIdentityRepository.js";
+} from "../../../../repositories/usVisa/imports/usVisaRawImportRepository.js";
+import { insertImportErrors } from "../../../../repositories/usVisa/imports/usVisaImportErrorRepository.js";
+import { findScopeAssignmentsByEmployeeUids } from "../../../../repositories/usVisa/employees/usVisaEmployeeScopeRepository.js";
+import { findOccupancyEmployeeMetadataByUids } from "../../../../repositories/usVisa/employees/usVisaEmployeeIdentityRepository.js";
 import { iterateWorksheetRowChunks } from "../../shared/workbookReaderService.js";
 import {
   IMPORT_ROW_CLASSIFICATIONS,
@@ -155,7 +155,7 @@ export function buildOccupancyMappingIssue(row, context) {
       ? "EMPLOYEE_OUT_OF_SCOPE"
       : "EMPLOYEE_NOT_MAPPED";
   const message = status === "OUT_OF_SCOPE"
-    ? "Employee identity was resolved but no applicable US Visa Agent scope assignment matched this Occupancy row."
+    ? "Employee identity was resolved but no single applicable US Visa Agent Task Order could be verified. The row was stored with task_order_id = NULL."
     : status === "AMBIGUOUS"
       ? "Multiple employees matched this Occupancy source identity."
       : "No exact employee mapping was found for this Occupancy source identity.";
@@ -473,7 +473,10 @@ export async function processAgentOccupancyWorkbook({
 
   const identityResolver = await dependencies.createBulkAgentIdentityResolver(
     [...identitiesByKey.values()],
-    { matchMode: AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY },
+    {
+      matchMode: AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY,
+      allowKronosNameFallback: true,
+    },
   );
   const matchedEmployeeUids = [];
   for (const identity of identitiesByKey.values()) {

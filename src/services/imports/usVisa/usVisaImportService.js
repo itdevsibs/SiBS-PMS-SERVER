@@ -8,10 +8,10 @@ import {
   markBatchCompletedWithErrors,
   markBatchFailed,
   US_VISA_BATCH_STATUSES,
-} from "../../../repositories/usVisa/usVisaImportBatchRepository.js";
+} from "../../../repositories/usVisa/imports/usVisaImportBatchRepository.js";
 import {
   insertImportErrors,
-} from "../../../repositories/usVisa/usVisaImportErrorRepository.js";
+} from "../../../repositories/usVisa/imports/usVisaImportErrorRepository.js";
 import { calculateFileSha256 } from "../shared/fileHashService.js";
 import {
   getWorksheetNames,
@@ -19,14 +19,13 @@ import {
   WorkbookReaderError,
 } from "../shared/workbookReaderService.js";
 import { toDateValue } from "../shared/valueConversionService.js";
-import {
-  IMPORT_PROFILE_CODES,
-  validateWorkbookProfile,
-} from "./workbookValidator.js";
-import { getUsVisaImportProcessor } from "./importProfileDispatcher.js";
+import { validateWorkbookProfile } from "./workbookValidator.js";
+import { getUsVisaImportProcessor, isRetiredSkillStatisticsProfile } from "./importProfileDispatcher.js";
 import { extractAgentOccupancyWorkbookMetadata } from "./agentOccupancy/agentOccupancyWorkbookMetadata.js";
 import { validateEmailTaskOrderWorkbookStructure } from "./emailRawData/emailRawDataWorkbookValidator.js";
 import { updateImportProgress } from "./importProgressTracker.js";
+import { getImportIssueSummaryByBatchId } from "../../../repositories/usVisa/imports/usVisaImportErrorRepository.js";
+import { normalizeBatchIssueSummary } from "./importIssueClassification.js";
 import {
   assertUsVisaTaskOrder,
   assertUsVisaTaskOrderForSource,
@@ -254,28 +253,8 @@ function mapWorkbookIssueToImportError(issue, batchId) {
   };
 }
 
-function getProfileSourceSystem(profileCode) {
-  if (profileCode === IMPORT_PROFILE_CODES.HERO_SKILL_STATISTICS_INBOUND) {
-    return "HERODASH";
-  }
-
-  if (profileCode === IMPORT_PROFILE_CODES.FUSECOM_SKILL_STATISTICS_INBOUND) {
-    return "FUSECOM";
-  }
-
-  if (profileCode === IMPORT_PROFILE_CODES.FUSENET_SKILL_STATISTICS_INBOUND) {
-    return "FUSENET";
-  }
-
-  return null;
-}
-
-function hasCompletedWithErrors(counters) {
-  return (
-    counters.invalidRows > 0 ||
-    counters.duplicateRows > 0 ||
-    counters.warningRows > 0
-  );
+function hasCompletedWithErrors(counters, issueSummary) {
+  return counters.invalidRows > 0 || counters.duplicateRows > 0 || issueSummary.warningRows > 0;
 }
 
 function getCellSourceValue(cell) {
@@ -367,7 +346,7 @@ export function getBatchCreateInput({
 }) {
   return {
     importProfileId: profile.id,
-    sourceSystem: profile.sourceSystem || getProfileSourceSystem(profileCode),
+    sourceSystem: profile.sourceSystem,
     taskOrderId: taskOrderId || null,
     sourceFilename:
       temporaryFile.originalname || options.sourceFilename || temporaryFile.filename,
@@ -413,6 +392,12 @@ export async function importUsVisaRawWorkbook(options = {}) {
     const fileHashMs = Date.now() - fileHashStartedAt;
     const profile = await loadImportProfile(importProfileIdOrCode);
     const profileCode = profile.profileCode;
+    if (isRetiredSkillStatisticsProfile(profile)) {
+      throw new UsVisaImportError(
+        "Skill Statistics imports are retired. Upload Call Report (EOD) instead.",
+        { code: "IMPORT_PROFILE_RETIRED" },
+      );
+    }
     const processor = getUsVisaImportProcessor(profile);
 
     importLockConnection = await acquireUsVisaImportLock();
@@ -430,7 +415,7 @@ export async function importUsVisaRawWorkbook(options = {}) {
 
     if (isAgentOccupancy) {
       const occupancySourceSystem = String(
-        profile.sourceSystem || getProfileSourceSystem(profileCode) || "",
+        profile.sourceSystem || "",
       )
         .trim()
         .toUpperCase();
@@ -811,11 +796,12 @@ export async function importUsVisaRawWorkbook(options = {}) {
       message: "Finalizing batch totals and import status.",
     });
 
-    const finalBatch = hasCompletedWithErrors(counters)
+    const issueSummary = normalizeBatchIssueSummary(counters, await getImportIssueSummaryByBatchId(batch.id));
+    const finalBatch = hasCompletedWithErrors(counters, issueSummary)
       ? await markBatchCompletedWithErrors(
           batch.id,
           counters,
-          "Import completed with row-level errors or warnings.",
+          "Import processed with validation issues.",
         )
       : await markBatchCompleted(batch.id, counters);
 

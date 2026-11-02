@@ -150,7 +150,7 @@ function compareMetric({
       skillValue,
       agentValue,
       status: US_VISA_KPI_COMPARISON_STATUSES.NOT_COMPARABLE,
-      reason: "Skill Statistics and Agent Level windows or dimensions differ.",
+      reason: "Call KPI and agent-level KPI windows or dimensions differ.",
     });
   }
 

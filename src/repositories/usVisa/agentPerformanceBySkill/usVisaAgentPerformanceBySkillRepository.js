@@ -1,5 +1,5 @@
 // Inserts and looks up canonical US VISA HeroDash Agent Performance By Skill rows.
-import { pmsDb, pmsTables } from "../../config/db.js";
+import { pmsDb, pmsTables } from "../../../config/db.js";
 
 const INSERT_COLUMNS = [
   "batch_id",

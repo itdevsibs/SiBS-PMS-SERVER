@@ -1,5 +1,5 @@
 // Inserts and looks up canonical US VISA agent-level interaction rows.
-import { pmsDb, pmsTables } from "../../config/db.js";
+import { pmsDb, pmsTables } from "../../../config/db.js";
 
 const INSERT_COLUMNS = [
   "batch_id",

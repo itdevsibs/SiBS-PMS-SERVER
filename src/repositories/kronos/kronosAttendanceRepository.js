@@ -1,5 +1,5 @@
 import { getKronosApiResponse } from "../../services/kronos/kronosApiClient.js";
-import { findUsVisaRosterEmployeeUids } from "../usVisa/usVisaEmployeeScopeRepository.js";
+import { findUsVisaRosterEmployeeUids } from "../usVisa/employees/usVisaEmployeeScopeRepository.js";
 
 function normalizeEmployeeUid(value) {
   return String(value || "").trim().replace(/^SIB-\s*/i, "").trim();

@@ -2,11 +2,11 @@ import {
   getEmailKpiDateBounds,
   getEmailKpiRows,
   listEmailKpiOwnerValues,
-} from "../../../../repositories/usVisa/usVisaEmailKpiRepository.js";
+} from "../../../../repositories/usVisa/email/usVisaEmailKpiRepository.js";
 import {
   getUsVisaCountryHolidayCoverage,
   listUsVisaCountryHolidays,
-} from "../../../../repositories/usVisa/usVisaCountryHolidayRepository.js";
+} from "../../../../repositories/usVisa/email/usVisaCountryHolidayRepository.js";
 import { normalizeUsVisaTaskOrderId } from "../../../../config/usVisaTaskOrders.js";
 import {
   normalizeCallKpiPeriod,

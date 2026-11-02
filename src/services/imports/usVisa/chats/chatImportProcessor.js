@@ -2,13 +2,13 @@
 import {
   findChatsByIdentityHashes,
   insertChatRowsWithDuplicateProtection,
-} from "../../../../repositories/usVisa/usVisaChatRepository.js";
+} from "../../../../repositories/usVisa/chats/usVisaChatRepository.js";
 import {
   getRawImportRowsByBatchSheetRowNumbers,
   insertRawImportRows,
   updateRawImportValidationStatuses,
-} from "../../../../repositories/usVisa/usVisaRawImportRepository.js";
-import { insertImportErrors } from "../../../../repositories/usVisa/usVisaImportErrorRepository.js";
+} from "../../../../repositories/usVisa/imports/usVisaRawImportRepository.js";
+import { insertImportErrors } from "../../../../repositories/usVisa/imports/usVisaImportErrorRepository.js";
 import {
   IMPORT_ROW_CLASSIFICATIONS,
   classifyPreparedChunkRows,
@@ -298,7 +298,7 @@ export async function processChatReportWorkbook({
 
   const identityResolver = await createBulkAgentIdentityResolver(
     [...identitiesByKey.values()],
-    { matchMode: AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY },
+    { matchMode: AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY, allowKronosNameFallback: true },
   );
 
   for (const row of preparedRows) {

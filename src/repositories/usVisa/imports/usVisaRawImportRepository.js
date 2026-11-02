@@ -1,5 +1,5 @@
 // Stores raw workbook rows before canonical domain processing.
-import { pmsDb, pmsTables } from "../../config/db.js";
+import { pmsDb, pmsTables } from "../../../config/db.js";
 
 function serializeJson(value) {
   return JSON.stringify(value ?? {});

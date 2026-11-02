@@ -1,9 +1,9 @@
 // Aggregates Agent Level call KPI inputs from canonical US Visa interactions.
-import { pmsDb, pmsTables } from "../../config/db.js";
+import { pmsDb, pmsTables } from "../../../config/db.js";
 import {
   buildAgentHandleAvailableSql,
   buildAgentHandleSecondsSql,
-} from "../../services/kpi/usVisa/calls/ahtCalculationService.js";
+} from "../../../services/kpi/usVisa/calls/ahtCalculationService.js";
 
 const SUCCESSFUL_BATCH_STATUSES = ["COMPLETED", "COMPLETED_WITH_ERRORS"];
 

@@ -118,6 +118,10 @@ export function applyOccupancyIdentityAndScope(
   result.sibs_id = identityResult.employee?.employeeUid || null;
 
   if (matchStatus !== "MATCHED" || !result.sibs_id) {
+    // The selected HeroDash TO is import metadata, not evidence of an employee
+    // roster assignment. Keep source_task_order for traceability, but never
+    // attribute an unresolved employee's occupancy to a canonical Task Order.
+    result.task_order_id = null;
     return result;
   }
 
@@ -138,6 +142,9 @@ export function applyOccupancyIdentityAndScope(
     : null;
 
   if (!selectedAssignment) {
+    // Both ordinary out-of-scope and expected non-agent records are retained
+    // without a Task Order. Do this before the early return for non-agents.
+    result.task_order_id = null;
     const metadata = employeeMetadataIndex.get(normalizeUid(result.sibs_id)) || null;
 
     if (assignments.length === 0 && metadata && isExpectedNonAgent(metadata)) {
@@ -150,10 +157,9 @@ export function applyOccupancyIdentityAndScope(
     }
 
     result.mapping_status = "OUT_OF_SCOPE";
-    result.task_order_id = null;
     return result;
   }
 
-  result.task_order_id = normalizeTaskOrder(selectedAssignment.taskOrderId) || result.task_order_id || null;
+  result.task_order_id = normalizeTaskOrder(selectedAssignment.taskOrderId);
   return result;
 }

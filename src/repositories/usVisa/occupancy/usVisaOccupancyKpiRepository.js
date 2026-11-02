@@ -1,4 +1,4 @@
-import { pmsDb, pmsTables } from "../../config/db.js";
+import { pmsDb, pmsTables } from "../../../config/db.js";
 
 const KPI_BATCH_STATUSES = ["COMPLETED", "COMPLETED_WITH_ERRORS"];
 
@@ -22,8 +22,12 @@ function baseConditions() {
   return {
     conditions: [
       `b.status IN (${KPI_BATCH_STATUSES.map(() => "?").join(", ")})`,
-      // STEP 1 & 11: Only include rows with a valid production date
+      // Only attributed rows are eligible for Occupancy KPI calculations.
+      // Rows with an unresolved roster scope are kept in canonical raw storage
+      // with task_order_id = NULL but must not inflate account-level KPIs.
       "ao.production_date IS NOT NULL",
+      "ao.task_order_id IS NOT NULL",
+      "TRIM(ao.task_order_id) <> ''",
     ],
     values: [...KPI_BATCH_STATUSES],
   };

@@ -92,9 +92,9 @@ export function validateCanonicalAgentOccupancyRow(row = {}) {
     errors.push(makeIssue("source_agent_key", "MISSING_REQUIRED_VALUE", row.source_agent_key, "A source agent identity is required."));
   }
 
-  if (isBlank(row.task_order_id)) {
-    errors.push(makeIssue("task_order_id", "MISSING_REQUIRED_VALUE", row.task_order_id, "task_order_id is required."));
-  }
+  // An unresolved roster/Task Order assignment must not invalidate an otherwise
+  // valid source row. The canonical record is retained with task_order_id = NULL
+  // and the mapping status records why it cannot be attributed to a Task Order.
 
   if (row.data_grain === "AGENT_OCCUPANCY_DAY") {
     if (!isValidDate(row.production_date)) {

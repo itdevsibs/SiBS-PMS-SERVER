@@ -1,7 +1,7 @@
 // Persists US VISA import batch lifecycle records in the PMS database.
 import crypto from "crypto";
 
-import { pmsDb, pmsTables } from "../../config/db.js";
+import { pmsDb, pmsTables } from "../../../config/db.js";
 
 export const US_VISA_BATCH_STATUSES = {
   UPLOADED: "UPLOADED",
@@ -29,6 +29,9 @@ const EMPTY_IMPORT_SUMMARY = Object.freeze({
   duplicateRows: 0,
   warningRows: 0,
   infoRows: 0,
+  mappingRows: 0,
+  unmappedRows: 0,
+  unassignedTaskOrderRows: 0,
 });
 
 function normalizeAccountFilter(value) {
@@ -265,39 +268,42 @@ export async function deleteBatchById(batchId) {
 
 export async function getImportSummary(options = {}) {
   const account = normalizeAccountFilter(options.account);
+  if (account && account !== US_VISA_ACCOUNT_NAME) return { ...EMPTY_IMPORT_SUMMARY };
 
-  if (account && account !== US_VISA_ACCOUNT_NAME) {
-    return { ...EMPTY_IMPORT_SUMMARY };
-  }
-
-  const [rows] = await queryUsVisa(
-    `
-      SELECT
-        COUNT(
-          CASE
-            WHEN status IN (?, ?) AND total_rows > 0 THEN 1
-          END
-        ) AS total_uploads,
-        COUNT(
-          CASE
-            WHEN status = ? AND total_rows > 0 THEN 1
-          END
-        ) AS uploads_with_issues,
-        COALESCE(SUM(total_rows), 0) AS total_rows,
-        COALESCE(SUM(valid_rows), 0) AS valid_rows,
-        COALESCE(SUM(invalid_rows), 0) AS invalid_rows,
-        COALESCE(SUM(duplicate_rows), 0) AS duplicate_rows,
-        COALESCE(SUM(warning_rows), 0) AS warning_rows,
-        COALESCE(SUM(info_rows), 0) AS info_rows
-      FROM ${pmsTables.usVisaImportBatches}
-    `,
-    [
-      ...SUCCESSFUL_IMPORT_STATUSES,
-      US_VISA_BATCH_STATUSES.COMPLETED_WITH_ERRORS,
-    ],
-  );
+  // Compute historical display metrics from existing event rows. No data migration
+  // and no mutation to the original batch warning counter or saved audit events.
+  const [rows] = await queryUsVisa(`
+    SELECT
+      COUNT(CASE WHEN b.status IN ('COMPLETED','COMPLETED_WITH_ERRORS') AND b.total_rows > 0 THEN 1 END) AS total_uploads,
+      COUNT(CASE WHEN b.status IN ('COMPLETED','COMPLETED_WITH_ERRORS') AND b.total_rows > 0
+        AND (b.invalid_rows > 0 OR b.duplicate_rows > 0 OR
+        GREATEST(b.warning_rows - COALESCE(e.mapping_warning_events, 0), COALESCE(e.genuine_warning_events, 0), 0) > 0)
+        THEN 1 END) AS uploads_with_issues,
+      COALESCE(SUM(b.total_rows),0) AS total_rows,
+      COALESCE(SUM(b.valid_rows),0) AS valid_rows,
+      COALESCE(SUM(b.invalid_rows),0) AS invalid_rows,
+      COALESCE(SUM(b.duplicate_rows),0) AS duplicate_rows,
+      COALESCE(SUM(GREATEST(b.warning_rows - COALESCE(e.mapping_warning_events,0),COALESCE(e.genuine_warning_events,0),0)),0) AS warning_rows,
+      COALESCE(SUM(b.info_rows),0) AS info_rows,
+      COALESCE(SUM(e.mapping_rows),0) AS mapping_rows,
+      COALESCE(SUM(e.unmapped_rows),0) AS unmapped_rows,
+      COALESCE(SUM(e.unassigned_task_order_rows),0) AS unassigned_task_order_rows
+    FROM ${pmsTables.usVisaImportBatches} b
+    LEFT JOIN (
+      SELECT batch_id,
+        SUM(CASE WHEN error_type IN ('EMPLOYEE_MAPPING','TASK_ORDER_MAPPING') AND severity = 'WARNING' THEN 1 ELSE 0 END) AS mapping_warning_events,
+        SUM(CASE WHEN error_type NOT IN ('EMPLOYEE_MAPPING','TASK_ORDER_MAPPING') AND severity = 'WARNING' THEN 1 ELSE 0 END) AS genuine_warning_events,
+        COUNT(DISTINCT CASE WHEN error_type IN ('EMPLOYEE_MAPPING','TASK_ORDER_MAPPING') THEN
+          CONCAT(COALESCE(sheet_name,''),':',COALESCE(CAST(excel_row_number AS CHAR),CONCAT('raw-',COALESCE(CAST(raw_row_id AS CHAR),CONCAT('issue-',id))))) END) AS mapping_rows,
+        COUNT(DISTINCT CASE WHEN error_type = 'EMPLOYEE_MAPPING' AND error_code <> 'EMPLOYEE_OUT_OF_SCOPE' THEN
+          CONCAT(COALESCE(sheet_name,''),':',COALESCE(CAST(excel_row_number AS CHAR),CONCAT('raw-',COALESCE(CAST(raw_row_id AS CHAR),CONCAT('issue-',id))))) END) AS unmapped_rows,
+        COUNT(DISTINCT CASE WHEN error_type = 'TASK_ORDER_MAPPING' OR error_code = 'EMPLOYEE_OUT_OF_SCOPE' THEN
+          CONCAT(COALESCE(sheet_name,''),':',COALESCE(CAST(excel_row_number AS CHAR),CONCAT('raw-',COALESCE(CAST(raw_row_id AS CHAR),CONCAT('issue-',id))))) END) AS unassigned_task_order_rows
+      FROM ${pmsTables.usVisaImportErrors}
+      GROUP BY batch_id
+    ) e ON e.batch_id = b.id
+  `);
   const summary = rows[0] || {};
-
   return {
     totalUploads: toInteger(summary.total_uploads),
     uploadsWithIssues: toInteger(summary.uploads_with_issues),
@@ -307,6 +313,9 @@ export async function getImportSummary(options = {}) {
     duplicateRows: toInteger(summary.duplicate_rows),
     warningRows: toInteger(summary.warning_rows),
     infoRows: toInteger(summary.info_rows),
+    mappingRows: toInteger(summary.mapping_rows),
+    unmappedRows: toInteger(summary.unmapped_rows),
+    unassignedTaskOrderRows: toInteger(summary.unassigned_task_order_rows),
   };
 }
 
