@@ -3,7 +3,7 @@ import {
   getChatKpiDateBounds,
   getChatReportData,
   listChatValidTaskOrders,
-} from "../repositories/usVisa/usVisaChatKpiRepository.js";
+} from "../repositories/usVisa/chats/usVisaChatKpiRepository.js";
 
 const BAD_REQUEST_CODES = new Set([
   "INVALID_CUSTOM_DATE_RANGE",

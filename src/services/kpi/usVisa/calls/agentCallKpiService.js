@@ -2,7 +2,7 @@ import {
   getAgentCallKpiDateBounds,
   getAgentCallKpiFilterOptions,
   getAgentCallKpiRows,
-} from "../../../../repositories/usVisa/usVisaAgentCallKpiRepository.js";
+} from "../../../../repositories/usVisa/calls/usVisaAgentCallKpiRepository.js";
 import {
   buildUsVisaAgentFilterOptions,
   getUsVisaAgentSkillsForCountry,

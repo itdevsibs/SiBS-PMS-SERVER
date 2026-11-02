@@ -6,13 +6,55 @@ import {
   kronosTables,
   pmsDb,
   pmsTables,
-} from "../../config/db.js";
+} from "../../../config/db.js";
 
 export function normalizeEmployeeIdentity(value) {
   return String(value || "")
     .trim()
     .replace(/\s+/g, " ")
     .toUpperCase();
+}
+
+/**
+ * Name-only matching key for the _last_ Kronos fallback, never for hashes,
+ * imported source values or IDs. Unicode decomposition makes Ñ and N
+ * comparable while retaining the original full name in stored raw data.
+ */
+export function normalizeKronosComparableName(value) {
+  let name = String(value ?? "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toUpperCase();
+
+  // Kronos can store LAST, FIRST while vendor exports use FIRST LAST.
+  // Only reorder when the comma unambiguously marks the stored format.
+  if (name.includes(",")) {
+    const components = name.split(",");
+    if (components.length === 2 && components.every((part) => part.trim())) {
+      name = `${components[1].trim()} ${components[0].trim()}`;
+    }
+  }
+  return name;
+}
+
+function kronosFullNameSearchValues(name) {
+  const fullName = normalizeEmployeeIdentity(name);
+  if (!fullName) return [];
+  const names = [fullName];
+  if (fullName.includes(",")) {
+    const components = fullName.split(",");
+    if (components.length === 2 && components.every((part) => part.trim())) {
+      names.push(`${components[1].trim()} ${components[0].trim()}`);
+    }
+  } else {
+    const parts = fullName.split(" ");
+    if (parts.length > 1) {
+      names.push(`${parts.at(-1)}, ${parts.slice(0, -1).join(" ")}`);
+    }
+  }
+  return [...new Set(names)];
 }
 
 export function normalizeEmployeeUid(value) {
@@ -333,6 +375,64 @@ export async function findEmployeesByExactNormalizedNames(agentNames = []) {
     for (const normalizedName of new Set(names)) {
       if (!normalizedNames.includes(normalizedName)) continue;
       results.push({ normalizedName, ...candidate });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Last-resort read-only lookup against Kronos (gy_employee), for US Visa
+ * import identities missing from the employee ledger. Only full-name
+ * equality under an accent-insensitive collation is considered; results are
+ * verified again in JS and may resolve to more than one employee.
+ * No fuzzy/partial, substring, or first-match selection is performed.
+ */
+export async function findKronosEmployeesByComparableNames(agentNames = []) {
+  const normalizedNames = [
+    ...new Set(agentNames.map(normalizeEmployeeIdentity).filter(Boolean)),
+  ];
+  if (!normalizedNames.length) return [];
+
+  const expectedKeys = new Map(normalizedNames.map((name) => [
+    name,
+    normalizeKronosComparableName(name),
+  ]));
+  const results = [];
+  const chunkSize = 100;
+
+  for (let start = 0; start < normalizedNames.length; start += chunkSize) {
+    const group = normalizedNames.slice(start, start + chunkSize);
+    const searchNames = [...new Set(group.flatMap(kronosFullNameSearchValues))];
+    const [rows] = await kronosDb.query(
+      `
+        SELECT
+          employee.gy_emp_id AS employee_id,
+          TRIM(${kronosUtf8Text("employee.gy_emp_code")}) AS sibs_id,
+          TRIM(${kronosUtf8Text("employee.gy_emp_fullname")}) AS employee_name
+        FROM ${kronosTables.employee} employee
+        WHERE UPPER(TRIM(${kronosUtf8Text("employee.gy_emp_fullname")}))
+              IN (${buildInClause(searchNames)})
+        ORDER BY employee.gy_emp_id ASC
+      `,
+      searchNames,
+    );
+
+    for (const row of rows) {
+      const employeeUid = normalizeEmployeeUid(row.sibs_id);
+      const comparableName = normalizeKronosComparableName(row.employee_name);
+      if (!employeeUid || !comparableName) continue;
+      for (const normalizedName of group) {
+        if (comparableName !== expectedKeys.get(normalizedName)) continue;
+        results.push({
+          normalizedName,
+          employeeUid,
+          employeeId: row.employee_id ?? null,
+          employeeName: row.employee_name,
+          employeeEmail: null,
+          source: "KRONOS_NAME",
+        });
+      }
     }
   }
 

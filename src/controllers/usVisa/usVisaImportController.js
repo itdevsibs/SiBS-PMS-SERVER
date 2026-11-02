@@ -23,11 +23,14 @@ import {
   getBatchById,
   getImportSummary,
   listImportBatches,
-} from "../../repositories/usVisa/usVisaImportBatchRepository.js";
+} from "../../repositories/usVisa/imports/usVisaImportBatchRepository.js";
 import {
   countImportErrorsByBatchId,
   listImportErrorsByBatchId,
-} from "../../repositories/usVisa/usVisaImportErrorRepository.js";
+  getImportIssueSummaryByBatchId,
+  getImportIssueSummariesByBatchIds,
+} from "../../repositories/usVisa/imports/usVisaImportErrorRepository.js";
+import { normalizeBatchIssueSummary, normalizeIssueCategory } from "../../services/imports/usVisa/importIssueClassification.js";
 import { clearUtilizationCache } from "../../services/cache/utilizationCacheService.js";
 import { clearAbsenteeismCache } from "../../services/cache/absenteeismCacheService.js";
 import { clearOccupancyCache } from "../../services/cache/occupancyCacheService.js";
@@ -47,7 +50,8 @@ function parseJsonValue(value) {
   return null;
 }
 
-function pickBatchResponse(batch = {}) {
+function pickBatchResponse(batch = {}, issueEvents = {}) {
+  const issues = normalizeBatchIssueSummary(batch, issueEvents);
   return {
     id: batch.id,
     batchCode: batch.batchCode,
@@ -64,7 +68,15 @@ function pickBatchResponse(batch = {}) {
     validRows: batch.validRows,
     invalidRows: batch.invalidRows,
     duplicateRows: batch.duplicateRows,
-    warningRows: batch.warningRows,
+    warningRows: issues.warningRows,
+    originalWarningRows: batch.warningRows,
+    mappingRows: issues.mappingRows,
+    unmappedRows: issues.unmappedRows,
+    unassignedTaskOrderRows: issues.unassignedTaskOrderRows,
+    mappingIssueCount: issues.mappingIssueCount,
+    validationIssueCount: issues.validationIssueCount,
+    duplicateIssueCount: issues.duplicateIssueCount,
+    displayStatus: issues.displayStatus,
     infoRows: batch.infoRows ?? 0,
     uploadedBy: batch.uploadedBy,
     errorMessage: batch.errorMessage,
@@ -74,9 +86,9 @@ function pickBatchResponse(batch = {}) {
   };
 }
 
-function pickBatchDetailResponse(batch = {}) {
+function pickBatchDetailResponse(batch = {}, issues = {}) {
   return {
-    ...pickBatchResponse(batch),
+    ...pickBatchResponse(batch, issues),
     importProfileId: batch.importProfileId,
     reportDateFrom: batch.reportDateFrom,
     reportDateTo: batch.reportDateTo,
@@ -93,6 +105,7 @@ function pickErrorResponse(error = {}) {
     sheetName: error.sheetName,
     excelRowNumber: error.excelRowNumber,
     severity: error.severity,
+    category: error.category,
     errorCode: error.errorCode,
     columnName: error.columnName,
     rawValue: error.rawValue,
@@ -228,15 +241,6 @@ export function getFatalMessage(result = {}) {
         }
         return `Only ${profileLabel} Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file is missing required Agent Level columns.`;
       }
-      if (isHerodash) {
-        return "Only HeroDash Skill Statistics Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file is missing required HeroDash columns.";
-      }
-      if (isFusenet) {
-        return "Only FuseNet Skill Statistics Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file is missing required FuseNet columns.";
-      }
-      if (isFusecom) {
-        return "Only Fusecom Skill Statistics Excel (.xlsx) or CSV (.csv) files are allowed for this card. The selected file is missing required Fusecom columns.";
-      }
       return "The uploaded Excel or CSV file does not match the required report template for this card.";
     }
 
@@ -369,7 +373,7 @@ export async function uploadUsVisaImport(req, res) {
 
     return res.status(200).json({
       success: true,
-      batch: pickBatchResponse(result.batch),
+      batch: pickBatchResponse(result.batch, await getImportIssueSummaryByBatchId(result.batch.id)),
     });
   } catch (error) {
     console.error("POST /api/us-visa/imports error:", {
@@ -439,10 +443,11 @@ export async function listUsVisaImportHistory(req, res) {
       maxLimit: 200,
     });
     const batches = await listImportBatches(pagination);
+    const issues = await getImportIssueSummariesByBatchIds(batches.map((batch) => batch.id));
 
     return res.json({
       success: true,
-      data: batches.map(pickBatchResponse),
+      data: batches.map((batch) => pickBatchResponse(batch, issues.get(Number(batch.id)))),
       pagination,
     });
   } catch (error) {
@@ -495,9 +500,10 @@ export async function getUsVisaImportBatchDetails(req, res) {
       });
     }
 
+    const issues = await getImportIssueSummaryByBatchId(batch.id);
     return res.json({
       success: true,
-      batch: pickBatchDetailResponse(batch),
+      batch: pickBatchDetailResponse(batch, issues),
     });
   } catch (error) {
     console.error("GET /api/us-visa/imports/:batchId error:", {
@@ -820,9 +826,13 @@ export async function listUsVisaImportBatchErrors(req, res) {
     });
     const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
     const severity = typeof req.query.severity === "string" ? req.query.severity.trim() : "";
+    let category;
+    try { category = normalizeIssueCategory(req.query.category); } catch {
+      return res.status(400).json({ success: false, code: "INVALID_ISSUE_CATEGORY", message: "Invalid issue category." });
+    }
 
     const [errors, total] = await Promise.all([
-      listImportErrorsByBatchId(batch.id, { ...pagination, search, severity }),
+      listImportErrorsByBatchId(batch.id, { ...pagination, search, severity, category }),
       countImportErrorsByBatchId(batch.id, { search, severity }),
     ]);
     const totalPages = Math.ceil(total / pagination.limit) || 1;
@@ -835,6 +845,7 @@ export async function listUsVisaImportBatchErrors(req, res) {
         ...pagination,
         search,
         severity,
+        category,
         total,
         totalPages,
       },

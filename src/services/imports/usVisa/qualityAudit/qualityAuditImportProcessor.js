@@ -2,13 +2,13 @@ import {
   findQualityAuditKronosEmployeesByUids,
   findQualityAuditsByIdentityHashes,
   insertQualityAuditRowsWithDuplicateProtection,
-} from "../../../../repositories/usVisa/usVisaQualityAuditRepository.js";
+} from "../../../../repositories/usVisa/qualityAudit/usVisaQualityAuditRepository.js";
 import {
   getRawImportRowsByBatchSheetRowNumbers,
   insertRawImportRows,
   updateRawImportValidationStatuses,
-} from "../../../../repositories/usVisa/usVisaRawImportRepository.js";
-import { insertImportErrors } from "../../../../repositories/usVisa/usVisaImportErrorRepository.js";
+} from "../../../../repositories/usVisa/imports/usVisaRawImportRepository.js";
+import { insertImportErrors } from "../../../../repositories/usVisa/imports/usVisaImportErrorRepository.js";
 import { iterateWorksheetRowChunks } from "../../shared/workbookReaderService.js";
 import {
   IMPORT_ROW_CLASSIFICATIONS,

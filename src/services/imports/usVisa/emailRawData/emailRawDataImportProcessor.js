@@ -3,13 +3,13 @@ import {
   findEmailCasesBySourceCaseIds,
   insertEmailCasesWithDuplicateProtection,
   updateEmailCaseFromSourceVersion,
-} from "../../../../repositories/usVisa/usVisaEmailCaseRepository.js";
+} from "../../../../repositories/usVisa/email/usVisaEmailCaseRepository.js";
 import {
   getRawImportRowsByBatchSheetRowNumbers,
   insertRawImportRows,
   updateRawImportValidationStatuses,
-} from "../../../../repositories/usVisa/usVisaRawImportRepository.js";
-import { insertImportErrors } from "../../../../repositories/usVisa/usVisaImportErrorRepository.js";
+} from "../../../../repositories/usVisa/imports/usVisaRawImportRepository.js";
+import { insertImportErrors } from "../../../../repositories/usVisa/imports/usVisaImportErrorRepository.js";
 import { iterateWorksheetRowChunks } from "../../shared/workbookReaderService.js";
 import {
   AGENT_MAPPING_STATUSES,
@@ -386,7 +386,10 @@ export async function processEmailRawDataWorkbook({
       });
     },
   );
-  const identityResolver = await createBulkAgentIdentityResolver([...identitiesByKey.values()]);
+  const identityResolver = await createBulkAgentIdentityResolver(
+    [...identitiesByKey.values()],
+    { allowKronosNameFallback: true },
+  );
   const seenByCaseId = new Map();
   let processedRows = 0;
   onProgress?.({

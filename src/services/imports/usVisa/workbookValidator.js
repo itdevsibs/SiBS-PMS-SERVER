@@ -3,16 +3,8 @@ import {
   getWorksheetNames,
   readHeaderRow,
 } from "../shared/workbookReaderService.js";
-import {
-  FUSECOM_SKILL_STATISTICS_SHEET_RULES,
-  FUSENET_SKILL_STATISTICS_SHEET_RULES,
-  HERODASH_SKILL_STATISTICS_HEADERS,
-} from "./skillStatistics/skillStatisticsWorkbookRules.js";
 
 export const IMPORT_PROFILE_CODES = {
-  HERO_SKILL_STATISTICS_INBOUND: "HERO_SKILL_STATISTICS_INBOUND",
-  FUSECOM_SKILL_STATISTICS_INBOUND: "FUSECOM_SKILL_STATISTICS_INBOUND",
-  FUSENET_SKILL_STATISTICS_INBOUND: "FUSENET_SKILL_STATISTICS_INBOUND",
   FUSECOM_AGENT_LEVEL: "FUSECOM_AGENT_LEVEL",
   FUSENET_AGENT_LEVEL: "FUSENET_AGENT_LEVEL",
   HERODASH_AGENT_LEVEL: "HERODASH_AGENT_LEVEL",
@@ -426,36 +418,6 @@ const QUALITY_AUDIT_REQUIRED_HEADERS = [
 ];
 
 export const WORKBOOK_PROFILE_DEFINITIONS = {
-  [IMPORT_PROFILE_CODES.HERO_SKILL_STATISTICS_INBOUND]: {
-    profileCode:
-      IMPORT_PROFILE_CODES.HERO_SKILL_STATISTICS_INBOUND,
-    sourceSystem: "HERODASH",
-    requiredSheets: [
-      {
-        sheetName: null,
-        dataGrain: "SKILL_DAY",
-        headerRowNumber: 1,
-        requiredHeaders: HERODASH_SKILL_STATISTICS_HEADERS,
-      },
-    ],
-  },
-
-  [IMPORT_PROFILE_CODES.FUSECOM_SKILL_STATISTICS_INBOUND]: {
-    profileCode:
-      IMPORT_PROFILE_CODES.FUSECOM_SKILL_STATISTICS_INBOUND,
-    sourceSystem: "FUSECOM",
-    requiredSheets: FUSECOM_SKILL_STATISTICS_SHEET_RULES,
-    selectHighestPriorityNonEmptySheet: true,
-  },
-
-  [IMPORT_PROFILE_CODES.FUSENET_SKILL_STATISTICS_INBOUND]: {
-    profileCode:
-      IMPORT_PROFILE_CODES.FUSENET_SKILL_STATISTICS_INBOUND,
-    sourceSystem: "FUSENET",
-    requiredSheets: FUSENET_SKILL_STATISTICS_SHEET_RULES,
-    selectHighestPriorityNonEmptySheet: true,
-  },
-
   [IMPORT_PROFILE_CODES.FUSECOM_AGENT_LEVEL]: {
     profileCode: IMPORT_PROFILE_CODES.FUSECOM_AGENT_LEVEL,
     sourceSystem: "FUSECOM",
@@ -988,7 +950,7 @@ function validateHighestPriorityNonEmptySheet(workbook, rules = [], options = {}
     code: WORKBOOK_VALIDATION_ERROR_CODES.MISSING_REQUIRED_SHEET,
     message:
       options.noSupportedDataMessage ||
-      "No supported Skill Statistics data was found. Expected a non-empty 15 Minutes, Half Hourly, or Per Day dataset.",
+      "No supported interval or daily data was found in the workbook.",
   });
 
   return {

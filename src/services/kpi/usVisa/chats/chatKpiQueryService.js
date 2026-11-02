@@ -3,7 +3,7 @@ import {
   getChatKpiDateBounds,
   getDailyChatKpiRows,
   listChatValidTaskOrders,
-} from "../../../../repositories/usVisa/usVisaChatKpiRepository.js";
+} from "../../../../repositories/usVisa/chats/usVisaChatKpiRepository.js";
 import {
   normalizeCallKpiPeriod,
   resolveCallKpiDateRange,

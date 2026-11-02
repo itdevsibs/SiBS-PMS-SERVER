@@ -2,15 +2,15 @@
 import {
   findAgentInteractionsByIdentityHashes,
   insertAgentInteractionRowsWithDuplicateProtection,
-} from "../../../../repositories/usVisa/usVisaAgentInteractionRepository.js";
+} from "../../../../repositories/usVisa/agentInteractions/usVisaAgentInteractionRepository.js";
 import {
   getRawImportRowsByBatchSheetRowNumbers,
   insertRawImportRows,
   updateRawImportValidationStatuses,
-} from "../../../../repositories/usVisa/usVisaRawImportRepository.js";
+} from "../../../../repositories/usVisa/imports/usVisaRawImportRepository.js";
 import {
   insertImportErrors,
-} from "../../../../repositories/usVisa/usVisaImportErrorRepository.js";
+} from "../../../../repositories/usVisa/imports/usVisaImportErrorRepository.js";
 import {
   IMPORT_ROW_CLASSIFICATIONS,
   classifyPreparedChunkRows,
@@ -540,6 +540,7 @@ export async function processAgentInteractionWorkbook({
   const identityResolutionStartedAt = Date.now();
   const identityResolver = await createBulkAgentIdentityResolver(
     identityCollection.identities,
+    { allowKronosNameFallback: true },
   );
   const identityResolutionMs = Date.now() - identityResolutionStartedAt;
   onProgress?.({

@@ -2,14 +2,14 @@
 import {
   findAgentPerformanceBySkillByIdentityHashes,
   insertAgentPerformanceBySkillRowsWithDuplicateProtection,
-} from "../../../../repositories/usVisa/usVisaAgentPerformanceBySkillRepository.js";
+} from "../../../../repositories/usVisa/agentPerformanceBySkill/usVisaAgentPerformanceBySkillRepository.js";
 import {
   getRawImportRowsByBatchSheetRowNumbers,
   insertRawImportRows,
   updateRawImportValidationStatuses,
-} from "../../../../repositories/usVisa/usVisaRawImportRepository.js";
-import { insertImportErrors } from "../../../../repositories/usVisa/usVisaImportErrorRepository.js";
-import { findScopeAssignmentsByEmployeeUids } from "../../../../repositories/usVisa/usVisaEmployeeScopeRepository.js";
+} from "../../../../repositories/usVisa/imports/usVisaRawImportRepository.js";
+import { insertImportErrors } from "../../../../repositories/usVisa/imports/usVisaImportErrorRepository.js";
+import { findScopeAssignmentsByEmployeeUids } from "../../../../repositories/usVisa/employees/usVisaEmployeeScopeRepository.js";
 import {
   IMPORT_ROW_CLASSIFICATIONS,
   classifyPreparedChunkRows,
@@ -183,7 +183,7 @@ export async function processAgentPerformanceBySkillWorkbook({
     }
   }
 
-  const identityResolver = await createBulkAgentIdentityResolver([...identitiesByKey.values()], { matchMode: AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY });
+  const identityResolver = await createBulkAgentIdentityResolver([...identitiesByKey.values()], { matchMode: AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY, allowKronosNameFallback: true });
   const matchedSibsIds = [];
 
   for (const row of preparedRows) {

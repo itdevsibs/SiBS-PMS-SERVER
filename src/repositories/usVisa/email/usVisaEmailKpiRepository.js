@@ -1,4 +1,4 @@
-import { pmsDb, pmsTables } from "../../config/db.js";
+import { pmsDb, pmsTables } from "../../../config/db.js";
 
 const KPI_BATCH_STATUSES = ["COMPLETED", "COMPLETED_WITH_ERRORS"];
 

@@ -1,5 +1,5 @@
-// Inserts and looks up canonical US VISA Chat Report (EOD) rows.
-import { pmsDb, pmsTables } from "../../config/db.js";
+// Inserts and looks up canonical US VISA HeroDash Agent Activity rows.
+import { pmsDb, pmsTables } from "../../../config/db.js";
 
 const INSERT_COLUMNS = [
   "batch_id",
@@ -7,31 +7,18 @@ const INSERT_COLUMNS = [
   "import_profile_id",
   "source_system",
   "source_sheet",
-  "source_record_number",
-  "source_chat_id",
+  "source_row_number",
   "production_date",
-  "skill_name_raw",
-  "country_region",
-  "task_order_id",
   "agent_name_raw",
-  "personal_id",
   "source_agent_key",
   "sibs_id",
   "mapping_status",
   "mapping_method",
-  "duration_seconds",
-  "applicant_details",
-  "wait_seconds",
+  "task_order_id",
   "start_at",
   "end_at",
-  "first_response_seconds",
-  "art_seconds",
-  "query_response",
-  "is_answered",
-  "is_no_response",
-  "is_abandoned",
-  "session_count",
-  "adjusted_chat_seconds",
+  "duration_seconds",
+  "status_raw",
   "row_content_hash",
 ];
 
@@ -47,16 +34,15 @@ function buildInPlaceholders(values = []) {
   return values.map(() => "?").join(", ");
 }
 
-function mapChatRow(row) {
+function mapRow(row) {
   if (!row) return null;
   return {
     id: row.id,
     batchId: row.batch_id,
     rawImportRowId: row.raw_import_row_id,
-    sourceSystem: row.source_system,
-    sourceChatId: row.source_chat_id,
     rowIdentityHash: row.row_identity_hash,
     rowContentHash: row.row_content_hash,
+    contentHash: row.row_content_hash,
     createdAt: row.created_at,
   };
 }
@@ -64,70 +50,57 @@ function mapChatRow(row) {
 function getInsertValues(row = {}) {
   return [
     row.batchId,
-    toNullableValue(row.rawImportRowId),
+    row.rawImportRowId,
     row.importProfileId,
     row.sourceSystem,
     row.sourceSheet,
-    toNullableValue(row.sourceRecordNumber),
-    row.sourceChatId,
+    row.sourceRowNumber,
     row.productionDate,
-    row.skillNameRaw,
-    toNullableValue(row.countryRegion),
-    row.taskOrderId,
     toNullableValue(row.agentNameRaw),
-    toNullableValue(row.personalId),
     toNullableValue(row.sourceAgentKey),
-    toNullableValue(row.sibsId ?? row.sibs_id ?? row.employeeUid ?? row.employee_uid),
+    toNullableValue(row.sibsId),
     row.mappingStatus || "UNMATCHED",
     toNullableValue(row.mappingMethod),
-    toNullableValue(row.durationSeconds),
-    toNullableValue(row.applicantDetails),
-    toNullableValue(row.waitSeconds),
-    toNullableValue(row.startAt),
+    toNullableValue(row.taskOrderId),
+    row.startAt,
     toNullableValue(row.endAt),
-    toNullableValue(row.firstResponseSeconds),
-    toNullableValue(row.artSeconds),
-    toNullableValue(row.queryResponse),
-    Number(row.isAnswered || 0) ? 1 : 0,
-    Number(row.isNoResponse || 0) ? 1 : 0,
-    Number(row.isAbandoned || 0) ? 1 : 0,
-    toNullableValue(row.sessionCount),
-    toNullableValue(row.adjustedChatSeconds),
+    toNullableValue(row.durationSeconds),
+    row.statusRaw,
     row.rowContentHash,
   ];
 }
 
-export async function findChatsByIdentityHashes(rowIdentityHashes = []) {
+export async function findAgentActivityByIdentityHashes(rowIdentityHashes = []) {
   const uniqueHashes = [...new Set(rowIdentityHashes.filter(Boolean))];
   if (!uniqueHashes.length) return [];
 
   const [rows] = await pmsDb.query(
     `
       SELECT
-        c.id,
-        c.batch_id,
-        c.raw_import_row_id,
+        a.id,
+        a.batch_id,
+        a.raw_import_row_id,
         rr.row_identity_hash,
-        c.row_content_hash,
-        c.created_at
-      FROM ${pmsTables.usVisaRawChats} c
+        a.row_content_hash,
+        a.created_at
+      FROM ${pmsTables.usVisaRawAgentActivity} a
       INNER JOIN ${pmsTables.usVisaRawImportRows} rr
-        ON rr.id = c.raw_import_row_id
+        ON rr.id = a.raw_import_row_id
       WHERE rr.row_identity_hash IN (${buildInPlaceholders(uniqueHashes)})
     `,
     uniqueHashes,
   );
 
-  return rows.map(mapChatRow);
+  return rows.map(mapRow);
 }
 
-export async function insertChatRowsWithDuplicateProtection(rows = []) {
+export async function insertAgentActivityRowsWithDuplicateProtection(rows = []) {
   if (!rows.length) return { affectedCount: 0 };
 
   const columnSql = INSERT_COLUMNS.map(quoteIdentifier).join(", ");
   const [result] = await pmsDb.query(
     `
-      INSERT INTO ${pmsTables.usVisaRawChats}
+      INSERT INTO ${pmsTables.usVisaRawAgentActivity}
         (${columnSql})
       VALUES ?
       ON DUPLICATE KEY UPDATE id = id

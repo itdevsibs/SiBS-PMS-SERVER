@@ -1,7 +1,7 @@
 import {
   getAgentOccupancyDailyKpiRows,
   getAgentOccupancyKpiDateBounds,
-} from "../../../../repositories/usVisa/usVisaOccupancyKpiRepository.js";
+} from "../../../../repositories/usVisa/occupancy/usVisaOccupancyKpiRepository.js";
 import { normalizeUsVisaTaskOrderId } from "../../../../config/usVisaTaskOrders.js";
 import {
   normalizeCallKpiPeriod,

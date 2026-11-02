@@ -4,8 +4,9 @@ import {
   findEmployeeAliasCandidatesBulk,
   findEmployeesByExactNormalizedName,
   findEmployeesByExactNormalizedNames,
+  findKronosEmployeesByComparableNames,
   normalizeEmployeeIdentity,
-} from "../../../../repositories/usVisa/usVisaEmployeeIdentityRepository.js";
+} from "../../../../repositories/usVisa/employees/usVisaEmployeeIdentityRepository.js";
 
 export const AGENT_MAPPING_STATUSES = Object.freeze({
   MATCHED: "MATCHED",
@@ -143,6 +144,7 @@ export async function matchAgentIdentity({
   const repository = {
     findEmployeeAliasCandidates,
     findEmployeesByExactNormalizedName,
+    findKronosEmployeesByComparableNames,
     ...options.repository,
   };
   const normalizedSourceSystem = normalizeEmployeeIdentity(sourceSystem);
@@ -203,6 +205,20 @@ export async function matchAgentIdentity({
   );
 
   if (nameMatch) return nameMatch;
+
+  if (options.allowKronosNameFallback && normalizeEmployeeIdentity(agentName)) {
+    try {
+      const kronosRows = await repository.findKronosEmployeesByComparableNames([agentName]);
+      const kronosMatch = resultFromCandidates(
+        kronosRows,
+        AGENT_MAPPING_METHODS.EXACT_AGENT_NAME,
+      );
+      if (kronosMatch) return kronosMatch;
+    } catch (error) {
+      // Keep unmatched operational rows intact when the optional Kronos fallback fails.
+      console.warn("[US Visa] Kronos name fallback unavailable", { code: error?.code || "UNKNOWN" });
+    }
+  }
 
   return {
     matchStatus: AGENT_MAPPING_STATUSES.UNMATCHED,
@@ -361,6 +377,7 @@ export async function createBulkAgentIdentityResolver(
   const repository = {
     findEmployeeAliasCandidatesBulk,
     findEmployeesByExactNormalizedNames,
+    findKronosEmployeesByComparableNames,
     ...options.repository,
   };
   const matchMode = normalizeMatchMode(options.matchMode);
@@ -442,6 +459,7 @@ export async function createBulkAgentIdentityResolver(
     : [];
   const nameIndex = indexBulkNameCandidates(nameRows);
 
+  const unresolvedForKronos = [];
   for (const [key, identity] of unresolvedIdentities) {
     const normalizedName = normalizeEmployeeIdentity(identity.agentName);
     const nameMatch = resultFromCandidates(
@@ -449,15 +467,41 @@ export async function createBulkAgentIdentityResolver(
       AGENT_MAPPING_METHODS.EXACT_AGENT_NAME,
     );
 
-    resolvedByKey.set(
-      key,
-      nameMatch || {
-        matchStatus: AGENT_MAPPING_STATUSES.UNMATCHED,
-        matchMethod: null,
-        employee: null,
-        candidates: [],
-      },
+    if (nameMatch) {
+      // An ambiguous ledger match remains ambiguous: never override it.
+      resolvedByKey.set(key, nameMatch);
+    } else {
+      unresolvedForKronos.push([key, identity]);
+    }
+  }
+
+  let kronosRows = [];
+  if (options.allowKronosNameFallback && unresolvedForKronos.length) {
+    const kronosNames = [...new Set(unresolvedForKronos
+      .map(([, identity]) => normalizeEmployeeIdentity(identity.agentName))
+      .filter(Boolean))];
+    if (kronosNames.length) {
+      try {
+        kronosRows = await repository.findKronosEmployeesByComparableNames(kronosNames);
+      } catch (error) {
+        // A Kronos outage must not abort an otherwise valid import batch.
+        console.warn("[US Visa] Kronos name fallback unavailable", { code: error?.code || "UNKNOWN" });
+      }
+    }
+  }
+  const kronosIndex = indexBulkNameCandidates(kronosRows);
+  for (const [key, identity] of unresolvedForKronos) {
+    const normalizedName = normalizeEmployeeIdentity(identity.agentName);
+    const kronosMatch = resultFromCandidates(
+      normalizedName ? kronosIndex.get(normalizedName) || [] : [],
+      AGENT_MAPPING_METHODS.EXACT_AGENT_NAME,
     );
+    resolvedByKey.set(key, kronosMatch || {
+      matchStatus: AGENT_MAPPING_STATUSES.UNMATCHED,
+      matchMethod: null,
+      employee: null,
+      candidates: [],
+    });
   }
 
   return {
@@ -471,7 +515,8 @@ export async function createBulkAgentIdentityResolver(
       aliasLookupCount: aliasLookups.length,
       aliasCandidateRows: aliasRows.length,
       kronosNameLookupCount: unresolvedNames.length,
-      kronosCandidateRows: nameRows.length,
+      kronosCandidateRows: nameRows.length, // legacy stats field, kept for compatibility
+      kronosFallbackCandidateRows: kronosRows.length,
     },
 
     resolve(identity = {}) {

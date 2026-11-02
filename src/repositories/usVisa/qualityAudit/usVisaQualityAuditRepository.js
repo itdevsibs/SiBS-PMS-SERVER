@@ -1,4 +1,4 @@
-import { kronosDb, kronosTables, pmsDb, pmsTables } from "../../config/db.js";
+import { kronosDb, kronosTables, pmsDb, pmsTables } from "../../../config/db.js";
 
 const INSERT_COLUMNS = [
   "batch_id",
