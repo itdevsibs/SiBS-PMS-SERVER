@@ -1,7 +1,7 @@
 // Persists US VISA import batch lifecycle records in the PMS database.
 import crypto from "crypto";
 
-import { pmsDb, pmsTables } from "../../../config/db.js";
+import { pmsDb, pmsTables, kronosTables } from "../../../config/db.js";
 
 export const US_VISA_BATCH_STATUSES = {
   UPLOADED: "UPLOADED",
@@ -143,6 +143,8 @@ export function mapBatchRow(row) {
     reportDateFrom: row.report_date_from,
     reportDateTo: row.report_date_to,
     uploadedBy: row.uploaded_by,
+    uploaderName: row.uploader_name || null,
+    uploaderEmpId: row.uploader_emp_id || row.uploaded_by || null,
     status: row.status,
     totalRows: row.total_rows,
     validRows: row.valid_rows,
@@ -200,10 +202,16 @@ export async function getBatchById(batchId) {
       SELECT
         b.*,
         p.profile_code AS import_profile_code,
-        p.profile_name AS import_profile_name
+        p.profile_name AS import_profile_name,
+        COALESCE(e.gy_emp_fullname, u.gy_full_name) AS uploader_name,
+        COALESCE(e.gy_emp_code, u.gy_user_code, b.uploaded_by) AS uploader_emp_id
       FROM ${pmsTables.usVisaImportBatches} b
       LEFT JOIN ${pmsTables.usVisaImportProfiles} p
         ON p.id = b.import_profile_id
+      LEFT JOIN ${kronosTables.user} u
+        ON (u.gy_user_code = b.uploaded_by OR CAST(u.gy_user_id AS CHAR) = CAST(b.uploaded_by AS CHAR))
+      LEFT JOIN ${kronosTables.employee} e
+        ON (e.gy_emp_code = b.uploaded_by OR e.gy_emp_code = u.gy_user_code OR CAST(e.gy_emp_id AS CHAR) = CAST(b.uploaded_by AS CHAR))
       WHERE b.id = ?
       LIMIT 1
     `,
@@ -224,10 +232,16 @@ export async function findBatchByIdOrCode(identifier) {
       SELECT
         b.*,
         p.profile_code AS import_profile_code,
-        p.profile_name AS import_profile_name
+        p.profile_name AS import_profile_name,
+        COALESCE(e.gy_emp_fullname, u.gy_full_name) AS uploader_name,
+        COALESCE(e.gy_emp_code, u.gy_user_code, b.uploaded_by) AS uploader_emp_id
       FROM ${pmsTables.usVisaImportBatches} b
       LEFT JOIN ${pmsTables.usVisaImportProfiles} p
         ON p.id = b.import_profile_id
+      LEFT JOIN ${kronosTables.user} u
+        ON (u.gy_user_code = b.uploaded_by OR CAST(u.gy_user_id AS CHAR) = CAST(b.uploaded_by AS CHAR))
+      LEFT JOIN ${kronosTables.employee} e
+        ON (e.gy_emp_code = b.uploaded_by OR e.gy_emp_code = u.gy_user_code OR CAST(e.gy_emp_id AS CHAR) = CAST(b.uploaded_by AS CHAR))
       WHERE b.id = ? OR b.batch_code = ?
       LIMIT 1
     `,
@@ -332,10 +346,16 @@ export async function listImportBatches(options = {}) {
     SELECT
       b.*,
       p.profile_code AS import_profile_code,
-      p.profile_name AS import_profile_name
+      p.profile_name AS import_profile_name,
+      COALESCE(e.gy_emp_fullname, u.gy_full_name) AS uploader_name,
+      COALESCE(e.gy_emp_code, u.gy_user_code, b.uploaded_by) AS uploader_emp_id
     FROM ${pmsTables.usVisaImportBatches} b
     LEFT JOIN ${pmsTables.usVisaImportProfiles} p
       ON p.id = b.import_profile_id
+    LEFT JOIN ${kronosTables.user} u
+      ON (u.gy_user_code = b.uploaded_by OR CAST(u.gy_user_id AS CHAR) = CAST(b.uploaded_by AS CHAR))
+    LEFT JOIN ${kronosTables.employee} e
+      ON (e.gy_emp_code = b.uploaded_by OR e.gy_emp_code = u.gy_user_code OR CAST(e.gy_emp_id AS CHAR) = CAST(b.uploaded_by AS CHAR))
   `;
   const params = [];
 

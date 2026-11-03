@@ -81,6 +81,8 @@ function pickBatchResponse(batch = {}, issueEvents = {}) {
     displayStatus: issues.displayStatus,
     infoRows: batch.infoRows ?? 0,
     uploadedBy: batch.uploadedBy,
+    uploaderName: batch.uploaderName || null,
+    uploaderEmpId: batch.uploaderEmpId || batch.uploadedBy || null,
     errorMessage: batch.errorMessage,
     createdAt: batch.createdAt,
     completedAt: batch.completedAt,

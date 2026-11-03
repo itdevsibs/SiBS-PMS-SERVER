@@ -1,6 +1,6 @@
 // Calendar-only, read-only access to import batches. Upload chronology and source
 // reporting coverage are deliberately separate dimensions; neither changes KPIs.
-import { pmsDb, pmsTables } from "../../../config/db.js";
+import { pmsDb, pmsTables, kronosTables } from "../../../config/db.js";
 
 const TIME_ZONE = "+08:00";
 const ACCOUNT = "US VISA";
@@ -166,8 +166,12 @@ export async function getCalendarDay(filters) {
   const batches = await query(`
     SELECT b.*, DATE_FORMAT(b.report_date_from, '%Y-%m-%d') AS report_date_from,
       DATE_FORMAT(b.report_date_to, '%Y-%m-%d') AS report_date_to,
-      p.profile_code AS import_profile_code, p.profile_name AS import_profile_name
+      p.profile_code AS import_profile_code, p.profile_name AS import_profile_name,
+      COALESCE(e.gy_emp_fullname, u.gy_full_name) AS uploader_name,
+      COALESCE(e.gy_emp_code, u.gy_user_code, b.uploaded_by) AS uploader_emp_id
     ${BATCH_JOIN}
+    LEFT JOIN ${kronosTables.user} u ON (u.gy_user_code = b.uploaded_by OR CAST(u.gy_user_id AS CHAR) = CAST(b.uploaded_by AS CHAR))
+    LEFT JOIN ${kronosTables.employee} e ON (e.gy_emp_code = b.uploaded_by OR e.gy_emp_code = u.gy_user_code OR CAST(e.gy_emp_id AS CHAR) = CAST(b.uploaded_by AS CHAR))
     WHERE ${where}
     ORDER BY b.created_at DESC, b.id DESC
     LIMIT ? OFFSET ?
