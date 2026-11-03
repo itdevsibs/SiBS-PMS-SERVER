@@ -142,6 +142,7 @@ export function mapBatchRow(row) {
     fileSize: row.file_size,
     reportDateFrom: row.report_date_from,
     reportDateTo: row.report_date_to,
+    importNote: row.import_note ?? null,
     uploadedBy: row.uploaded_by,
     uploaderName: row.uploader_name || null,
     uploaderEmpId: row.uploader_emp_id || row.uploaded_by || null,
@@ -394,10 +395,11 @@ export async function createBatch(batch = {}) {
             file_size,
             report_date_from,
             report_date_to,
+            import_note,
             uploaded_by,
             status
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           batchCode,
@@ -411,6 +413,7 @@ export async function createBatch(batch = {}) {
           toInteger(batch.fileSize),
           toNullableValue(batch.reportDateFrom),
           toNullableValue(batch.reportDateTo),
+          toNullableValue(batch.importNote),
           toNullableValue(batch.uploadedBy),
           batch.status || US_VISA_BATCH_STATUSES.UPLOADED,
         ],
