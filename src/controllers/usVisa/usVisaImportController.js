@@ -17,12 +17,14 @@ import {
   getImportProgress,
   initializeImportProgress,
 } from "../../services/imports/usVisa/importProgressTracker.js";
+import { getCalendarDay, getCalendarMonth, parseCalendarRequest } from "../../repositories/usVisa/imports/usVisaImportCalendarRepository.js";
 import {
   deleteBatchById,
   findBatchByIdOrCode,
   getBatchById,
   getImportSummary,
   listImportBatches,
+  mapBatchRow,
 } from "../../repositories/usVisa/imports/usVisaImportBatchRepository.js";
 import {
   countImportErrorsByBatchId,
@@ -461,6 +463,40 @@ export async function listUsVisaImportHistory(req, res) {
       code: "IMPORT_HISTORY_ERROR",
       message: "Unable to fetch import history.",
     });
+  }
+}
+
+// Calendar endpoints are read-only and apply the same WFM role guard as history.
+export async function getUsVisaImportCalendar(req, res) {
+  try {
+    const filters = parseCalendarRequest(req.query);
+    const days = await getCalendarMonth(filters);
+    return res.json({ success: true, month: filters.month, dateMode: filters.dateMode, days });
+  } catch (error) {
+    if (error.status === 400) return res.status(400).json({ success: false, message: error.message });
+    console.error("GET /api/us-visa/imports/calendar error:", { code: error.code, message: error.message });
+    return res.status(500).json({ success: false, code: "IMPORT_CALENDAR_ERROR", message: "Unable to load import calendar." });
+  }
+}
+
+export async function getUsVisaImportCalendarDay(req, res) {
+  try {
+    const filters = parseCalendarRequest(req.query, { requireDay: true });
+    const result = await getCalendarDay(filters);
+    const ids = result.batches.map((batch) => batch.id);
+    const issues = await getImportIssueSummariesByBatchIds(ids);
+    // Reuse existing batch conversion for historical warning and mapping status.
+    const batches = result.batches.map((row) =>
+      pickBatchResponse(mapBatchRow(row), issues.get(Number(row.id))));
+    return res.json({
+      success: true, date: filters.day, dateMode: filters.dateMode, data: batches,
+      pagination: { page: filters.page, limit: filters.limit, total: result.total,
+        totalPages: Math.max(1, Math.ceil(result.total / filters.limit)) },
+    });
+  } catch (error) {
+    if (error.status === 400) return res.status(400).json({ success: false, message: error.message });
+    console.error("GET /api/us-visa/imports/calendar/day error:", { code: error.code, message: error.message });
+    return res.status(500).json({ success: false, code: "IMPORT_CALENDAR_DAY_ERROR", message: "Unable to load imports for this date." });
   }
 }
 
