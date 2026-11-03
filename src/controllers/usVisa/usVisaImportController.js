@@ -65,6 +65,7 @@ function pickBatchResponse(batch = {}, issueEvents = {}) {
     taskOrderId: batch.taskOrderId,
     reportDateFrom: batch.reportDateFrom,
     reportDateTo: batch.reportDateTo,
+    importNote: batch.importNote ?? null,
     status: batch.status,
     totalRows: batch.totalRows,
     validRows: batch.validRows,
@@ -319,6 +320,7 @@ export async function uploadUsVisaImport(req, res) {
       taskOrderId: String(req.body?.taskOrderId || "").trim(),
       reportDateFrom: req.body?.reportDateFrom,
       reportDateTo: req.body?.reportDateTo,
+      importNote: req.body?.importNote,
       progressToken,
       user: req.user,
     });

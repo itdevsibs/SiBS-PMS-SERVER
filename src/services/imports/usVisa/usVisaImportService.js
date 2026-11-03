@@ -357,6 +357,7 @@ export function getBatchCreateInput({
     fileSize: temporaryFile.size || options.fileSize,
     reportDateFrom,
     reportDateTo,
+    importNote: options.importNote || null,
     uploadedBy: getUploadedBy(options),
     status: US_VISA_BATCH_STATUSES.IMPORTING,
     processingStartedAt: new Date(),
@@ -366,6 +367,14 @@ export function getBatchCreateInput({
 export async function importUsVisaRawWorkbook(options = {}) {
   const importStartedAt = Date.now();
   const importProfileIdOrCode = options.importProfileId || options.profileCode;
+  // Import notes are optional batch metadata; they do not change row processing.
+  if (options.importNote !== undefined && options.importNote !== null && typeof options.importNote !== "string") {
+    throw new UsVisaImportError("Import note must be plain text.", { code: "IMPORT_NOTE_INVALID" });
+  }
+  const importNote = String(options.importNote || "").trim();
+  if (Array.from(importNote).length > 500 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(importNote)) {
+    throw new UsVisaImportError("Import note must be plain text with no more than 500 characters.", { code: "IMPORT_NOTE_INVALID" });
+  }
   const temporaryFile = options.file || {};
   const filePath = temporaryFile.path || options.filePath;
   let batch = null;
@@ -740,7 +749,7 @@ export async function importUsVisaRawWorkbook(options = {}) {
         profile,
         profileCode,
         temporaryFile,
-        options,
+        options: { ...options, importNote },
         filePath,
         fileHash,
         reportDateFrom,
