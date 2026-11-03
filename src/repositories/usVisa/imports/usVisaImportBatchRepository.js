@@ -119,7 +119,7 @@ function toDate(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function mapBatchRow(row) {
+export function mapBatchRow(row) {
   if (!row) return null;
 
   const createdAt = toDate(row.created_at);
