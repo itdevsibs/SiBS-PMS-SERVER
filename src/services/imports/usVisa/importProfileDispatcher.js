@@ -8,6 +8,7 @@ import { processAgentOccupancyWorkbook } from "./agentOccupancy/agentOccupancyIm
 import { processEmailRawDataWorkbook } from "./emailRawData/emailRawDataImportProcessor.js";
 import { processQualityAuditWorkbook } from "./qualityAudit/qualityAuditImportProcessor.js";
 import { processSkillStatisticsWorkbook } from "./skillStatistics/skillStatisticsImportProcessor.js";
+import { processDocumentedCallWorkbook } from "./documentedCalls/documentedCallImportProcessor.js";
 
 const XLSX_AND_CSV_EXTENSIONS = Object.freeze([".xlsx", ".csv"]);
 const XLSX_ONLY_EXTENSIONS = Object.freeze([".xlsx"]);
@@ -15,6 +16,7 @@ const XLSX_ONLY_EXTENSIONS = Object.freeze([".xlsx"]);
 export const US_VISA_IMPORT_REPORT_TYPES = Object.freeze({
   AGENT_LEVEL: "AGENT_LEVEL",
   SKILL_STATISTICS: "SKILL_STATISTICS",
+  DOCUMENTED_CALLS: "DOCUMENTED_CALLS",
   CALL_REPORT_EOD: "CALL_REPORT_EOD",
   CHAT_REPORT_EOD: "CHAT_REPORT_EOD",
   AGENT_OCCUPANCY: "AGENT_OCCUPANCY",
@@ -25,6 +27,13 @@ export const US_VISA_IMPORT_REPORT_TYPES = Object.freeze({
 });
 
 const PROCESSORS_BY_REPORT_TYPE = Object.freeze({
+  [US_VISA_IMPORT_REPORT_TYPES.DOCUMENTED_CALLS]: {
+    domain: "DOCUMENTED_CALLS",
+    fileType: "XLSX",
+    supportedExtensions: XLSX_ONLY_EXTENSIONS,
+    processWorkbook: processDocumentedCallWorkbook,
+    processCsv: null,
+  },
   [US_VISA_IMPORT_REPORT_TYPES.SKILL_STATISTICS]: {
     domain: "SKILL_STATISTICS",
     fileType: "XLSX",

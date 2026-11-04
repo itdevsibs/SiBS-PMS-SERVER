@@ -10,6 +10,10 @@ import {
 } from "../../../../repositories/usVisa/skillStatistics/usVisaSkillStatisticsKpiRepository.js";
 import { mergeQueueVolumeIntoCallDashboard } from "./queueVolumeSourceService.js";
 import {
+  getDailyDocumentedCallAhtRows, getDocumentedCallAhtDateBounds, getDocumentedCallCoverageStats,
+} from "../../../../repositories/usVisa/documentedCalls/usVisaDocumentedCallRepository.js";
+import { mergeDocumentedAhtIntoCallDashboard } from "./documentedAhtMergeService.js";
+import {
   buildWfmCallKpiDashboard,
   chooseCallKpiDataGrain,
   normalizeCallKpiPeriod,
@@ -200,10 +204,27 @@ export async function getWfmCallKpiDashboard(query = {}) {
     const missingQueueDashboard = mergeQueueVolumeIntoCallDashboard(
       emptyDetailDashboard, emptyDetailDashboard, [], { rows: [], selectedSkillGroups: 0 },
     );
+    const docBounds = await getDocumentedCallAhtDateBounds(baseFilters);
+    const docRange = (isCustomRange || isLegacyManualRange)
+      ? {dateFrom:requestedDateFrom,dateTo:requestedDateTo,referenceDate:null}
+      : resolveCallKpiDateRange({minDate:docBounds.minDate,maxDate:docBounds.maxDate,
+          referenceDate:requestedReferenceDate || docBounds.maxDate,period});
+    const docFilters={...baseFilters,dateFrom:docRange.dateFrom,dateTo:docRange.dateTo};
+    const [docRows,docCoverage]=await Promise.all([
+      getDailyDocumentedCallAhtRows(docFilters),getDocumentedCallCoverageStats(docFilters),
+    ]);
+    const docDashboard = buildWfmCallKpiDashboard({rows:docRows,period,sourceSystem,
+      dateFrom:docRange.dateFrom,dateTo:docRange.dateTo,referenceDate:docRange.referenceDate,
+      taskOrder,country,skill,dataGrain:"DOCUMENTED_CALLS"});
+    const seededEmpty = buildWfmCallKpiDashboard({rows:[],period,sourceSystem,
+      dateFrom:docRange.dateFrom,dateTo:docRange.dateTo,referenceDate:docRange.referenceDate,
+      taskOrder,country,skill,dataGrain:null});
+    const docOnlyVolume = mergeQueueVolumeIntoCallDashboard(seededEmpty,seededEmpty,[],{
+      rows:[],selectedSkillGroups:0});
     return {
-      ...missingQueueDashboard,
+      ...mergeDocumentedAhtIntoCallDashboard(docOnlyVolume,docDashboard,docRows,{skill},docCoverage),
       availableGrains,
-      availableDateRange: { minDate: null, maxDate: null },
+      availableDateRange: docBounds,
     };
   }
 
@@ -218,9 +239,10 @@ export async function getWfmCallKpiDashboard(query = {}) {
   });
 
   const queueBounds = await getSkillKpiDateBounds({ sourceSystem, taskOrder, taskOrderCountries, country, skill });
+  const documentedBounds = await getDocumentedCallAhtDateBounds({sourceSystem,taskOrder,taskOrderCountries,country,skill});
   const bounds = {
-    minDate: [detailBounds.minDate, queueBounds.minDate].filter(Boolean).sort()[0] || null,
-    maxDate: [detailBounds.maxDate, queueBounds.maxDate].filter(Boolean).sort().at(-1) || null,
+    minDate: [detailBounds.minDate, queueBounds.minDate, documentedBounds.minDate].filter(Boolean).sort()[0] || null,
+    maxDate: [detailBounds.maxDate, queueBounds.maxDate, documentedBounds.maxDate].filter(Boolean).sort().at(-1) || null,
   };
   let dateFrom = requestedDateFrom;
   let dateTo = requestedDateTo;
@@ -299,8 +321,19 @@ export async function getWfmCallKpiDashboard(query = {}) {
   });
 
   const governedDashboard = mergeQueueVolumeIntoCallDashboard(dashboard, queueDashboard, rows, queueResult);
+  const documentedFilters={sourceSystem,taskOrder,taskOrderCountries,country,skill,dateFrom,dateTo};
+  const [documentedRows,documentedCoverage]=await Promise.all([
+    getDailyDocumentedCallAhtRows(documentedFilters),getDocumentedCallCoverageStats(documentedFilters),
+  ]);
+  const documentedDashboard = buildWfmCallKpiDashboard({
+    rows: documentedRows, period, sourceSystem, dataGrain: "DOCUMENTED_CALLS",
+    dateFrom, dateTo, referenceDate, taskOrder, country, skill,
+  });
+  const withDocumentedAht = mergeDocumentedAhtIntoCallDashboard(
+    governedDashboard, documentedDashboard, documentedRows, { detailRows: rows, skill }, documentedCoverage,
+  );
   return {
-    ...governedDashboard,
+    ...withDocumentedAht,
     filters: {
       ...dashboard.filters,
       rangeMode,

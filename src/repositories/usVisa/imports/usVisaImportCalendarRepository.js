@@ -7,6 +7,7 @@ const ACCOUNT = "US VISA";
 const REPORT_LEVELS = Object.freeze({
   "CALL REPORT (EOD)": ["CALL_REPORT", "CALL_EOD", "AGENT_LEVEL"],
   "SKILL STATISTICS": ["SKILL_STATISTICS"],
+  "DOCUMENTED CALLS": ["DOCUMENTED_CALLS"],
   "CHAT REPORT (EOD)": ["CHAT_REPORT", "CHAT_EOD"],
   "AGENT OCCUPANCY": ["AGENT_OCCUPANCY"],
   "AGENT ACTIVITY - PRODUCTIVE BREAKS": ["PRODUCTIVE_BREAKS"],
@@ -24,6 +25,7 @@ const TOOL_NAMES = Object.freeze({
 const TOOLS_BY_LEVEL = Object.freeze({
   "CALL REPORT (EOD)": ["Fusecom", "FuseNet", "HeroDash"],
   "SKILL STATISTICS": ["Fusecom", "FuseNet", "HeroDash"],
+  "DOCUMENTED CALLS": ["MS Dynamics"],
   "CHAT REPORT (EOD)": ["Fusecom", "FuseNet", "HeroDash"],
   "AGENT OCCUPANCY": ["Fusecom", "FuseNet", "HeroDash"],
   "AGENT ACTIVITY - PRODUCTIVE BREAKS": ["HeroDash"],

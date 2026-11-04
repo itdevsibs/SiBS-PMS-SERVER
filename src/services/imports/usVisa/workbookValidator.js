@@ -25,6 +25,7 @@ export const IMPORT_PROFILE_CODES = {
   HERODASH_AGENT_PERFORMANCE_BY_SKILL: "HERODASH_AGENT_PERFORMANCE_BY_SKILL",
   US_VISA_EMAIL_RAW_DATA: "US_VISA_EMAIL_RAW_DATA",
   US_VISA_QUALITY_AUDIT: "US_VISA_QUALITY_AUDIT",
+  US_VISA_DOCUMENTED_CALLS: "US_VISA_DOCUMENTED_CALLS",
 };
 
 export const WORKBOOK_VALIDATION_ERROR_CODES = {
@@ -770,6 +771,24 @@ export const WORKBOOK_PROFILE_DEFINITIONS = {
         ignoredHeaders: EMAIL_RAW_DATA_VARIANT_HEADERS,
       },
     ],
+  },
+  [IMPORT_PROFILE_CODES.US_VISA_DOCUMENTED_CALLS]: {
+    profileCode: IMPORT_PROFILE_CODES.US_VISA_DOCUMENTED_CALLS,
+    sourceSystem: "MS_DYNAMICS",
+    requiredSheets: [{
+      sheetName: "WFM Call Logs",
+      sheetNameCandidates: ["WFM Call Logs", "Call Logs", "Sheet1"],
+      dataGrain: "DOCUMENTED_CALL",
+      headerRowNumber: 1,
+      headerRowCandidates: [1],
+      requiredHeaders: [
+        "(Do Not Modify) Call Log", "Created On", "System Call ID",
+        "Created By", "Name", "Call Duration", "Owner",
+        "Category", "Subcategory",
+      ],
+      ignoredHeaders: ["(Do Not Modify) Row Checksum", "(Do Not Modify) Modified On"],
+      allowUnknownHeaders: true,
+    }],
   },
   [IMPORT_PROFILE_CODES.US_VISA_QUALITY_AUDIT]: {
     profileCode: IMPORT_PROFILE_CODES.US_VISA_QUALITY_AUDIT,
