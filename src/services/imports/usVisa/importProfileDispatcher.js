@@ -7,12 +7,14 @@ import { processChatReportWorkbook } from "./chats/chatImportProcessor.js";
 import { processAgentOccupancyWorkbook } from "./agentOccupancy/agentOccupancyImportProcessor.js";
 import { processEmailRawDataWorkbook } from "./emailRawData/emailRawDataImportProcessor.js";
 import { processQualityAuditWorkbook } from "./qualityAudit/qualityAuditImportProcessor.js";
+import { processSkillStatisticsWorkbook } from "./skillStatistics/skillStatisticsImportProcessor.js";
 
 const XLSX_AND_CSV_EXTENSIONS = Object.freeze([".xlsx", ".csv"]);
 const XLSX_ONLY_EXTENSIONS = Object.freeze([".xlsx"]);
 
 export const US_VISA_IMPORT_REPORT_TYPES = Object.freeze({
   AGENT_LEVEL: "AGENT_LEVEL",
+  SKILL_STATISTICS: "SKILL_STATISTICS",
   CALL_REPORT_EOD: "CALL_REPORT_EOD",
   CHAT_REPORT_EOD: "CHAT_REPORT_EOD",
   AGENT_OCCUPANCY: "AGENT_OCCUPANCY",
@@ -23,6 +25,13 @@ export const US_VISA_IMPORT_REPORT_TYPES = Object.freeze({
 });
 
 const PROCESSORS_BY_REPORT_TYPE = Object.freeze({
+  [US_VISA_IMPORT_REPORT_TYPES.SKILL_STATISTICS]: {
+    domain: "SKILL_STATISTICS",
+    fileType: "XLSX",
+    supportedExtensions: XLSX_ONLY_EXTENSIONS,
+    processWorkbook: processSkillStatisticsWorkbook,
+    processCsv: null,
+  },
   [US_VISA_IMPORT_REPORT_TYPES.AGENT_LEVEL]: {
     domain: "AGENT_INTERACTION",
     fileType: "XLSX_OR_CSV",
@@ -80,20 +89,6 @@ const PROCESSORS_BY_REPORT_TYPE = Object.freeze({
     processCsv: null,
   },
 });
-
-// These historical profiles may still exist in MySQL and must not create new batches.
-// The guard is applied before opening a workbook or writing any import rows.
-const RETIRED_SKILL_STATISTICS_PROFILE_CODES = new Set([
-  "HERO_SKILL_STATISTICS_INBOUND",
-  "FUSECOM_SKILL_STATISTICS_INBOUND",
-  "FUSENET_SKILL_STATISTICS_INBOUND",
-]);
-
-export function isRetiredSkillStatisticsProfile(profile = {}) {
-  const reportType = String(profile.reportType || "").trim().toUpperCase();
-  const profileCode = String(profile.profileCode || "").trim().toUpperCase();
-  return reportType === "SKILL_STATISTICS" || RETIRED_SKILL_STATISTICS_PROFILE_CODES.has(profileCode);
-}
 
 export function getUsVisaImportProcessor(profile = {}) {
   const reportType = String(profile.reportType || "").trim().toUpperCase();

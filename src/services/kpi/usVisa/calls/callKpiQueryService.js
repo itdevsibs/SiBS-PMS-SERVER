@@ -4,6 +4,12 @@ import {
   listAvailableCallKpiDataGrains,
 } from "../../../../repositories/callKpiRepository.js";
 import {
+  listAvailableSkillKpiDataGrains,
+  getSkillKpiDateBounds,
+  getDailySkillStatisticsKpiRows,
+} from "../../../../repositories/usVisa/skillStatistics/usVisaSkillStatisticsKpiRepository.js";
+import { mergeQueueVolumeIntoCallDashboard } from "./queueVolumeSourceService.js";
+import {
   buildWfmCallKpiDashboard,
   chooseCallKpiDataGrain,
   normalizeCallKpiPeriod,
@@ -40,11 +46,6 @@ function normalizeDate(value) {
 function normalizeRequestedGrain(value) {
   const grain = String(value || "auto").trim().toUpperCase();
   if (!grain || grain === "AUTO") return null;
-
-  // Saved pre-EOD graph filters may still reference a Skill Statistics grain.
-  // Calls now have one canonical detail grain, so transparently move those
-  // requests to the Call Report (EOD) source instead of returning no data.
-  if (grain.startsWith("SKILL_")) return "CALL_DETAIL";
 
   return SUPPORTED_GRAINS.has(grain) ? grain : null;
 }
@@ -129,6 +130,7 @@ export async function getWfmCallKpiDashboard(query = {}) {
     }
     : {};
 
+  const baseFilters = { sourceSystem, taskOrder, taskOrderCountries, country, skill, ...grainLookupRange };
   const rawGrains = await listAvailableCallKpiDataGrains({
     sourceSystem,
     taskOrder,
@@ -138,6 +140,7 @@ export async function getWfmCallKpiDashboard(query = {}) {
     ...grainLookupRange,
   });
 
+  const skillGrains = await listAvailableSkillKpiDataGrains(baseFilters);
   const availableGrainsBySource = {};
   const allAvailableGrains = new Set();
 
@@ -158,6 +161,13 @@ export async function getWfmCallKpiDashboard(query = {}) {
     }
   }
 
+  for (const item of skillGrains) {
+    if (!item?.data_grain) continue;
+    allAvailableGrains.add(item.data_grain);
+    const src = item.source_system || sourceSystem;
+    if (!availableGrainsBySource[src]) availableGrainsBySource[src] = [];
+    availableGrainsBySource[src].push(item.data_grain);
+  }
   const availableGrains = [...allAvailableGrains];
 
   const sourceGrainMap = {};
@@ -175,32 +185,29 @@ export async function getWfmCallKpiDashboard(query = {}) {
   }
 
   const hasAnyGrain = requestedGrain
-    ? Object.keys(sourceGrainMap).length > 0
+    ? availableGrains.includes(requestedGrain)
     : availableGrains.length > 0;
   const primaryDataGrain = requestedGrain && availableGrains.includes(requestedGrain)
     ? requestedGrain
     : chooseCallKpiDataGrain(availableGrains);
 
   if (!hasAnyGrain || !primaryDataGrain) {
+    const emptyDetailDashboard = buildWfmCallKpiDashboard({
+      rows: [], period, sourceSystem, dataGrain: null,
+      dateFrom: requestedDateFrom, dateTo: requestedDateTo,
+      referenceDate: requestedReferenceDate, taskOrder, country, skill,
+    });
+    const missingQueueDashboard = mergeQueueVolumeIntoCallDashboard(
+      emptyDetailDashboard, emptyDetailDashboard, [], { rows: [], selectedSkillGroups: 0 },
+    );
     return {
-      ...buildWfmCallKpiDashboard({
-        rows: [],
-        period,
-        sourceSystem,
-        dataGrain: null,
-        dateFrom: requestedDateFrom,
-        dateTo: requestedDateTo,
-        referenceDate: requestedReferenceDate,
-        taskOrder,
-        country,
-        skill,
-      }),
+      ...missingQueueDashboard,
       availableGrains,
       availableDateRange: { minDate: null, maxDate: null },
     };
   }
 
-  const bounds = await getCallKpiDateBounds({
+  const detailBounds = await getCallKpiDateBounds({
     sourceSystem,
     sourceGrainMap: requestedGrain ? sourceGrainMap : null,
     dataGrain: requestedGrain ? primaryDataGrain : null,
@@ -210,6 +217,11 @@ export async function getWfmCallKpiDashboard(query = {}) {
     skill,
   });
 
+  const queueBounds = await getSkillKpiDateBounds({ sourceSystem, taskOrder, taskOrderCountries, country, skill });
+  const bounds = {
+    minDate: [detailBounds.minDate, queueBounds.minDate].filter(Boolean).sort()[0] || null,
+    maxDate: [detailBounds.maxDate, queueBounds.maxDate].filter(Boolean).sort().at(-1) || null,
+  };
   let dateFrom = requestedDateFrom;
   let dateTo = requestedDateTo;
   let referenceDate = null;
@@ -267,6 +279,12 @@ export async function getWfmCallKpiDashboard(query = {}) {
     skill,
   });
 
+  const queueResult = await getDailySkillStatisticsKpiRows({ sourceSystem, taskOrder, taskOrderCountries,
+    country, skill, dateFrom, dateTo, dataGrain: requestedGrain });
+  const queueDashboard = buildWfmCallKpiDashboard({
+    rows: queueResult.rows, period, sourceSystem, dataGrain: "SKILL_STATISTICS",
+    dateFrom, dateTo, referenceDate, taskOrder, country, skill,
+  });
   const dashboard = buildWfmCallKpiDashboard({
     rows,
     period,
@@ -280,8 +298,9 @@ export async function getWfmCallKpiDashboard(query = {}) {
     skill,
   });
 
+  const governedDashboard = mergeQueueVolumeIntoCallDashboard(dashboard, queueDashboard, rows, queueResult);
   return {
-    ...dashboard,
+    ...governedDashboard,
     filters: {
       ...dashboard.filters,
       rangeMode,

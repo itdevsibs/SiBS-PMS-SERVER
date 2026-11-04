@@ -112,8 +112,9 @@ function appendSkillFilter({ conditions, values, skill }) {
   if (clauses.length) conditions.push(`(${clauses.join(" OR ")})`);
 }
 
-function buildBaseFilters({
+export function buildBaseFilters({
   sourceSystem = "US_VISA",
+  reportType = "CALL_REPORT_EOD",
   dateFrom,
   dateTo,
   taskOrder = null,
@@ -124,9 +125,9 @@ function buildBaseFilters({
   const conditions = [
     "c.production_date IS NOT NULL",
     `b.status IN (${KPI_BATCH_STATUSES.map(() => "?").join(", ")})`,
-    "p.report_type = 'CALL_REPORT_EOD'",
+    "p.report_type = ?",
   ];
-  const values = [...KPI_BATCH_STATUSES];
+  const values = [...KPI_BATCH_STATUSES, reportType];
 
   if (dateFrom) {
     conditions.push("DATE(c.production_date) >= ?");

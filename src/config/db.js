@@ -127,7 +127,7 @@ export const pmsTables = {
   usVisaImportBatches: dbTable(PMS_DB_NAME, "us_visa_import_batches"),
   usVisaRawImportRows: dbTable(PMS_DB_NAME, "us_visa_raw_import_rows"),
   usVisaImportErrors: dbTable(PMS_DB_NAME, "us_visa_import_errors"),
-  // Canonical Call Report (EOD) rows.
+  usVisaRawSkillStatistics: dbTable(PMS_DB_NAME, "us_visa_raw_skill_statistics"),
   usVisaRawCalls: dbTable(
     PMS_DB_NAME,
     "us_visa_raw_calls",
