@@ -20,7 +20,7 @@ import {
 } from "../shared/workbookReaderService.js";
 import { toDateValue } from "../shared/valueConversionService.js";
 import { validateWorkbookProfile } from "./workbookValidator.js";
-import { getUsVisaImportProcessor, isRetiredSkillStatisticsProfile } from "./importProfileDispatcher.js";
+import { getUsVisaImportProcessor } from "./importProfileDispatcher.js";
 import { extractAgentOccupancyWorkbookMetadata } from "./agentOccupancy/agentOccupancyWorkbookMetadata.js";
 import { validateEmailTaskOrderWorkbookStructure } from "./emailRawData/emailRawDataWorkbookValidator.js";
 import { updateImportProgress } from "./importProgressTracker.js";
@@ -401,12 +401,6 @@ export async function importUsVisaRawWorkbook(options = {}) {
     const fileHashMs = Date.now() - fileHashStartedAt;
     const profile = await loadImportProfile(importProfileIdOrCode);
     const profileCode = profile.profileCode;
-    if (isRetiredSkillStatisticsProfile(profile)) {
-      throw new UsVisaImportError(
-        "Skill Statistics imports are retired. Upload Call Report (EOD) instead.",
-        { code: "IMPORT_PROFILE_RETIRED" },
-      );
-    }
     const processor = getUsVisaImportProcessor(profile);
 
     importLockConnection = await acquireUsVisaImportLock();

@@ -267,6 +267,11 @@ export async function deleteBatchById(batchId) {
       // QA migration may not have been applied yet.
       if (error?.code !== "ER_NO_SUCH_TABLE") throw error;
     }
+    // Queue canonical rows must be removed explicitly: we do not rely on foreign keys.
+    await connection.query(
+      `DELETE FROM ${pmsTables.usVisaRawSkillStatistics} WHERE batch_id = ?`,
+      [batchId],
+    );
     const [result] = await connection.query(
       `DELETE FROM ${pmsTables.usVisaImportBatches} WHERE id = ?`,
       [batchId],

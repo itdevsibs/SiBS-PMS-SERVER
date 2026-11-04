@@ -3,9 +3,13 @@ import {
   getWorksheetNames,
   readHeaderRow,
 } from "../shared/workbookReaderService.js";
+import { SKILL_STATISTIC_FIELD_ALIASES } from "./skillStatistics/skillStatisticsMapper.js";
 
 export const IMPORT_PROFILE_CODES = {
   FUSECOM_AGENT_LEVEL: "FUSECOM_AGENT_LEVEL",
+  FUSECOM_SKILL_STATISTICS_INBOUND: "FUSECOM_SKILL_STATISTICS_INBOUND",
+  FUSENET_SKILL_STATISTICS_INBOUND: "FUSENET_SKILL_STATISTICS_INBOUND",
+  HERO_SKILL_STATISTICS_INBOUND: "HERO_SKILL_STATISTICS_INBOUND",
   FUSENET_AGENT_LEVEL: "FUSENET_AGENT_LEVEL",
   HERODASH_AGENT_LEVEL: "HERODASH_AGENT_LEVEL",
   FUSECOM_CALL_REPORT_EOD: "FUSECOM_CALL_REPORT_EOD",
@@ -417,7 +421,88 @@ const QUALITY_AUDIT_REQUIRED_HEADERS = [
   "Audit Year",
 ];
 
+// Queue statistics retain each grain independently. Date and totals are required for
+// FuseCom/FuseNet; a single reporting date may be supplied for HeroDash exports.
+const SKILL_STAT_OFFERED_HEADERS = SKILL_STATISTIC_FIELD_ALIASES.totalOffered;
+const SKILL_STAT_HANDLED_HEADERS = SKILL_STATISTIC_FIELD_ALIASES.totalHandled;
+const SKILL_STAT_SKILL_HEADERS = SKILL_STATISTIC_FIELD_ALIASES.skill;
+const SKILL_STAT_INTERVAL_REQUIRED = [
+  ["Date/Time", "Date Time", "DateTime", "Interval Start"],
+  SKILL_STAT_SKILL_HEADERS,
+  SKILL_STAT_OFFERED_HEADERS,
+  SKILL_STAT_HANDLED_HEADERS,
+];
+const SKILL_STAT_DAILY_REQUIRED = [
+  ["Date", "Production Date", "Report Date"],
+  SKILL_STAT_SKILL_HEADERS,
+  SKILL_STAT_OFFERED_HEADERS,
+  SKILL_STAT_HANDLED_HEADERS,
+];
+const SKILL_STAT_HERO_REQUIRED = [
+  SKILL_STAT_SKILL_HEADERS,
+  SKILL_STAT_OFFERED_HEADERS,
+  SKILL_STAT_HANDLED_HEADERS,
+];
+
+const FUSE_SKILL_STAT_SHEETS = [
+  {
+    sheetName: "15 Minutes Statistics",
+    sheetNameCandidates: ["15 Minutes Statistics", "15 Minutes", "15 Minute", "15 Minute Statistics"],
+    dataGrain: "SKILL_15_MINUTE",
+    headerRowNumber: 9,
+    headerRowCandidates: [9, 1],
+    requiredHeaders: SKILL_STAT_INTERVAL_REQUIRED,
+    allowUnknownHeaders: true,
+    disableHeaderFallbackForXlsx: true,
+  },
+  {
+    sheetName: "Half Hourly Statistics",
+    sheetNameCandidates: ["Half Hourly Statistics", "Half Hourly", "30 Minutes", "30 Minutes Statistics"],
+    dataGrain: "SKILL_30_MINUTE",
+    headerRowNumber: 9,
+    headerRowCandidates: [9, 1],
+    requiredHeaders: SKILL_STAT_INTERVAL_REQUIRED,
+    allowUnknownHeaders: true,
+    disableHeaderFallbackForXlsx: true,
+  },
+  {
+    sheetName: "Per Day",
+    sheetNameCandidates: ["Per Day", "Daily", "Per Day Statistics"],
+    dataGrain: "SKILL_DAY",
+    headerRowNumber: 9,
+    headerRowCandidates: [9, 1],
+    requiredHeaders: SKILL_STAT_DAILY_REQUIRED,
+    allowUnknownHeaders: true,
+    disableHeaderFallbackForXlsx: true,
+  },
+];
+
 export const WORKBOOK_PROFILE_DEFINITIONS = {
+  [IMPORT_PROFILE_CODES.FUSECOM_SKILL_STATISTICS_INBOUND]: {
+    profileCode: IMPORT_PROFILE_CODES.FUSECOM_SKILL_STATISTICS_INBOUND,
+    sourceSystem: "FUSECOM",
+    selectAllNonEmptySheets: true,
+    requiredSheets: FUSE_SKILL_STAT_SHEETS,
+  },
+  [IMPORT_PROFILE_CODES.FUSENET_SKILL_STATISTICS_INBOUND]: {
+    profileCode: IMPORT_PROFILE_CODES.FUSENET_SKILL_STATISTICS_INBOUND,
+    sourceSystem: "FUSENET",
+    selectAllNonEmptySheets: true,
+    requiredSheets: FUSE_SKILL_STAT_SHEETS,
+  },
+  [IMPORT_PROFILE_CODES.HERO_SKILL_STATISTICS_INBOUND]: {
+    profileCode: IMPORT_PROFILE_CODES.HERO_SKILL_STATISTICS_INBOUND,
+    sourceSystem: "HERODASH",
+    requiredSheets: [{
+      sheetName: null,
+      sheetNameCandidates: ["Sheet1", "Skill Statistics", "Skill Level", "Per Day", "Daily"],
+      dataGrain: "SKILL_DAY",
+      headerRowNumber: 1,
+      headerRowCandidates: [1, 9],
+      requiredHeaders: SKILL_STAT_HERO_REQUIRED,
+      allowUnknownHeaders: true,
+    }],
+  },
   [IMPORT_PROFILE_CODES.FUSECOM_AGENT_LEVEL]: {
     profileCode: IMPORT_PROFILE_CODES.FUSECOM_AGENT_LEVEL,
     sourceSystem: "FUSECOM",
@@ -1125,7 +1210,15 @@ export function validateWorkbookProfile(
     };
   }
 
-  const sheets = profileDefinition.selectHighestPriorityNonEmptySheet
+  const sheets = profileDefinition.selectAllNonEmptySheets
+    ? profileDefinition.requiredSheets
+        .filter((rule) => {
+          const sheetName = getSheetNameForRule(workbook, rule);
+          return sheetName && worksheetHasDataRows(workbook, sheetName,
+            findBestHeaderRowNumber(workbook, sheetName, rule));
+        })
+        .map((rule) => validateSheetHeaders(workbook, rule))
+    : profileDefinition.selectHighestPriorityNonEmptySheet
     ? [
         validateHighestPriorityNonEmptySheet(
           workbook,
@@ -1137,6 +1230,14 @@ export function validateWorkbookProfile(
         validateSheetHeaders(workbook, rule),
       );
 
+  if (!sheets.length) {
+    sheets.push({
+      sheetName: null, dataGrain: null, headers: [],
+      errors: [createValidationIssue({ severity: "FATAL", code: WORKBOOK_VALIDATION_ERROR_CODES.MISSING_REQUIRED_SHEET,
+        message: "No supported nonempty Skill Statistics worksheet was found." })],
+      warnings: [], isValid: false,
+    });
+  }
   const errors = sheets.flatMap(
     (sheet) => sheet.errors,
   );
