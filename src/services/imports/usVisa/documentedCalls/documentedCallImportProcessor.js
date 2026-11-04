@@ -79,21 +79,23 @@ export async function processDocumentedCallWorkbook({ workbook,batch,profile,wor
           if(row.classification===CL.INVALID) {
             counters.invalidRows++;
             for(const err of row.errors) issues.push(issue({...base,severity:"ERROR",errorCode:err.errorCode,
-              columnName:err.fieldName,message:err.message}));
+              columnName:err.fieldName,rawValue:err.rawValue ?? null,message:err.message}));
           } else if(row.classification===CL.DUPLICATE_ROW) {
             counters.duplicateRows++;
             issues.push(issue({...base,severity:"DUPLICATE",errorType:"DUPLICATE_CHECK",
-              errorCode:"DUPLICATE_DOCUMENTED_CALL",existingRowId:row.existingRowId,
+              errorCode:"DUPLICATE_DOCUMENTED_CALL",columnName:"(Do Not Modify) Call Log",
+              rawValue:row.mappedRow?.crm_call_log_id || null,existingRowId:row.existingRowId,
               message:"Call-log GUID is already imported with the same contents."}));
           } else if(row.classification===CL.ROW_CONFLICT) {
             counters.warningRows++;
             issues.push(issue({...base,errorType:"DUPLICATE_CHECK",errorCode:"DOCUMENTED_CALL_CONFLICT",
+              columnName:"(Do Not Modify) Call Log",rawValue:row.mappedRow?.crm_call_log_id || null,
               existingRowId:row.existingRowId,message:"Same call-log GUID has modified values. Existing row retained for review."}));
           } else {
             counters.validRows++;
             if(row.warnings.length) counters.warningRows++;
             for(const warn of row.warnings) issues.push(issue({...base,
-              errorCode:warn.errorCode,columnName:warn.fieldName,message:warn.message}));
+              errorCode:warn.errorCode,columnName:warn.fieldName,rawValue:warn.rawValue ?? null,message:warn.message}));
           }
         }
         if(issues.length) await insertImportErrors(issues);

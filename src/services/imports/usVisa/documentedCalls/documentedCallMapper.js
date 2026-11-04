@@ -67,10 +67,10 @@ export function mapDocumentedCallRow(source = {}) {
   const country = extractDocumentedCallOwnerCountry(ownerRaw);
   const warnings = [];
   const errors = [];
-  if (!crmId) errors.push({ fieldName: "(Do Not Modify) Call Log", errorCode: "MISSING_CALL_LOG_GUID", message: "CRM Call Log GUID is required for safe deduplication." });
-  if (!productionDate) errors.push({ fieldName: "Name", errorCode: "MISSING_DOCUMENTED_CALL_DATE", message: "Name must have YYYY-DD-MM date prefix, or Modified On must contain a valid date." });
-  if (durationSeconds === null) warnings.push({ fieldName: "Call Duration", errorCode: "DOCUMENTED_CALL_DURATION_MISSING", message: "Call log retained, but excluded from AHT because Call Duration is blank or invalid." });
-  if (!country) warnings.push({ fieldName: "Owner", errorCode: "DOCUMENTED_CALL_COUNTRY_UNMAPPED", message: "Owner does not identify a Country Data Owner; row retained without country/Task Order." });
+  if (!crmId) errors.push({ fieldName: "(Do Not Modify) Call Log", errorCode: "MISSING_CALL_LOG_GUID", rawValue: crmId, message: "CRM Call Log GUID is required for safe deduplication." });
+  if (!productionDate) errors.push({ fieldName: "Name", errorCode: "MISSING_DOCUMENTED_CALL_DATE", rawValue: callName, message: "Name must have YYYY-DD-MM date prefix, or Modified On must contain a valid date." });
+  if (durationSeconds === null) warnings.push({ fieldName: "Call Duration", errorCode: "DOCUMENTED_CALL_DURATION_MISSING", rawValue: text(source["Call Duration"]), message: "Call log retained, but excluded from AHT because Call Duration is blank or invalid." });
+  if (!country) warnings.push({ fieldName: "Owner", errorCode: "DOCUMENTED_CALL_COUNTRY_UNMAPPED", rawValue: ownerRaw, message: "Owner does not identify a Country Data Owner; row retained without country/Task Order." });
   return {
     errors, warnings,
     mappedRow: {
