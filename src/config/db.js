@@ -127,7 +127,11 @@ export const pmsTables = {
   usVisaImportBatches: dbTable(PMS_DB_NAME, "us_visa_import_batches"),
   usVisaRawImportRows: dbTable(PMS_DB_NAME, "us_visa_raw_import_rows"),
   usVisaImportErrors: dbTable(PMS_DB_NAME, "us_visa_import_errors"),
+  // Canonical queue-level Skill Statistics rows (kept separate from Calls EOD).
   usVisaRawSkillStatistics: dbTable(PMS_DB_NAME, "us_visa_raw_skill_statistics"),
+  // Documented Microsoft Dynamics call logs used for WoW call AHT.
+  usVisaRawDocumentedCalls: dbTable(PMS_DB_NAME, "us_visa_raw_documented_calls"),
+  // Canonical Call Report (EOD) rows.
   usVisaRawCalls: dbTable(
     PMS_DB_NAME,
     "us_visa_raw_calls",

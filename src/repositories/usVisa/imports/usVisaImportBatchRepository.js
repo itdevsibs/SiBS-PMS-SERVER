@@ -267,6 +267,16 @@ export async function deleteBatchById(batchId) {
       // QA migration may not have been applied yet.
       if (error?.code !== "ER_NO_SUCH_TABLE") throw error;
     }
+    // Delete documented-call canonical records before the batch, independent of
+    // rolling FK deployments. Missing table tolerated only before migration.
+    try {
+      await connection.query(
+        `DELETE FROM ${pmsTables.usVisaRawDocumentedCalls} WHERE batch_id = ?`,
+        [batchId],
+      );
+    } catch (error) {
+      if (error?.code !== "ER_NO_SUCH_TABLE") throw error;
+    }
     // Queue canonical rows must be removed explicitly: we do not rely on foreign keys.
     await connection.query(
       `DELETE FROM ${pmsTables.usVisaRawSkillStatistics} WHERE batch_id = ?`,
