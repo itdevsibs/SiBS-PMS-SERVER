@@ -873,7 +873,7 @@ export async function listUsVisaImportBatchErrors(req, res) {
 
     const [errors, total] = await Promise.all([
       listImportErrorsByBatchId(batch.id, { ...pagination, search, severity, category }),
-      countImportErrorsByBatchId(batch.id, { search, severity }),
+      countImportErrorsByBatchId(batch.id, { search, severity, category }),
     ]);
     const totalPages = Math.ceil(total / pagination.limit) || 1;
 
