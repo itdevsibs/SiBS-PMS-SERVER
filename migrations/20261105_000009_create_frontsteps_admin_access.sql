@@ -18,3 +18,4 @@ CREATE TABLE IF NOT EXISTS frontsteps_admin_access (
   KEY idx_employee_id (employee_id),
   KEY idx_interface_name (interface_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
