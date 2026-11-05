@@ -508,6 +508,10 @@ function buildUserResponse({
 
     lastName: user.gy_emp_lname || "",
 
+    name: [user.gy_emp_fname, user.gy_emp_mname, user.gy_emp_lname].filter(Boolean).join(" ").trim() || user.gy_full_name || user.gy_emp_fullname || "",
+
+    fullName: [user.gy_emp_fname, user.gy_emp_mname, user.gy_emp_lname].filter(Boolean).join(" ").trim() || user.gy_full_name || user.gy_emp_fullname || "",
+
     email: user.gy_emp_email || "",
 
     accountId: primaryAssignedAccount.accountId || "",
