@@ -185,6 +185,9 @@ export const pmsTables = {
   frontstepsPoliciesRepository: dbTable(
     PMS_DB_NAME, "frontsteps_policies_repository"
   ),
+  userAccessibleInterfaces: dbTable(
+    PMS_DB_NAME, "user_accessible_interfaces"
+  ),
 };
 
 // ============================================================

@@ -2,7 +2,7 @@
 import express from "express";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
-import { kronosDb, hrisDb, kronosTables, hrisTables } from "../config/db.js";
+import { kronosDb, hrisDb, pmsDb, kronosTables, hrisTables, pmsTables } from "../config/db.js";
 import authMiddleware from "../middleware/authMiddleware.js";
 
 const router = express.Router();
@@ -491,6 +491,7 @@ function buildUserResponse({
   adminAccess = null,
   assignedAccounts = [],
   benefits = {},
+  accessibleInterfaces = [],
 }) {
   const primaryAssignedAccount = getPrimaryAssignedAccount(
     assignedAccounts,
@@ -525,6 +526,8 @@ function buildUserResponse({
     assignedAccountId: primaryAssignedAccount.assignedAccountId || "",
 
     assignedAccounts,
+
+    accessibleInterfaces,
 
     birthdate: user.gy_dob || "",
 
@@ -664,6 +667,17 @@ router.post("/login", async (req, res) => {
       sibsId: user.gy_user_code,
     });
 
+    let accessibleInterfaces = [];
+    try {
+      const [interfaceRows] = await pmsDb.execute(
+        `SELECT interface_name FROM ${pmsTables.userAccessibleInterfaces} WHERE employee_id = ?`,
+        [String(user.gy_user_code || "").trim()]
+      );
+      accessibleInterfaces = (interfaceRows || []).map((r) => r.interface_name);
+    } catch (err) {
+      console.error("Error fetching accessible interfaces for user:", err);
+    }
+
     const adminAccess = getHighestAdminAccess(assignedAccounts);
 
     const resolvedRole = getResolvedRole(adminAccess);
@@ -713,6 +727,8 @@ router.post("/login", async (req, res) => {
         adminAccess,
 
         assignedAccounts,
+
+        accessibleInterfaces,
       }),
     });
   } catch (error) {
@@ -826,6 +842,17 @@ router.post("/admin-login", authMiddleware, async (req, res) => {
       sibsId: user.gy_user_code,
     });
 
+    let accessibleInterfaces = [];
+    try {
+      const [interfaceRows] = await pmsDb.execute(
+        `SELECT interface_name FROM ${pmsTables.userAccessibleInterfaces} WHERE employee_id = ?`,
+        [String(user.gy_user_code || "").trim()]
+      );
+      accessibleInterfaces = (interfaceRows || []).map((r) => r.interface_name);
+    } catch (err) {
+      console.error("Error fetching accessible interfaces for user:", err);
+    }
+
     const adminAccess = getHighestAdminAccess(assignedAccounts);
 
     const resolvedRole = getResolvedRole(adminAccess);
@@ -876,6 +903,8 @@ router.post("/admin-login", authMiddleware, async (req, res) => {
         adminAccess,
 
         assignedAccounts,
+
+        accessibleInterfaces,
       }),
     });
   } catch (error) {
@@ -1096,6 +1125,8 @@ router.get("/me", authMiddleware, async (req, res) => {
         adminAccess,
 
         assignedAccounts,
+
+        accessibleInterfaces,
       }),
     });
   } catch (error) {
