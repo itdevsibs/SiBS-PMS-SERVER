@@ -1,25 +1,35 @@
 import { pmsDb, pmsTables } from "../../../config/db.js";
 const cols = ["batch_id","raw_import_row_id","import_profile_id","source_sheet","source_row_number",
   "crm_call_log_id","system_call_id","source_name","production_date","source_date_basis",
-  "created_on","modified_on","created_by_raw","owner_raw","country_region","task_order_id",
-  "category","subcategory","call_duration_seconds","aht_eligible","source_row_json",
-  "row_identity_hash","row_content_hash"];
+  "created_on","modified_on","created_by_raw","sibs_id","mapping_status","mapping_method",
+  "owner_raw","country_region","task_order_id",
+  "category","subcategory","call_duration_seconds","aht_eligible","row_content_hash"];
 
 const from = (row) => [row.batchId,row.rawImportRowId,row.importProfileId,row.sourceSheet,row.sourceRowNumber,
   row.crm_call_log_id,row.system_call_id,row.source_name,row.production_date,row.source_date_basis,
-  row.created_on,row.modified_on,row.created_by_raw,row.owner_raw,row.country_region,row.task_order_id,
+  row.created_on,row.modified_on,row.created_by_raw,row.sibs_id ?? null,
+  row.mapping_status || "UNMATCHED",row.mapping_method ?? null,
+  row.owner_raw,row.country_region,row.task_order_id,
   row.category,row.subcategory,row.call_duration_seconds,row.aht_eligible,
-  JSON.stringify(row.source_row_json || {}),row.rowIdentityHash,row.rowContentHash];
+  row.rowContentHash];
 export async function findDocumentedCallsByIdentityHashes(hashes = []) {
   const distinct = [...new Set(hashes.filter(Boolean))];
   if (!distinct.length) return [];
-  const [rows] = await pmsDb.query(`SELECT id,batch_id,raw_import_row_id,row_identity_hash,row_content_hash
-    FROM ${pmsTables.usVisaRawDocumentedCalls} WHERE row_identity_hash IN (${distinct.map(() => "?").join(",")})`,distinct);
+  // Only a canonical row backed by its original staged raw-import row counts as imported.
+  const [rows] = await pmsDb.query(`SELECT d.id,d.batch_id,d.raw_import_row_id,
+    rr.row_identity_hash,d.row_content_hash
+    FROM ${pmsTables.usVisaRawDocumentedCalls} d
+    INNER JOIN ${pmsTables.usVisaRawImportRows} rr ON rr.id=d.raw_import_row_id
+    WHERE rr.row_identity_hash IN (${distinct.map(() => "?").join(",")})
+    ORDER BY d.id ASC`,distinct);
   return rows.map((r) => ({ id:r.id, batchId:r.batch_id, rawImportRowId:r.raw_import_row_id,
     rowHash:r.row_identity_hash, contentHash:r.row_content_hash }));
 }
 export async function insertDocumentedCallsWithDuplicateProtection(rows = []) {
   if (!rows.length) return { affectedCount:0 };
+  if (rows.some((row) => !Number.isSafeInteger(Number(row.rawImportRowId)) || Number(row.rawImportRowId) <= 0)) {
+    throw new Error("Documented Calls canonical import requires rawImportRowId.");
+  }
   const [result] = await pmsDb.query(`INSERT INTO ${pmsTables.usVisaRawDocumentedCalls}
     (${cols.map((v)=>`\`${v}\``).join(",")}) VALUES ? ON DUPLICATE KEY UPDATE id=id`, [rows.map(from)]);
   return { affectedCount:result.affectedRows || 0 };

@@ -36,12 +36,12 @@ function canonicalRow(row, batch, profile) {
     countryRegion: m.country_region, taskOrderId: m.task_order_id,
     totalCallsOffered: m.total_calls_offered, netCallsOffered: m.net_calls_offered,
     totalCallsHandled: m.total_calls_handled,
-    totalCallsAbandoned: m.total_calls_abandoned, handledWithinSlt: m.handled_within_slt,
+    totalCallsAbandoned: m.total_calls_abandoned, abandonedAfterSlt: m.abandoned_after_slt,
+    handledWithinSlt: m.handled_within_slt,
     totalCallsIvr: m.total_calls_ivr, failedCalls: m.failed_calls,
     handledAboveSlt: m.handled_above_slt, netCallsAbandoned: m.net_calls_abandoned,
     shortCalls: m.short_calls, shortAbandonedCalls: m.short_abandoned_calls,
     queueTimeSeconds: m.queue_time_seconds,
-    sourceMetricsJson: m.source_metrics_json, rowIdentityHash: row.rowHash,
     rowContentHash: row.contentHash,
   };
 }
@@ -88,7 +88,7 @@ export async function processSkillStatisticsWorkbook({ workbook, batch, profile,
             mappedRow: mapped.mappedRow, conversionErrors: mapped.conversionErrors,
             taskResolution, isValid: mapped.conversionErrors.length === 0,
             rowHash: createSkillStatisticsIdentityHash(mapped.mappedRow),
-            contentHash: createSkillStatisticsContentHash(mapped.mappedRow),
+            contentHash: createSkillStatisticsContentHash(mapped.mappedRow, source.rowJson),
           };
         });
         const hashes = prepared.filter((row) => row.isValid).map((row) => row.rowHash);

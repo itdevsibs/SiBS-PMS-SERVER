@@ -130,6 +130,7 @@ function emptyAccumulator(bucket = {}) {
     label: bucket.label || "Summary",
     callsOffered: 0,
     callsHandled: 0,
+    callsAbandoned: 0,
     handledWithinSla: 0,
     totalQueueSeconds: 0,
     handleSecondsNumerator: 0,
@@ -193,6 +194,7 @@ export function seedCallKpiReferencePeriodBuckets(
 function addRow(target, row = {}) {
   target.callsOffered += toFiniteNumber(row.callsOffered);
   target.callsHandled += toFiniteNumber(row.callsHandled);
+  target.callsAbandoned += toFiniteNumber(row.callsAbandoned);
   target.handledWithinSla += toFiniteNumber(row.handledWithinSlt ?? row.handledWithinSla);
   target.totalQueueSeconds += toFiniteNumber(row.queueSeconds ?? row.totalQueueSeconds);
   target.handleSecondsNumerator += toFiniteNumber(row.handleSecondsNumerator);
@@ -212,17 +214,15 @@ function finalizeAccumulator(accumulator) {
     handledCalls: accumulator.handleSecondsDenominator,
   }) ?? 0;
 
-  // Formula: Average Speed of Answer (ASA) = Total Queue Wait Time ÷ Total Calls Answered/Offered
-  const answeredOrOfferedCalls = accumulator.callsHandled > 0
-    ? accumulator.callsHandled
-    : (accumulator.callsOffered > 0 ? accumulator.callsOffered : 0);
-  const asaSeconds = answeredOrOfferedCalls > 0
-    ? accumulator.totalQueueSeconds / answeredOrOfferedCalls
+  // Approved WFM formula: ASA = Total Queue Wait Time / Total Calls Answered.
+  const asaSeconds = accumulator.callsHandled > 0
+    ? accumulator.totalQueueSeconds / accumulator.callsHandled
     : 0;
 
   return {
     callsOffered: round(accumulator.callsOffered, 0),
     callsHandled: round(accumulator.callsHandled, 0),
+    callsAbandoned: round(accumulator.callsAbandoned, 0),
     handledWithinSla: round(accumulator.handledWithinSla, 0),
     answerRatePct: round(answerRatePct),
     serviceLevelPct: round(serviceLevelPct),

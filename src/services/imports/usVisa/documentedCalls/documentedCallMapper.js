@@ -55,6 +55,49 @@ export function extractDocumentedCallOwnerCountry(ownerValue) {
   return !country || /^ACS$/i.test(country) ? null : country;
 }
 
+// The creator's MS Dynamics identity is independent of the record Owner's
+// country/Task Order. Use the shared Employee Ledger matcher (msd_name first).
+export function documentedCallCreatedByIdentity(mappedRow = {}) {
+  const createdBy = text(mappedRow.created_by_raw);
+  return {
+    sourceSystem: "MS_DYNAMICS",
+    personalId: null,
+    agentLogin: null,
+    agentName: createdBy,
+    sourceAgentKey: createdBy,
+  };
+}
+
+// Employee IDs are only assigned for a unique, verified identity match.
+// Never infer employee identity from Owner, a Task Order or an ambiguous alias.
+export function applyDocumentedCallCreatorResolution(mappedRow, resolution) {
+  const employeeUid = resolution?.employee?.employeeUid || null;
+  const matched = resolution?.matchStatus === "MATCHED" && Boolean(employeeUid);
+  const ambiguous = resolution?.matchStatus === "AMBIGUOUS";
+  return {
+    ...mappedRow,
+    sibs_id: matched ? employeeUid : null,
+    mapping_status: matched ? "MATCHED" : ambiguous ? "AMBIGUOUS" : "UNMATCHED",
+    mapping_method: matched || ambiguous ? resolution?.matchMethod || null : null,
+  };
+}
+
+export function documentedCallCreatorMappingWarning(mappedRow = {}) {
+  if (mappedRow.mapping_status === "MATCHED") return null;
+  const name = text(mappedRow.created_by_raw);
+  const ambiguous = mappedRow.mapping_status === "AMBIGUOUS";
+  return {
+    fieldName: "Created By",
+    errorType: "EMPLOYEE_MAPPING",
+    errorCode: !name ? "DOCUMENTED_CALL_CREATED_BY_MISSING"
+      : ambiguous ? "DOCUMENTED_CALL_CREATED_BY_AMBIGUOUS" : "DOCUMENTED_CALL_CREATED_BY_UNMATCHED",
+    rawValue: name,
+    message: !name ? "Created By is missing; documented call retained without sibs_id."
+      : ambiguous ? "Multiple employees match Created By; documented call retained without sibs_id."
+      : "No verified employee match for Created By; documented call retained without sibs_id.",
+  };
+}
+
 export function mapDocumentedCallRow(source = {}) {
   const crmId = text(source["(Do Not Modify) Call Log"]);
   const callName = text(source.Name);
@@ -79,11 +122,12 @@ export function mapDocumentedCallRow(source = {}) {
       source_date_basis: fromName ? "NAME_YYYY_DD_MM" : "MODIFIED_ON_FALLBACK",
       created_on: createdOn, modified_on: modifiedOn,
       created_by_raw: text(source["Created By"]), owner_raw: ownerRaw,
+      sibs_id: null, mapping_status: "UNMATCHED", mapping_method: null,
       country_region: country, task_order_id: null,
       category: text(source.Category), subcategory: text(source.Subcategory),
       call_duration_seconds: durationSeconds,
       aht_eligible: durationSeconds !== null ? 1 : 0,
-      source_row_json: { ...source },
+      // Original MS Dynamics fields are retained in raw_import_rows.row_json.
     },
   };
 }
