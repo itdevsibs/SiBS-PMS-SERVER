@@ -287,3 +287,59 @@ export async function findUsVisaRosterEmployeeUids({
     ),
   ];
 }
+
+/** Ledger population for schedule-based Actual HC, including absent agents.
+ * Employment dates are evaluated for EACH schedule day, not just today's status.
+ */
+export async function findUsVisaScheduledRosterAssignments({ taskOrder = null, dateFrom, dateTo } = {}) {
+  const from = normalizeDateKey(dateFrom);
+  const to = normalizeDateKey(dateTo);
+  if (!from || !to || from > to) return [];
+  const allowed = new Set(normalizeTaskOrderList(taskOrder));
+  const [rows] = await pmsDb.query(`
+    SELECT TRIM(l.sibs_id) AS employeeUid,
+           l.task_order AS taskOrderRaw,
+           DATE_FORMAT(l.us_visa_join_date, '%Y-%m-%d') AS effectiveFrom,
+           DATE_FORMAT(l.us_visa_departure_date, '%Y-%m-%d') AS effectiveTo,
+           UPPER(TRIM(COALESCE(l.status, ''))) AS rosterStatus
+    FROM ${pmsTables.usVisaEmployeeLedger} l
+    WHERE l.sibs_id IS NOT NULL AND TRIM(l.sibs_id) <> ''
+      AND l.task_order IS NOT NULL AND TRIM(l.task_order) <> ''
+      AND (l.us_visa_join_date IS NULL OR l.us_visa_join_date <= ?)
+      AND (l.us_visa_departure_date IS NULL OR l.us_visa_departure_date >= ?)
+  `, [to, from]);
+  const result = new Map();
+  for (const row of rows) {
+    const taskOrderId = normalizeTaskOrder(row.taskOrderRaw);
+    const employeeUid = normalizeUid(row.employeeUid).toUpperCase();
+    if (!employeeUid || !taskOrderId || (allowed.size && !allowed.has(taskOrderId))) continue;
+    const assignment = {
+      employeeUid, taskOrderId,
+      effectiveFrom: row.effectiveFrom || '1900-01-01',
+      effectiveTo: row.effectiveTo || null,
+      inactiveWithoutDeparture: row.rosterStatus === 'INACTIVE' && !row.effectiveTo,
+    };
+    result.set(`${employeeUid}|${taskOrderId}`, assignment);
+  }
+  return [...result.values()];
+}
+
+/** Attrition events are employee departures, not a schedule or attendance proxy. */
+export async function findUsVisaAttritionEvents({ taskOrder = null, dateFrom, dateTo } = {}) {
+  const from = normalizeDateKey(dateFrom);
+  const to = normalizeDateKey(dateTo);
+  if (!from || !to || from > to) return [];
+  const allowed = new Set(normalizeTaskOrderList(taskOrder));
+  const [rows] = await pmsDb.query(`
+    SELECT DISTINCT TRIM(l.sibs_id) AS employeeUid, l.task_order AS taskOrderRaw,
+           DATE_FORMAT(l.us_visa_departure_date, '%Y-%m-%d') AS departureDate
+    FROM ${pmsTables.usVisaEmployeeLedger} l
+    WHERE l.sibs_id IS NOT NULL AND TRIM(l.sibs_id) <> ''
+      AND l.us_visa_departure_date BETWEEN ? AND ?
+  `, [from, to]);
+  return rows.map(row => ({
+    employeeUid: normalizeUid(row.employeeUid).toUpperCase(),
+    taskOrderId: normalizeTaskOrder(row.taskOrderRaw),
+    departureDate: row.departureDate,
+  })).filter(row => row.employeeUid && row.taskOrderId && (!allowed.size || allowed.has(row.taskOrderId)));
+}

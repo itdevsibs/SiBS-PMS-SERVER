@@ -3,6 +3,7 @@ import { findUsVisaRosterEmployeeUids } from "../../../../repositories/usVisa/em
 import { buildWfmAbsenteeismKpiDashboard } from "./absenteeismKpiService.js";
 import { resolveOccupancyDateRange } from "../occupancy/occupancyKpiQueryService.js";
 import { getOrCreateAbsenteeismCacheEntry } from "../../../cache/absenteeismCacheService.js";
+import { getStaffingHeadcountForDashboard, attachStaffingToAbsenteeismDashboard } from "../staffing/staffingHeadcountQueryService.js";
 
 function normalizeTaskOrderCacheValue(taskOrder) {
   return Array.isArray(taskOrder)
@@ -20,7 +21,7 @@ function buildAbsenteeismCacheKey({
   taskOrder,
 }) {
   return `ABSENTEEISM_DASHBOARD:${JSON.stringify({
-    version: 13,
+    version: 14,
     source: "KRONOS_API",
     account: "US_VISA",
     period: period || null,
@@ -53,9 +54,9 @@ async function loadAbsenteeismDashboard(resolved) {
         source: "KRONOS_API",
         storageMode: "LIVE_ONLY",
         fetchMode: "OPTIMIZED_ATTENDANCE_DIRECTORY_PLUS_DATE_FILTERED_SCHEDULES",
-        headcountBasis: "DISTINCT_KRONOS_TRACKER_LOGIN_PRESENT_AGENTS",
+        headcountBasis: "DISTINCT_ACTIVE_ROSTERED_AGENTS_WITH_KRONOS_SCHEDULE_PER_DAY",
         presenceBasis: "KRONOS_TRACKER_LOGIN",
-        formula: "AVERAGE_ABSENT_HEADCOUNT / ACTUAL_HC * 100",
+        formula: "ABSENT_EMPLOYEE_DAYS / SCHEDULED_EMPLOYEE_DAYS * 100",
         targetRosterEmployeeCount: 0,
         matchedKronosEmployeeCount: 0,
         presentEmployeeDays: 0,
@@ -92,9 +93,9 @@ async function loadAbsenteeismDashboard(resolved) {
         source: "KRONOS_API",
         storageMode: "LIVE_ONLY",
         fetchMode: attendanceDataset.fetchMode,
-        headcountBasis: "DISTINCT_KRONOS_TRACKER_LOGIN_PRESENT_AGENTS",
+        headcountBasis: "DISTINCT_ACTIVE_ROSTERED_AGENTS_WITH_KRONOS_SCHEDULE_PER_DAY",
         presenceBasis: "KRONOS_TRACKER_LOGIN",
-        formula: "AVERAGE_ABSENT_HEADCOUNT / ACTUAL_HC * 100",
+        formula: "ABSENT_EMPLOYEE_DAYS / SCHEDULED_EMPLOYEE_DAYS * 100",
         detailFormula:
           "AVERAGE_ABSENT_HEADCOUNT = ABSENT_EMPLOYEE_DAYS / VALID_SCHEDULED_DAYS",
         absenceClassification:
@@ -144,9 +145,9 @@ async function loadAbsenteeismDashboard(resolved) {
         source: "KRONOS_API",
         storageMode: "LIVE_ONLY",
         fetchMode: "OPTIMIZED_ATTENDANCE_DIRECTORY_PLUS_DATE_FILTERED_SCHEDULES",
-        headcountBasis: "DISTINCT_KRONOS_TRACKER_LOGIN_PRESENT_AGENTS",
+        headcountBasis: "DISTINCT_ACTIVE_ROSTERED_AGENTS_WITH_KRONOS_SCHEDULE_PER_DAY",
         presenceBasis: "KRONOS_TRACKER_LOGIN",
-        formula: "AVERAGE_ABSENT_HEADCOUNT / ACTUAL_HC * 100",
+        formula: "ABSENT_EMPLOYEE_DAYS / SCHEDULED_EMPLOYEE_DAYS * 100",
         message: "Live Kronos optimized attendance/directory/schedule data are currently unavailable.",
         targetRosterEmployeeCount: targetEmployeeUids.length,
         matchedKronosEmployeeCount: 0,
@@ -163,7 +164,7 @@ async function loadAbsenteeismDashboard(resolved) {
 }
 
 function shouldCacheAbsenteeismDashboard(dashboard) {
-  return dashboard?.absenteeism?.status !== "UNAVAILABLE";
+  return dashboard?.absenteeism?.status !== "UNAVAILABLE" && !dashboard?.staffing?.scheduleError;
 }
 
 function attachAbsenteeismCacheMetadata(dashboard, cache) {
@@ -186,7 +187,14 @@ export async function getWfmAbsenteeismKpiDashboard(query = {}) {
 
   const result = await getOrCreateAbsenteeismCacheEntry({
     key: cacheKey,
-    loader: () => loadAbsenteeismDashboard(resolved),
+    loader: async () => {
+      // Keep scheduled HC independent of attendance/absence KPI availability.
+      const [absenteeism, staffing] = await Promise.all([
+        loadAbsenteeismDashboard(resolved),
+        getStaffingHeadcountForDashboard(resolved),
+      ]);
+      return attachStaffingToAbsenteeismDashboard(absenteeism, staffing);
+    },
     shouldCache: shouldCacheAbsenteeismDashboard,
   });
 

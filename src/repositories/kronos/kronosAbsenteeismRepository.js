@@ -666,3 +666,36 @@ export async function getKronosAbsenteeismEmployeeDayRows({
     kronosAccountId,
   };
 }
+
+/**
+ * Schedule-only WFM headcount source. Never fetches attendance or tracker data.
+ * A scheduled employee is counted even when absent on the day. Each employee
+ * and work date appears once, regardless of overlapping schedules.
+ * All errors propagate: missing Kronos coverage must not masquerade as zero HC.
+ */
+export async function getKronosScheduledEmployeeDayRows({ employeeUids = [], dateFrom, dateTo } = {}) {
+  const from = normalizeDate(dateFrom);
+  const to = normalizeDate(dateTo);
+  const employeeCodes = [...new Set(employeeUids.map(normalizeTrackerEmployeeUid).filter(Boolean))];
+  if (!from || !to || from > to) {
+    unavailable('Invalid schedule date range.', 'KRONOS_SCHEDULE_FILTER_INVALID');
+  }
+  if (!employeeCodes.length) return { rows: [], employeesRequested: 0, remoteRequestCount: 0 };
+  const responses = await mapWithConcurrency(employeeCodes, SCHEDULE_CONCURRENCY, async uid => ({
+    uid, ...await fetchEmployeeSchedulePages(uid, from, to),
+  }));
+  const unique = new Map();
+  for (const response of responses) {
+    for (const schedule of response.rows) {
+      const day = scheduleDate(schedule);
+      if (!day || day < from || day > to || !scheduleModeIsActive(schedule)) continue;
+      const key = `${response.uid}|${day}`;
+      if (!unique.has(key)) unique.set(key, { employeeUid: response.uid, workDate: day });
+    }
+  }
+  return {
+    rows: [...unique.values()],
+    employeesRequested: employeeCodes.length,
+    remoteRequestCount: responses.reduce((n, row) => n + row.requestCount, 0),
+  };
+}

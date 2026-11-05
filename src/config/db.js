@@ -171,6 +171,8 @@ export const pmsTables = {
   usVisaTaskOrderLedger: dbTable(
     PMS_DB_NAME, "us_visa_task_order_ledger"
   ),
+  usVisaStaffingRequirements: dbTable(PMS_DB_NAME, "us_visa_staffing_requirements"),
+  usVisaStaffingRequirementHistory: dbTable(PMS_DB_NAME, "us_visa_staffing_requirement_history"),
   usVisaTaskOrderLedgerProfiles: dbTable(
     PMS_DB_NAME, "us_visa_task_order_ledger_profiles"
   ),

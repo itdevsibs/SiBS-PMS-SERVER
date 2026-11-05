@@ -73,15 +73,16 @@ function finalize(accumulator, { headcountAvailable = true } = {}) {
     scheduledDays > 0 ? absentEmployeeDays / scheduledDays : null;
 
   const absenteeismPct =
-    headcountAvailable && presentHeadcount > 0 && absentHeadcount !== null
-      ? round((absentHeadcount / presentHeadcount) * 100, 2)
+    scheduledEmployeeDays > 0
+      ? round((absentEmployeeDays / scheduledEmployeeDays) * 100, 2)
       : null;
 
   return {
     absenteeismPct,
-    // Actual HC = distinct rostered agents with a Kronos attendance/login record
-    // in the reporting bucket. Source activity (calls/chats/email) is irrelevant.
-    actualHeadcount: headcountAvailable ? presentHeadcount : null,
+    // The authoritative Actual HC is attached separately from active schedules.
+    // This intermediate field is deliberately not sourced from login/presence.
+    actualHeadcount: null,
+    presentHeadcount: headcountAvailable ? presentHeadcount : null,
     presentEmployeeDays: accumulator.presentEmployeeDays.size,
     absentHeadcount:
       absentHeadcount === null ? null : round(absentHeadcount, 2),
@@ -114,7 +115,7 @@ export function buildWfmAbsenteeismKpiDashboard({
     createAccumulator: emptyAccumulator,
   });
 
-  // Actual HC is built exclusively from Kronos attendance/login presence.
+  // Attendance presence contributes to attendance/absenteeism only, not Actual HC.
   for (const row of presentRows) {
     const date = parseCallKpiDateOnly(row.workDate || row.work_date);
     if (!date) continue;

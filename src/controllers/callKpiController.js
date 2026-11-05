@@ -1,3 +1,4 @@
+import { pmsDb, pmsTables } from "../config/db.js";
 import {
   listImportBatches,
   getBatchById,
@@ -5,6 +6,7 @@ import {
 } from "../repositories/usVisa/imports/usVisaImportBatchRepository.js";
 import { getWfmCallKpiDashboard } from "../services/kpi/usVisa/calls/callKpiQueryService.js";
 import { getUsVisaTaskOrderCountries } from "../services/kpi/usVisa/calls/taskOrderFilter.js";
+import { getActiveSkillStatisticsCountryScopes } from "../services/kpi/usVisa/calls/skillStatisticsTaskOrderScope.js";
 import { getSkillKpiDateBounds } from "../repositories/usVisa/skillStatistics/usVisaSkillStatisticsKpiRepository.js";
 import { getSkillStatisticsCallsReportData,
   getDistinctSkillStatisticsSkillsByCountry } from "../repositories/usVisa/skillStatistics/usVisaSkillStatisticsCallsReportRepository.js";
@@ -131,6 +133,27 @@ export async function getWfmCallsKpi(req, res) {
 
 export async function getWfmSkills(req, res) {
   try {
+    // WoW Calls must display exactly the imported Skill Statistics options;
+    // Chat Reports preserve the existing mixed-sources response by default.
+    if (String(req.query?.reportType || '').toUpperCase() === 'SKILL_STATISTICS') {
+      const [skills, countryScopes, [profiles]] = await Promise.all([
+        getDistinctSkillStatisticsSkillsByCountry(),
+        getActiveSkillStatisticsCountryScopes(),
+        pmsDb.query(`SELECT task_order_code, task_order_name
+          FROM ${pmsTables.usVisaTaskOrderLedgerProfiles}
+          WHERE is_active = 1 ORDER BY task_order_name`),
+      ]);
+      const byOrder = new Map();
+      for (const profile of profiles) {
+        const match = String(profile.task_order_code || '').toUpperCase().match(/TO\s*(\d+)/);
+        if (!match) continue;
+        const code = `TO${Number(match[1])}`;
+        if (!byOrder.has(code)) byOrder.set(code, {
+          value:code,label:String(profile.task_order_name || code),
+        });
+      }
+      return res.json({success:true,data:skills,countryScopes,taskOrders:[...byOrder.values()]});
+    }
     const [callSkills, chatSkills] = await Promise.all([
       getDistinctSkillStatisticsSkillsByCountry(),
       getDistinctChatSkillsByCountry(),
