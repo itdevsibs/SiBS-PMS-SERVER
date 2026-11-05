@@ -1,4 +1,5 @@
 import { pmsDb, pmsTables } from "../config/db.js";
+import { expandSkillStatisticsCountryAliases } from "../services/kpi/usVisa/calls/skillStatisticsTaskOrderScope.js";
 
 const KPI_BATCH_STATUSES = ["COMPLETED", "COMPLETED_WITH_ERRORS"];
 const DIRECT_TASK_ORDERS = new Set(["TO4", "TO10", "TO12", "TO14", "TO16"]);
@@ -42,19 +43,46 @@ function normalizeFilterList(value, ignored = []) {
   )];
 }
 
+// Use the canonical country column first; older incomplete imports may only
+// have their original raw Skill country embedded in the source name.
+const SKILL_STATISTICS_RAW_COUNTRY_SQL = `LOWER(TRIM(CASE
+  WHEN UPPER(c.source_system) = 'HERODASH'
+    THEN SUBSTRING_INDEX(c.skill_name_raw, '-CALL', 1)
+  WHEN LOCATE('::', c.skill_name_raw) > 0
+    THEN SUBSTRING_INDEX(SUBSTRING_INDEX(c.skill_name_raw, '::', -1), ' - ', 1)
+  ELSE SUBSTRING_INDEX(c.skill_name_raw, ' - ', 1)
+END))`;
+
 function appendTaskOrderFilter({
   conditions,
   values,
   taskOrder,
   taskOrderCountries = [],
+  reportType = "CALL_REPORT_EOD",
 }) {
   const taskOrders = normalizeFilterList(taskOrder, ["all", "all task orders"])
     .map((item) => item.toUpperCase());
 
   const direct = taskOrders.filter((item) => DIRECT_TASK_ORDERS.has(item));
   if (direct.length) {
-    conditions.push(`UPPER(TRIM(c.task_order_id)) IN (${direct.map(() => "?").join(", ")})`);
-    values.push(...direct);
+    const storedTaskOrder = `UPPER(TRIM(c.task_order_id)) IN (${direct.map(() => "?").join(", ")})`;
+    // Skill Statistics can contain otherwise valid queue rows imported before
+    // their country was resolved. Only unique active Country -> TO mappings
+    // supplied by the ledger may recover these NULL/blank identifiers.
+    const countries = reportType === "SKILL_STATISTICS"
+      ? normalizeFilterList(taskOrderCountries).map((item) => item.toLowerCase()) : [];
+    if (countries.length) {
+      const countriesSql = countries.map(() => "?").join(", ");
+      conditions.push(`(${storedTaskOrder} OR (
+        (c.task_order_id IS NULL OR TRIM(c.task_order_id) = '')
+        AND (LOWER(TRIM(c.country_region)) IN (${countriesSql})
+          OR ${SKILL_STATISTICS_RAW_COUNTRY_SQL} IN (${countriesSql}))
+      ))`);
+      values.push(...direct, ...countries, ...countries);
+    } else {
+      conditions.push(storedTaskOrder);
+      values.push(...direct);
+    }
     return;
   }
 
@@ -68,13 +96,21 @@ function appendTaskOrderFilter({
   }
 }
 
-function appendCountryFilter({ conditions, values, country }) {
-  const countries = normalizeFilterList(country, ["all", "all countries"])
-    .map((item) => item.toLowerCase());
-  if (!countries.length) return;
-
-  conditions.push(`LOWER(TRIM(c.country_region)) IN (${countries.map(() => "?").join(", ")})`);
-  values.push(...countries);
+function appendCountryFilter({ conditions, values, country, reportType }) {
+  const requested = normalizeFilterList(country, ["all", "all countries"]);
+  if (!requested.length) return;
+  const countries = reportType === "SKILL_STATISTICS"
+    ? expandSkillStatisticsCountryAliases(requested)
+    : requested.map((item) => item.toLowerCase());
+  const placeholders = countries.map(() => "?").join(", ");
+  if (reportType === "SKILL_STATISTICS") {
+    conditions.push(`(LOWER(TRIM(c.country_region)) IN (${placeholders})
+      OR ${SKILL_STATISTICS_RAW_COUNTRY_SQL} IN (${placeholders}))`);
+    values.push(...countries, ...countries);
+  } else {
+    conditions.push(`LOWER(TRIM(c.country_region)) IN (${placeholders})`);
+    values.push(...countries);
+  }
 }
 
 function appendSkillFilter({ conditions, values, skill }) {
@@ -139,8 +175,8 @@ export function buildBaseFilters({
   }
 
   appendSourceSystemFilter({ conditions, values, sourceSystem });
-  appendTaskOrderFilter({ conditions, values, taskOrder, taskOrderCountries });
-  appendCountryFilter({ conditions, values, country });
+  appendTaskOrderFilter({ conditions, values, taskOrder, taskOrderCountries, reportType });
+  appendCountryFilter({ conditions, values, country, reportType });
   appendSkillFilter({ conditions, values, skill });
 
   return { conditions, values };

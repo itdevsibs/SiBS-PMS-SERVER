@@ -19,6 +19,7 @@ import userRoutes from "./routes/users.js";
 import performanceRoutes from "./routes/performance.js";
 import historyRoutes from "./routes/history.js";
 import taskOrderRoutes from "./routes/task-orders.js";
+import staffingRequirementsRoutes from "./routes/staffingRequirements.js";
 import masterdataRoutes from "./routes/masterdata.js";
 import loginRoutes from "./routes/login.js";
 import superAdminRoutes from "./routes/super-admin.js";
@@ -286,6 +287,9 @@ app.use(
   "/api/wfm",
   taskOrderRoutes
 );
+
+// Daily client staffing requirements calendar.
+app.use("/api/wfm", staffingRequirementsRoutes);
 
 /*
   Kronos server-to-server integration (Phase 1).

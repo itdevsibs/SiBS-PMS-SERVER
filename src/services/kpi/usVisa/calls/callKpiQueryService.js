@@ -19,6 +19,7 @@ import {
 } from './callKpiService.js';
 import { buildWoWSkillQueueDashboard } from './wowSkillQueueAggregation.js';
 import { getUsVisaTaskOrderCountries, normalizeUsVisaTaskOrder } from './taskOrderFilter.js';
+import { getSkillStatisticsTaskOrderCountryScope } from './skillStatisticsTaskOrderScope.js';
 
 const SOURCES = new Set(['US_VISA','US VISA','FUSECOM','FUSENET','HERODASH']);
 const GRAINS = new Set(['SKILL_DAY','SKILL_15_MINUTE','SKILL_30_MINUTE']);
@@ -53,7 +54,13 @@ export async function getWfmCallKpiDashboard(query = {}) {
   const requestedFrom = normalizeDate(query.from || query.dateFrom);
   const requestedTo = normalizeDate(query.to || query.dateTo);
   const taskOrder = normalizeUsVisaTaskOrder(sourceSystem, query.taskOrder);
-  const taskOrderCountries = getUsVisaTaskOrderCountries(sourceSystem, taskOrder);
+  const ledgerScope = await getSkillStatisticsTaskOrderCountryScope(taskOrder);
+  // Direct Task Orders are scoped from the active Country -> Task Order ledger.
+  // The old virtual subgroup filters retain their existing country behavior.
+  const taskOrderCountries = ledgerScope.countries.length ||
+    (Array.isArray(taskOrder) ? taskOrder.every((to) => ['TO4','TO10','TO12','TO14','TO16'].includes(to))
+      : ['TO4','TO10','TO12','TO14','TO16'].includes(taskOrder))
+    ? ledgerScope.countries : getUsVisaTaskOrderCountries(sourceSystem, taskOrder);
   const country = Array.isArray(query.country) ? query.country : String(query.country || '').trim() || null;
   const skill = Array.isArray(query.skill) ? query.skill : String(query.skill || '').trim() || null;
   // CALL_DETAIL (from saved legacy filters) must not alter WoW queue reporting.
@@ -112,5 +119,11 @@ export async function getWfmCallKpiDashboard(query = {}) {
   const withAht=mergeDocumentedAhtIntoCallDashboard(
     queueDashboard,documentedDashboard,documentedRows,{skill},documentedCoverage,
   );
-  return {...withAht,filters:{...withAht.filters,rangeMode},availableGrains,availableDateRange:bounds};
+  return {...withAht,
+    filters:{...withAht.filters,rangeMode},availableGrains,availableDateRange:bounds,
+    queueCoverage:{...withAht.queueCoverage,
+      ledgerScopeAmbiguousCountries:ledgerScope.ambiguousCountries,
+      recoveredUnmappedGroups:selection.selected.filter((row) => !row.taskOrderId).length,
+    },
+  };
 }
