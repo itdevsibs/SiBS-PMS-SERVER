@@ -62,17 +62,32 @@ export function formatCallKpiDateOnly(date) {
   return date.toISOString().slice(0, 10);
 }
 
-function getIsoWeekInfo(date) {
-  const current = new Date(date.getTime());
-  const day = current.getUTCDay() || 7;
+// WoW reporting rule: weeks start Sunday and end Saturday. Week 1 is the
+// Sunday-Saturday week containing January 1 (not the ISO Monday-based week).
+function getSundayWeekStart(date) {
+  const start = new Date(Date.UTC(
+    date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(),
+  ));
+  start.setUTCDate(start.getUTCDate() - start.getUTCDay());
+  return start;
+}
 
-  current.setUTCDate(current.getUTCDate() + 4 - day);
+function getFirstSundayWeekStart(year) {
+  return getSundayWeekStart(new Date(Date.UTC(year, 0, 1)));
+}
 
-  const isoYear = current.getUTCFullYear();
-  const yearStart = new Date(Date.UTC(isoYear, 0, 1));
-  const week = Math.ceil((((current - yearStart) / 86400000) + 1) / 7);
+function getSundayWeekInfo(date) {
+  const weekStart = getSundayWeekStart(date);
+  let year = date.getUTCFullYear();
 
-  return { year: isoYear, week };
+  if (weekStart >= getFirstSundayWeekStart(year + 1)) year += 1;
+  else if (weekStart < getFirstSundayWeekStart(year)) year -= 1;
+
+  const week = Math.round(
+    (weekStart.getTime() - getFirstSundayWeekStart(year).getTime()) / (7 * 86400000),
+  ) + 1;
+
+  return { year, week };
 }
 
 export function getCallKpiPeriodBucket(date, period) {
@@ -117,10 +132,10 @@ export function getCallKpiPeriodBucket(date, period) {
     };
   }
 
-  const iso = getIsoWeekInfo(date);
+  const sunday = getSundayWeekInfo(date);
   return {
-    key: `${iso.year}-W${String(iso.week).padStart(2, "0")}`,
-    label: `Week ${iso.week}`,
+    key: `${sunday.year}-W${String(sunday.week).padStart(2, "0")}`,
+    label: `Week ${sunday.week}`,
   };
 }
 
@@ -130,7 +145,6 @@ function emptyAccumulator(bucket = {}) {
     label: bucket.label || "Summary",
     callsOffered: 0,
     callsHandled: 0,
-    callsAbandoned: 0,
     handledWithinSla: 0,
     totalQueueSeconds: 0,
     handleSecondsNumerator: 0,
@@ -194,7 +208,6 @@ export function seedCallKpiReferencePeriodBuckets(
 function addRow(target, row = {}) {
   target.callsOffered += toFiniteNumber(row.callsOffered);
   target.callsHandled += toFiniteNumber(row.callsHandled);
-  target.callsAbandoned += toFiniteNumber(row.callsAbandoned);
   target.handledWithinSla += toFiniteNumber(row.handledWithinSlt ?? row.handledWithinSla);
   target.totalQueueSeconds += toFiniteNumber(row.queueSeconds ?? row.totalQueueSeconds);
   target.handleSecondsNumerator += toFiniteNumber(row.handleSecondsNumerator);
@@ -214,15 +227,17 @@ function finalizeAccumulator(accumulator) {
     handledCalls: accumulator.handleSecondsDenominator,
   }) ?? 0;
 
-  // Approved WFM formula: ASA = Total Queue Wait Time / Total Calls Answered.
-  const asaSeconds = accumulator.callsHandled > 0
-    ? accumulator.totalQueueSeconds / accumulator.callsHandled
+  // Formula: Average Speed of Answer (ASA) = Total Queue Wait Time ÷ Total Calls Answered/Offered
+  const answeredOrOfferedCalls = accumulator.callsHandled > 0
+    ? accumulator.callsHandled
+    : (accumulator.callsOffered > 0 ? accumulator.callsOffered : 0);
+  const asaSeconds = answeredOrOfferedCalls > 0
+    ? accumulator.totalQueueSeconds / answeredOrOfferedCalls
     : 0;
 
   return {
     callsOffered: round(accumulator.callsOffered, 0),
     callsHandled: round(accumulator.callsHandled, 0),
-    callsAbandoned: round(accumulator.callsAbandoned, 0),
     handledWithinSla: round(accumulator.handledWithinSla, 0),
     answerRatePct: round(answerRatePct),
     serviceLevelPct: round(serviceLevelPct),
@@ -280,11 +295,11 @@ export function resolveCallKpiDateRange({
     end = new Date(Date.UTC(selectedReference.getUTCFullYear(), 11, 31));
     start = new Date(Date.UTC(selectedReference.getUTCFullYear() - 5, 0, 1));
   } else {
-    const isoDay = selectedReference.getUTCDay() || 7;
-    end = new Date(selectedReference.getTime());
-    end.setUTCDate(end.getUTCDate() + (7 - isoDay));
-    start = new Date(end.getTime());
-    start.setUTCDate(start.getUTCDate() - (6 * 7 - 1));
+    // Six complete Sunday-Saturday reporting weeks, ending with the selected week.
+    start = getSundayWeekStart(selectedReference);
+    start.setUTCDate(start.getUTCDate() - (5 * 7));
+    end = getSundayWeekStart(selectedReference);
+    end.setUTCDate(end.getUTCDate() + 6);
   }
 
   return {
