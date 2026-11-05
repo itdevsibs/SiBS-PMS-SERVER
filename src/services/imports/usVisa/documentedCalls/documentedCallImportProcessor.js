@@ -1,6 +1,15 @@
 import { readHeaderRow, iterateWorksheetRowChunks } from "../../shared/workbookReaderService.js";
 import { createCountryTaskOrderResolver } from "../countryTaskOrderResolver.js";
-import { mapDocumentedCallRow } from "./documentedCallMapper.js";
+import {
+  mapDocumentedCallRow,
+  documentedCallCreatedByIdentity,
+  applyDocumentedCallCreatorResolution,
+  documentedCallCreatorMappingWarning,
+} from "./documentedCallMapper.js";
+import {
+  createAgentIdentityCacheKey,
+  createBulkAgentIdentityResolver,
+} from "../agentInteractions/agentIdentityMatchingService.js";
 import { createDocumentedCallContentHash, createDocumentedCallIdentityHash } from "./documentedCallHashService.js";
 import {
   findDocumentedCallsByIdentityHashes, insertDocumentedCallsWithDuplicateProtection,
@@ -21,7 +30,7 @@ function rawStatus(c) {
 function toCanonical(row,batch,profile) {
   return { ...row.mappedRow, batchId:batch.id, rawImportRowId:row.rawRowId,
     importProfileId:profile.id, sourceSheet:row.sheetName, sourceRowNumber:row.excelRowNumber,
-    rowIdentityHash:row.rowHash, rowContentHash:row.contentHash };
+    rowContentHash:row.contentHash };
 }
 function issue({ batchId, rawRowId, sheetName, excelRowNumber, severity="WARNING",
   errorType="ROW_VALIDATION", errorCode, columnName=null, rawValue=null, message,
@@ -34,13 +43,35 @@ export async function processDocumentedCallWorkbook({ workbook,batch,profile,wor
   const started=Date.now();let processedChunks=0;
   const seenRows=new Map();
   const resolver=await createCountryTaskOrderResolver({modality:"CALL",label:"Documented Calls Owner"});
+  // Pre-resolve each unique Created By once per workbook, as in Email imports.
+  // This avoids a separate DB lookup for every documented-call row.
+  const identitiesByKey = new Map();
+  for (const sheet of workbookValidation.sheets || []) {
+    const headers = readHeaderRow(workbook, sheet.sheetName, sheet.headerRowNumber);
+    await iterateWorksheetRowChunks(workbook, sheet.sheetName,
+      {headerRowNumber:sheet.headerRowNumber,headers,chunkSize}, async (chunk) => {
+        for (const source of chunk) {
+          const name = source.rowJson?.["Created By"];
+          if (!name || !String(name).trim()) continue;
+          const identity = documentedCallCreatedByIdentity({created_by_raw:name});
+          identitiesByKey.set(createAgentIdentityCacheKey(identity), identity);
+        }
+      });
+  }
+  const identityResolver = await createBulkAgentIdentityResolver(
+    [...identitiesByKey.values()], {allowKronosNameFallback:true});
   for(const sheet of workbookValidation.sheets || []) {
     const headers=readHeaderRow(workbook,sheet.sheetName,sheet.headerRowNumber);
     await iterateWorksheetRowChunks(workbook,sheet.sheetName,
       {headerRowNumber:sheet.headerRowNumber,headers,chunkSize},async(chunk)=>{
         const prepared=chunk.map((source)=>{
           const result=mapDocumentedCallRow(source.rowJson);
-          const m=result.mappedRow;
+          const identity=documentedCallCreatedByIdentity(result.mappedRow);
+          const matched=identity.agentName ? identityResolver.resolve(identity) : null;
+          const m=applyDocumentedCallCreatorResolution(result.mappedRow,matched);
+          result.mappedRow=m;
+          const creatorWarning=documentedCallCreatorMappingWarning(m);
+          if (creatorWarning) result.warnings.push(creatorWarning);
           const resolution=m.country_region ? resolver.resolve(`${m.country_region} CALL`) : null;
           if (resolution?.status === "MATCHED") {
             m.country_region=resolution.country || m.country_region;
@@ -95,6 +126,7 @@ export async function processDocumentedCallWorkbook({ workbook,batch,profile,wor
             counters.validRows++;
             if(row.warnings.length) counters.warningRows++;
             for(const warn of row.warnings) issues.push(issue({...base,
+              errorType:warn.errorType || "ROW_VALIDATION",
               errorCode:warn.errorCode,columnName:warn.fieldName,rawValue:warn.rawValue ?? null,message:warn.message}));
           }
         }

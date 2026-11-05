@@ -3,6 +3,7 @@ import express from "express";
 
 import {
   getCallsReport,
+  getCallsReportSkillOptions,
   getWfmCallsKpi,
   getWfmSkills,
 } from "../controllers/callKpiController.js";
@@ -28,6 +29,12 @@ router.get(
   "/kpis/calls-report",
   ...requirePerformanceViewer,
   getCallsReport,
+);
+
+router.get(
+  "/kpis/calls-report/skills",
+  ...requirePerformanceViewer,
+  getCallsReportSkillOptions,
 );
 
 router.get(

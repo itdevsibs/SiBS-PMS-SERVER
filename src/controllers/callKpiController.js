@@ -5,11 +5,9 @@ import {
 } from "../repositories/usVisa/imports/usVisaImportBatchRepository.js";
 import { getWfmCallKpiDashboard } from "../services/kpi/usVisa/calls/callKpiQueryService.js";
 import { getUsVisaTaskOrderCountries } from "../services/kpi/usVisa/calls/taskOrderFilter.js";
-import {
-  getDistinctSkillsByCountry,
-  getCallsReportData,
-  getCallKpiDateBounds,
-} from "../repositories/callKpiRepository.js";
+import { getSkillKpiDateBounds } from "../repositories/usVisa/skillStatistics/usVisaSkillStatisticsKpiRepository.js";
+import { getSkillStatisticsCallsReportData,
+  getDistinctSkillStatisticsSkillsByCountry } from "../repositories/usVisa/skillStatistics/usVisaSkillStatisticsCallsReportRepository.js";
 import { getDistinctChatSkillsByCountry } from "../repositories/usVisa/chats/usVisaChatKpiRepository.js";
 
 const BAD_REQUEST_CODES = new Set([
@@ -36,7 +34,7 @@ export async function getCallsReport(req, res) {
     let effectiveDateFrom = dateFrom || date || undefined;
     let effectiveDateTo = dateTo || date || undefined;
 
-    let data = await getCallsReportData({
+    let result = await getSkillStatisticsCallsReportData({
       dateFrom: effectiveDateFrom,
       dateTo: effectiveDateTo,
       country: country || undefined,
@@ -49,8 +47,8 @@ export async function getCallsReport(req, res) {
     // If no records found for the requested date, resolve to the latest date that
     // still satisfies the current report filters.
     let resolvedDate = date;
-    if ((!data || data.length === 0) && !dateFrom && !dateTo) {
-      const dateRange = await getCallKpiDateBounds({
+    if (result.rows.length === 0 && !dateFrom && !dateTo) {
+      const dateRange = await getSkillKpiDateBounds({
         sourceSystem: selectedSource,
         taskOrder: taskOrder || undefined,
         taskOrderCountries,
@@ -61,7 +59,7 @@ export async function getCallsReport(req, res) {
         effectiveDateFrom = dateRange.maxDate;
         effectiveDateTo = dateRange.maxDate;
         resolvedDate = dateRange.maxDate;
-        data = await getCallsReportData({
+        result = await getSkillStatisticsCallsReportData({
           dateFrom: effectiveDateFrom,
           dateTo: effectiveDateTo,
           country: country || undefined,
@@ -75,7 +73,9 @@ export async function getCallsReport(req, res) {
 
     return res.json({
       success: true,
-      data,
+      data: result.rows,
+      coverage: result.coverage,
+      metricSource: "SKILL_STATISTICS",
       resolvedDate,
     });
   } catch (error) {
@@ -85,6 +85,17 @@ export async function getCallsReport(req, res) {
       code: "CALLS_REPORT_ERROR",
       message: "Unable to fetch Calls Report data.",
     });
+  }
+}
+
+
+export async function getCallsReportSkillOptions(req, res) {
+  try {
+    return res.json({success: true, data: await getDistinctSkillStatisticsSkillsByCountry()});
+  } catch (error) {
+    console.error("GET /api/kpis/calls-report/skills error:", error);
+    return res.status(500).json({success: false, code: "CALLS_REPORT_SKILLS_ERROR",
+      message: "Unable to fetch Skill Statistics skills."});
   }
 }
 
@@ -121,7 +132,7 @@ export async function getWfmCallsKpi(req, res) {
 export async function getWfmSkills(req, res) {
   try {
     const [callSkills, chatSkills] = await Promise.all([
-      getDistinctSkillsByCountry(),
+      getDistinctSkillStatisticsSkillsByCountry(),
       getDistinctChatSkillsByCountry(),
     ]);
     const skillsByCountry = { ...callSkills };

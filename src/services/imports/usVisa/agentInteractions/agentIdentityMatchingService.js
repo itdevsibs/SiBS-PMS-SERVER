@@ -32,6 +32,7 @@ const SOURCE_ALIAS_TYPES = Object.freeze({
   FUSENET: "FUSENET_NAME",
   HERODASH: "HERODASH_NAME",
   EMAIL: "MSD_NAME",
+  MS_DYNAMICS: "MSD_NAME", // Documented Calls Created By uses Employee Ledger MSD alias.
 });
 
 function normalizeIdentityPart(value) {

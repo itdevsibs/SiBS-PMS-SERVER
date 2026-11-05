@@ -587,6 +587,8 @@ export async function getUsVisaImportRawData(req, res) {
     const isCallReport = reportType === "CALL_REPORT_EOD";
     const isChatReport = reportType === "CHAT_REPORT_EOD";
     const isAgentOccupancy = reportType === "AGENT_OCCUPANCY";
+    const isDocumentedCalls = reportType === "DOCUMENTED_CALLS" ||
+      profileCode === "US_VISA_DOCUMENTED_CALLS";
     const isEmailRawData =
       reportType === "EMAIL_RAW_DATA" ||
       profile.profile_code === "US_VISA_EMAIL_RAW_DATA" ||
@@ -601,8 +603,11 @@ export async function getUsVisaImportRawData(req, res) {
       profileCode === "HERODASH_AGENT_PERFORMANCE_BY_SKILL";
     const supportsSibsFilter =
       isAgentLevel || isCallReport || isChatReport || isAgentOccupancy ||
-      isEmailRawData || isQualityAudit || isAgentActivity || isAgentPerformanceBySkill;
-    const mappingTable = isAgentActivity
+      isEmailRawData || isQualityAudit || isAgentActivity || isAgentPerformanceBySkill ||
+      isDocumentedCalls;
+    const mappingTable = isDocumentedCalls
+      ? pmsTables.usVisaRawDocumentedCalls
+      : isAgentActivity
       ? pmsTables.usVisaRawAgentActivity
       : isAgentPerformanceBySkill
         ? pmsTables.usVisaRawAgentPerformanceBySkill
@@ -720,6 +725,7 @@ export async function getUsVisaImportRawData(req, res) {
     `;
     if (supportsSibsFilter && mappingTable) {
       rowsSql += `, m.${mappingStatusCol} AS mapping_status, m.${employeeUidCol} AS sibs_id`;
+      if (isDocumentedCalls) rowsSql += `, m.mapping_method AS mapping_method`;
     }
     rowsSql += `
       FROM ${pmsTables.usVisaRawImportRows} r
@@ -810,6 +816,7 @@ export async function getUsVisaImportRawData(req, res) {
         sheetName: r.sheet_name,
         validationStatus: r.validation_status,
         mappingStatus,
+        ...(isDocumentedCalls ? {mappingMethod:r.mapping_method || null} : {}),
         rowType,
         isSibs: rowType === "SIBS",
         sibsId: r.sibs_id || null,

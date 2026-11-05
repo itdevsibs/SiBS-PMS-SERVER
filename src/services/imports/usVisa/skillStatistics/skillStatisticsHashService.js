@@ -8,10 +8,11 @@ export function createSkillStatisticsIdentityHash(row) {
     clean(row.skill_name_raw), row.interval_start || "DAY"]);
 }
 
-export function createSkillStatisticsContentHash(row) {
-  // Preserve change detection for every column, not only headline metrics.
+export function createSkillStatisticsContentHash(row, rawSourceRow = {}) {
+  // Hash all original workbook fields without duplicating their JSON in the
+  // canonical table. Raw source values live in us_visa_raw_import_rows.row_json.
   // Sorting keys makes hashes stable if workbook columns are rearranged.
-  const source = row.source_metrics_json || {};
+  const source = rawSourceRow;
   const raw = Object.fromEntries(Object.keys(source).sort().map((k) => [k, source[k]]));
   return digest([row.source_system, row.production_date, row.data_grain, clean(row.skill_name_raw),
     row.interval_start, row.total_calls_offered, row.net_calls_offered,

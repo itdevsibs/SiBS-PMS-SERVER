@@ -12,6 +12,8 @@ export const SKILL_STATISTIC_FIELD_ALIASES = Object.freeze({
   netOffered: ["Net Calls Offered", "Net Offered", "Net Calls Received"],
   totalHandled: ["Total Handled Calls", "Total Calls Handled", "Calls Handled", "Calls Answered", "Answered Calls", "Total Answered"],
   abandoned: ["Total Abandoned Calls", "Total Calls Abandoned", "Calls Abandoned", "Abandoned Calls", "Total Abandoned"],
+  // Count of abandoned calls after SLT. Do NOT map "... in Time" duration fields.
+  abandonedAfterSlt: ["Abadoned calls ＞SLT", "Abandoned calls > SLT", "Abandoned Calls > SLT", "Abandoned Calls Above SLT"],
   withinSlt: ["Handled Calls <= SLT", "Handled calls≤SLT", "Handled Calls ≤ SLT", "Calls Handled Within SLT", "Handled Within SLT", "Calls Answered Within SL", "Answered Within SL", "Handled Within SLA"],
   aboveSlt: ["Handled Calls > SLT", "Handled calls＞SLT", "Handled Calls ＞ SLT"],
   totalCallsIvr: ["Total Calls IVR", "Total calls in IVR", "Calls In IVR"],
@@ -107,6 +109,7 @@ export function mapSkillStatisticsRow(rowJson = {}, context = {}) {
   const queueSeconds = parseQueueDecimal(findSkillStatisticValue(rowJson, SKILL_STATISTIC_FIELD_ALIASES.queueSeconds), errors);
   const abandoned = parseCount(findSkillStatisticValue(rowJson, SKILL_STATISTIC_FIELD_ALIASES.abandoned), "Total Calls Abandoned", errors);
   const within = parseCount(findSkillStatisticValue(rowJson, SKILL_STATISTIC_FIELD_ALIASES.withinSlt), "Handled Within SLT", errors);
+  const abandonedAfterSlt = parseCount(findSkillStatisticValue(rowJson, SKILL_STATISTIC_FIELD_ALIASES.abandonedAfterSlt), "Abandoned Calls > SLT", errors);
   if (offered !== null && handled !== null && handled > offered) {
     errors.push({ errorCode: "SKILL_HANDLED_EXCEEDS_OFFERED", fieldName: "Total Calls Handled", message: "Handled calls cannot exceed total offered calls." });
   }
@@ -131,12 +134,11 @@ export function mapSkillStatisticsRow(rowJson = {}, context = {}) {
       country_region: String(findSkillStatisticValue(rowJson, SKILL_STATISTIC_FIELD_ALIASES.countryRegion) || "").trim() || null,
       task_order_id: null,
       total_calls_offered: offered, net_calls_offered: net, total_calls_handled: handled,
-      total_calls_abandoned: abandoned, handled_within_slt: within,
+      total_calls_abandoned: abandoned, abandoned_after_slt: abandonedAfterSlt, handled_within_slt: within,
       total_calls_ivr: callsIvr, failed_calls: failedCalls, handled_above_slt: above,
       net_calls_abandoned: netAbandoned, short_calls: shortCalls,
       short_abandoned_calls: shortAbandoned, queue_time_seconds: queueSeconds,
-      // All original 28/34 workbook columns remain lossless in source_metrics_json.
-      source_metrics_json: rowJson,
+      // Original workbook columns are stored once in us_visa_raw_import_rows.row_json.
     },
     conversionErrors: errors,
     rowJson,
