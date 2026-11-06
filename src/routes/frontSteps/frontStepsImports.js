@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import authMiddleware from '../../middleware/authMiddleware.js';
-import { requireRole } from '../../middleware/roleMiddleware.js';
+import { requireFrontStepsAccess } from '../../middleware/roleMiddleware.js';
 import { frontStepsUploadMiddleware } from '../../middleware/frontSteps/frontStepsUploadMiddleware.js';
 import {
   listFrontStepsEmployeeAssignmentsController,
@@ -23,8 +23,8 @@ import {
 
 const router = Router();
 
-// Preserve the current FrontSteps access: role 11 and Super Admin 7.
-router.use(authMiddleware, requireRole([7, 11]));
+// Allow FrontSteps-assigned interface users, FrontSteps role 11, and Super Admin 7.
+router.use(authMiddleware, requireFrontStepsAccess);
 
 router.get('/employee-assignments', listFrontStepsEmployeeAssignmentsController);
 router.get('/employee-directory', searchFrontStepsKronosEmployeesController);

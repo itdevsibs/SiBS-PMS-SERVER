@@ -401,6 +401,7 @@ function signEmployeeToken(
   user,
   adminAccess = null,
   resolvedRole = "employee",
+  accessibleInterfaces = [],
 ) {
   if (!process.env.JWT_SECRET) {
     throw new Error("JWT_SECRET is missing in .env");
@@ -425,6 +426,8 @@ function signEmployeeToken(
       tokenType: "employee",
 
       adminAccess,
+
+      accessibleInterfaces,
     },
 
     process.env.JWT_SECRET,
@@ -440,6 +443,7 @@ function signAdminToken(
   resolvedRole,
   adminAccess,
   assignedAccounts = [],
+  accessibleInterfaces = [],
 ) {
   if (!process.env.JWT_ADMIN_SECRET) {
     throw new Error("JWT_ADMIN_SECRET is missing in .env");
@@ -469,6 +473,8 @@ function signAdminToken(
       account: primaryAssignedAccount.account || null,
 
       assignedAccountIds,
+
+      accessibleInterfaces,
 
       tokenType: "admin",
 
@@ -687,8 +693,8 @@ router.post("/login", async (req, res) => {
     );
 
     const token = isAdmin
-      ? signAdminToken(user, resolvedRole, adminAccess, assignedAccounts)
-      : signEmployeeToken(user, adminAccess, resolvedRole);
+      ? signAdminToken(user, resolvedRole, adminAccess, assignedAccounts, accessibleInterfaces)
+      : signEmployeeToken(user, adminAccess, resolvedRole, accessibleInterfaces);
 
     const cookieName = isAdmin ? "admin_token" : "token";
 
@@ -872,6 +878,7 @@ router.post("/admin-login", authMiddleware, async (req, res) => {
       resolvedRole,
       adminAccess,
       assignedAccounts,
+      accessibleInterfaces,
     );
 
     const tokenMetadata = getTokenMetadata(adminToken);
@@ -1205,6 +1212,17 @@ router.post("/refresh", authMiddleware, async (req, res) => {
 
     const assignedAccountIds = getAssignedAccountIds(assignedAccounts);
 
+    let accessibleInterfaces = [];
+    try {
+      const [interfaceRows] = await pmsDb.execute(
+        `SELECT interface_name FROM ${pmsTables.userAccessibleInterfaces} WHERE employee_id = ?`,
+        [String(req.user?.username || "").trim()],
+      );
+      accessibleInterfaces = (interfaceRows || []).map((row) => row.interface_name);
+    } catch (error) {
+      console.error("Error refreshing accessible interfaces:", error);
+    }
+
     const payload = {
       id: req.user?.id,
 
@@ -1227,6 +1245,8 @@ router.post("/refresh", authMiddleware, async (req, res) => {
         : req.user?.account || null,
 
       assignedAccountIds,
+
+      accessibleInterfaces,
 
       adminAccess: isAdmin ? adminAccess : null,
 

@@ -1,3 +1,5 @@
+import { pmsDb, pmsTables } from "../config/db.js";
+
 // Maps role names to access values and checks route permissions.
 const ROLE_ACCESS_VALUES = {
   admin: 7,
@@ -63,6 +65,56 @@ export function requireRole(
       error: "Access denied",
     });
   };
+}
+
+// FrontSteps can be assigned as an interface independently of HRIS admin_access.
+// Login tokens carry the server-issued interface list so this remains enforced
+// by the API rather than trusting the client-selected dashboard role.
+export async function requireFrontStepsAccess(req, res, next) {
+  const roleAccess = getUserAccessValue(req);
+  const hasFrontStepsRole = [7, 11].includes(roleAccess);
+  const interfaces = Array.isArray(req.user?.accessibleInterfaces)
+    ? req.user.accessibleInterfaces
+    : [];
+  const hasFrontStepsInterface = interfaces.some((value) => {
+    const normalized = String(value || "").toLowerCase().replace(/[^a-z]/g, "");
+    return normalized === "frontsteps" || normalized === "frontstepsaccount";
+  });
+
+  if (hasFrontStepsRole || hasFrontStepsInterface) {
+    return next();
+  }
+
+  // Check the current server-side grant for sessions created before interface
+  // claims were added, and apply access changes without waiting for token expiry.
+  const employeeId = String(req.user?.username || "").trim();
+  if (employeeId) {
+    try {
+      const [rows] = await pmsDb.execute(
+        `SELECT 1 AS allowed
+         FROM ${pmsTables.userAccessibleInterfaces}
+         WHERE TRIM(employee_id) = TRIM(?)
+           AND LOWER(REPLACE(interface_name, ' ', '')) IN ('frontsteps', 'frontstepsaccount')
+         LIMIT 1`,
+        [employeeId],
+      );
+
+      if (rows.length > 0) {
+        return next();
+      }
+    } catch (error) {
+      console.error("Unable to verify FrontSteps interface access:", error);
+      return res.status(503).json({
+        success: false,
+        error: "Unable to verify FrontSteps access",
+      });
+    }
+  }
+
+  return res.status(403).json({
+    success: false,
+    error: "FrontSteps access required",
+  });
 }
 
 export function requireAdmin(

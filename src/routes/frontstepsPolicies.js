@@ -4,8 +4,12 @@ import multer from "multer";
 import crypto from "crypto";
 import path from "path";
 import { pmsDb, pmsTables } from "../config/db.js";
+import authMiddleware from "../middleware/authMiddleware.js";
+import { requireFrontStepsAccess } from "../middleware/roleMiddleware.js";
 
 const router = express.Router();
+
+router.use(authMiddleware, requireFrontStepsAccess);
 
 // Memory storage to handle binary buffer directly for LONGBLOB insertion
 const storage = multer.memoryStorage();
