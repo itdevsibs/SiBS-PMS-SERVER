@@ -113,7 +113,7 @@ function appendCountryFilter({ conditions, values, country, reportType }) {
   }
 }
 
-function appendSkillFilter({ conditions, values, skill }) {
+function appendSkillFilter({ conditions, values, skill, reportType }) {
   const skills = normalizeFilterList(skill, ["all", "all skills"]);
   if (!skills.length) return;
 
@@ -121,17 +121,23 @@ function appendSkillFilter({ conditions, values, skill }) {
   for (const item of skills) {
     const key = item.toLowerCase().replace(/[\s_-]+/g, "");
 
-    if (key === "englishall" || key === "english" || key === "allenglish") {
-      clauses.push("LOWER(c.skill_name_raw) LIKE ?");
+    if (key === "seasiaphilippines" && reportType === "SKILL_STATISTICS") {
+      // Unlike a text match on the Skill name, this includes both English and
+      // Tagalog Philippines queues, even when the name uses a different format.
+      clauses.push(`(LOWER(TRIM(c.country_region)) = 'philippines'
+        OR ((c.country_region IS NULL OR TRIM(c.country_region) = '')
+          AND LOWER(TRIM(c.skill_name_raw)) REGEXP '(^|[^a-z])philippines([^a-z]|$)'))`);
+    } else if (key === "englishall" || key === "english" || key === "allenglish") {
+      clauses.push("(LOWER(c.skill_name_raw) LIKE ? AND LOWER(c.skill_name_raw) NOT REGEXP 'non[[:space:]_-]*english')");
       values.push("%english%");
     } else if (key === "englishniv") {
-      clauses.push("(LOWER(c.skill_name_raw) LIKE ? AND UPPER(c.skill_name_raw) LIKE ?)");
+      clauses.push("(LOWER(c.skill_name_raw) LIKE ? AND LOWER(c.skill_name_raw) NOT REGEXP 'non[[:space:]_-]*english' AND UPPER(c.skill_name_raw) LIKE ?)");
       values.push("%english%", "%NIV%");
     } else if (key === "englishiv") {
-      clauses.push("(LOWER(c.skill_name_raw) LIKE ? AND UPPER(c.skill_name_raw) REGEXP '(^|[^A-Z])IV($|[^A-Z])' AND UPPER(c.skill_name_raw) NOT LIKE ?)");
+      clauses.push("(LOWER(c.skill_name_raw) LIKE ? AND LOWER(c.skill_name_raw) NOT REGEXP 'non[[:space:]_-]*english' AND UPPER(c.skill_name_raw) REGEXP '(^|[^A-Z])IV($|[^A-Z])' AND UPPER(c.skill_name_raw) NOT LIKE ?)");
       values.push("%english%", "%NIV%");
     } else if (key === "englishacs") {
-      clauses.push("(LOWER(c.skill_name_raw) LIKE ? AND UPPER(c.skill_name_raw) LIKE ?)");
+      clauses.push("(LOWER(c.skill_name_raw) LIKE ? AND LOWER(c.skill_name_raw) NOT REGEXP 'non[[:space:]_-]*english' AND UPPER(c.skill_name_raw) LIKE ?)");
       values.push("%english%", "%ACS%");
     } else if (key === "nonenglish") {
       clauses.push("LOWER(c.skill_name_raw) NOT LIKE ?");
@@ -177,7 +183,7 @@ export function buildBaseFilters({
   appendSourceSystemFilter({ conditions, values, sourceSystem });
   appendTaskOrderFilter({ conditions, values, taskOrder, taskOrderCountries, reportType });
   appendCountryFilter({ conditions, values, country, reportType });
-  appendSkillFilter({ conditions, values, skill });
+  appendSkillFilter({ conditions, values, skill, reportType });
 
   return { conditions, values };
 }

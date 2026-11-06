@@ -7,7 +7,11 @@ const JOIN = `FROM ${pmsTables.usVisaRawSkillStatistics} c
   INNER JOIN ${pmsTables.usVisaImportProfiles} p ON p.id = c.import_profile_id`;
 
 function base(options = {}) {
-  return buildBaseFilters({ ...options, reportType: "SKILL_STATISTICS" });
+  const filter = buildBaseFilters({ ...options, reportType: "SKILL_STATISTICS" });
+  // The uploaded workbook may still have a half-hour sheet, and historical
+  // canonical rows may exist. Neither belongs to the 15-minute + day model.
+  filter.conditions.push("c.data_grain IN ('SKILL_15_MINUTE', 'SKILL_DAY')");
+  return filter;
 }
 
 export async function listAvailableSkillKpiDataGrains(options = {}) {
@@ -25,7 +29,8 @@ export async function getSkillKpiDateBounds(options = {}) {
   return { minDate: row?.min_date || null, maxDate: row?.max_date || null };
 }
 
-const SOURCE_GRAINS = ["SKILL_15_MINUTE", "SKILL_30_MINUTE", "SKILL_DAY"];
+// Keep reports independent of legacy half-hour canonical rows.
+const SOURCE_GRAINS = ["SKILL_15_MINUTE", "SKILL_DAY"];
 
 // Reported counters must be present in every contributing row. SQL SUM alone
 // silently skips NULL and would understate a partial-source metric.
@@ -39,7 +44,7 @@ export function selectCompleteSkillGrain(aggregates, requestedGrain = null) {
       if (row.rowCount === 1) return row;
       continue;
     }
-    const expected = grain === "SKILL_15_MINUTE" ? 96 : 48;
+    const expected = 96;
     if (row.rowCount !== row.slotCount) continue;
     if (row.slotCount > expected || row.slotCount < 1) continue;
     const reconciles = !daily || ["callsOffered", "callsHandled", "netOffered", "callsAbandoned"]
@@ -52,8 +57,8 @@ export function selectCompleteSkillGrain(aggregates, requestedGrain = null) {
   return null;
 }
 
-// Select once per source/date/Skill. Never sum daily + 15-minute + 30-minute
-// representations of the same activity.
+// Select once per source/date/Skill. Never sum daily and 15-minute
+// representations of the same activity. Historical 30-minute rows are ignored.
 export function selectSkillSourceRows(records = [], requestedGrain = null) {
   const bySkill = new Map();
   for (const record of records) {

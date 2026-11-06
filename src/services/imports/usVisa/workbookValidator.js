@@ -422,8 +422,10 @@ const QUALITY_AUDIT_REQUIRED_HEADERS = [
   "Audit Year",
 ];
 
-// Queue statistics retain each grain independently. Date and totals are required for
-// FuseCom/FuseNet; a single reporting date may be supplied for HeroDash exports.
+// FuseCom/FuseNet Skill Statistics retain 15-minute + per-day records only.
+// Half-hourly worksheets remain in the uploaded workbook but are not staged
+// or canonicalized (avoid storing overlapping queue metrics twice).
+// A single reporting date may be supplied for HeroDash exports.
 const SKILL_STAT_OFFERED_HEADERS = SKILL_STATISTIC_FIELD_ALIASES.totalOffered;
 const SKILL_STAT_HANDLED_HEADERS = SKILL_STATISTIC_FIELD_ALIASES.totalHandled;
 const SKILL_STAT_SKILL_HEADERS = SKILL_STATISTIC_FIELD_ALIASES.skill;
@@ -450,16 +452,6 @@ const FUSE_SKILL_STAT_SHEETS = [
     sheetName: "15 Minutes Statistics",
     sheetNameCandidates: ["15 Minutes Statistics", "15 Minutes", "15 Minute", "15 Minute Statistics"],
     dataGrain: "SKILL_15_MINUTE",
-    headerRowNumber: 9,
-    headerRowCandidates: [9, 1],
-    requiredHeaders: SKILL_STAT_INTERVAL_REQUIRED,
-    allowUnknownHeaders: true,
-    disableHeaderFallbackForXlsx: true,
-  },
-  {
-    sheetName: "Half Hourly Statistics",
-    sheetNameCandidates: ["Half Hourly Statistics", "Half Hourly", "30 Minutes", "30 Minutes Statistics"],
-    dataGrain: "SKILL_30_MINUTE",
     headerRowNumber: 9,
     headerRowCandidates: [9, 1],
     requiredHeaders: SKILL_STAT_INTERVAL_REQUIRED,

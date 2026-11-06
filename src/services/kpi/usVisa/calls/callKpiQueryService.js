@@ -22,7 +22,8 @@ import { getUsVisaTaskOrderCountries, normalizeUsVisaTaskOrder } from './taskOrd
 import { getSkillStatisticsTaskOrderCountryScope } from './skillStatisticsTaskOrderScope.js';
 
 const SOURCES = new Set(['US_VISA','US VISA','FUSECOM','FUSENET','HERODASH']);
-const GRAINS = new Set(['SKILL_DAY','SKILL_15_MINUTE','SKILL_30_MINUTE']);
+// Legacy 30-minute canonical rows are no longer selectable in WoW.
+const GRAINS = new Set(['SKILL_DAY','SKILL_15_MINUTE']);
 const normalizeDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || '').trim())
   ? String(value).trim() : null;
 

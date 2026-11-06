@@ -1,7 +1,7 @@
 // Pure grain selection shared by import reconciliation and KPI aggregation.
 // One metric source per source/date/Skill; never add overlapping grains together.
-export const QUEUE_GRAINS = Object.freeze(["SKILL_15_MINUTE", "SKILL_30_MINUTE", "SKILL_DAY"]);
-const EXPECTED_INTERVALS = Object.freeze({ SKILL_15_MINUTE: 96, SKILL_30_MINUTE: 48 });
+export const QUEUE_GRAINS = Object.freeze(["SKILL_15_MINUTE", "SKILL_DAY"]);
+const EXPECTED_INTERVALS = Object.freeze({ SKILL_15_MINUTE: 96 });
 
 function utcMinutes(value) {
   const text = String(value || "").trim();
@@ -43,7 +43,7 @@ export function isCompleteQueueGrain(rows = [], grain, dailyRows = []) {
   if (grain === "SKILL_DAY") return rows.length === 1;
   const expected = EXPECTED_INTERVALS[grain];
   if (!expected || !rows.length) return false;
-  const intervalMinutes = grain === "SKILL_15_MINUTE" ? 15 : 30;
+  const intervalMinutes = 15;
   const slots = new Set();
   for (const row of rows) {
     const slot = utcMinutes(row.intervalStart ?? row.interval_start);
