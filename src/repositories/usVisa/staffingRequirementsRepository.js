@@ -53,7 +53,8 @@ export async function listStaffingRequirementHistory({ taskOrderId, dateFrom, da
            old_source_reference AS oldSourceReference, new_source_reference AS newSourceReference,
            old_remarks AS oldRemarks, new_remarks AS newRemarks,
            change_reason AS changeReason, changed_by AS changedBy,
-           changed_at AS changedAt
+           changed_at AS changedAt,
+           DATE_FORMAT(CONVERT_TZ(changed_at, @@session.time_zone, '+08:00'), '%Y-%m-%d %h:%i %p') AS formattedTimestamp
     FROM ${HISTORY_TABLE} WHERE ${where.join(' AND ')}
     ORDER BY changed_at DESC, id DESC LIMIT ?
   `, params);
@@ -116,6 +117,48 @@ export async function saveDailyStaffingRequirements({ entries, actor, reason = '
     }
     await connection.commit();
     return saved;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+export async function deleteStaffingRequirements({ entries, actor, reason = '' }) {
+  const connection = await pmsDb.getConnection();
+  try {
+    await connection.beginTransaction();
+    let deletedCount = 0;
+    for (const entry of entries) {
+      const [existingRows] = await connection.query(`
+        SELECT id, required_headcount AS requiredHeadcount, status,
+               source_reference AS sourceReference, remarks
+        FROM ${REQUIREMENTS_TABLE}
+        WHERE task_order_id = ? AND requirement_date = ? FOR UPDATE
+      `, [entry.taskOrderId, entry.requirementDate]);
+      const old = existingRows[0];
+      if (!old) continue;
+
+      await connection.query(`
+        DELETE FROM ${REQUIREMENTS_TABLE}
+        WHERE id = ?
+      `, [old.id]);
+
+      await connection.query(`
+        INSERT INTO ${HISTORY_TABLE}
+          (requirement_id, task_order_id, requirement_date, old_required_headcount,
+           new_required_headcount, old_status, new_status, old_source_reference, new_source_reference,
+           old_remarks, new_remarks, change_reason, changed_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [old.id, entry.taskOrderId, entry.requirementDate, old.requiredHeadcount,
+        null, old.status, 'DELETED', old.sourceReference || null, null,
+        old.remarks || null, null, reason || 'Requirement deleted', actor]);
+
+      deletedCount++;
+    }
+    await connection.commit();
+    return { deletedCount };
   } catch (error) {
     await connection.rollback();
     throw error;

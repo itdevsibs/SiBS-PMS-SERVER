@@ -1,5 +1,5 @@
 import { normalizeUsVisaTaskOrderId } from '../../../../config/usVisaTaskOrders.js';
-import { taskOrderIsRecognized, saveDailyStaffingRequirements } from '../../../../repositories/usVisa/staffingRequirementsRepository.js';
+import { taskOrderIsRecognized, saveDailyStaffingRequirements, deleteStaffingRequirements } from '../../../../repositories/usVisa/staffingRequirementsRepository.js';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 export function validDate(value) {
@@ -52,6 +52,21 @@ export async function validateAndSaveRequirements({ entries, actor, reason }) {
     }
   }
   return saveDailyStaffingRequirements({ entries: normalized, actor, reason });
+}
+
+export async function validateAndDeleteRequirements({ entries, actor, reason }) {
+  if (!Array.isArray(entries) || entries.length < 1 || entries.length > 93) {
+    throw badRequest('Submit between 1 and 93 daily requirements to delete.');
+  }
+  const normalized = entries.map(entry => {
+    const taskOrderId = normalizeUsVisaTaskOrderId(entry.taskOrderId);
+    const requirementDate = String(entry.requirementDate || '').trim();
+    if (!/^TO\d+$/.test(taskOrderId || '') || !validDate(requirementDate)) {
+      throw badRequest('Each row needs a valid Task Order and date.');
+    }
+    return { taskOrderId, requirementDate };
+  });
+  return deleteStaffingRequirements({ entries: normalized, actor, reason });
 }
 
 
