@@ -5,6 +5,19 @@ const rawCases = dbTable(PMS_DB_NAME, 'frontsteps_raw_cases');
 const rawCalls = dbTable(PMS_DB_NAME, 'frontsteps_raw_calls');
 const importErrors = dbTable(PMS_DB_NAME, 'frontsteps_import_errors');
 const EMPLOYEE_MAPPING_FILTER = "'UNMATCHED_EMPLOYEE_MAPPING','AMBIGUOUS_EMPLOYEE_MAPPING'";
+// MySQL TIMESTAMP values are stored in UTC internally. Set the session timezone
+// to Singapore so NOW() records the same wall-clock time shown in the UI.
+const FRONTSTEPS_DB_TIMEZONE = '+08:00';
+
+async function executeFrontSteps(sql, params = []) {
+  const connection = await pmsDb.getConnection();
+  try {
+    await connection.query('SET time_zone = ?', [FRONTSTEPS_DB_TIMEZONE]);
+    return await connection.execute(sql, params);
+  } finally {
+    connection.release();
+  }
+}
 
 export async function findDuplicateHash(reportType, hash) {
   const [found] = await pmsDb.execute(
@@ -18,11 +31,11 @@ export async function findDuplicateHash(reportType, hash) {
 }
 
 export async function createBatch(file, meta) {
-  const [result] = await pmsDb.execute(
+  const [result] = await executeFrontSteps(
     `INSERT INTO ${batches}
       (batch_code,report_type,source_filename,stored_filename,stored_path,file_hash,file_size,
-       source_format,sheet_name,uploaded_by,status,processing_started_at,total_rows)
-     VALUES (?,?,?,?,?,?,?,?,?,?,'PROCESSING',NOW(),?)`,
+       source_format,sheet_name,uploaded_by,uploaded_at,status,processing_started_at,total_rows)
+       VALUES (?,?,?,?,?,?,?,?,?,?,NOW(),'PROCESSING',NOW(),?)`,
     [
       meta.batchCode, meta.reportType, file.originalname, file.filename, file.path,
       meta.fileHash, file.size, meta.ext, meta.sheetName, meta.uploadedBy, meta.rowCount,
@@ -48,14 +61,14 @@ export async function finalizeBatch(conn, batchId, counts, minDate, maxDate) {
 
 export async function failBatch(batchId, message) {
   if (!batchId) return;
-  await pmsDb.execute(
+  await executeFrontSteps(
     `UPDATE ${batches} SET status='FAILED',error_message=?,completed_at=NOW() WHERE id=?`,
     [String(message).slice(0, 2000), batchId],
   );
 }
 
 const BATCH_COLUMNS = `id,batch_code,report_type,source_filename,file_size,source_format,sheet_name,
-  uploaded_by,status,total_rows,valid_rows,invalid_rows,inserted_rows,updated_rows,duplicate_rows,
+  uploaded_by,uploaded_at,status,total_rows,valid_rows,invalid_rows,inserted_rows,updated_rows,duplicate_rows,
   conflict_rows,unmapped_rows,report_date_from,report_date_to,error_message,created_at,completed_at`;
 
 export async function listBatches({ type, page, limit }) {

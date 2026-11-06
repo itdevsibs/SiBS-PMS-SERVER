@@ -141,6 +141,7 @@ export async function importFrontStepsRaw(file, reportType, uploadedBy, options 
 
   try {
     conn = await pool.getConnection();
+    await conn.query("SET time_zone = '+08:00'");
     const [[lock]] = await conn.query('SELECT GET_LOCK(?,20) AS acquired', [`frontsteps-import-${reportType}`]);
     if (lock.acquired !== 1) {
       throw publicError('Another FrontSteps import is processing; retry shortly', 409, 'IMPORT_BUSY');
