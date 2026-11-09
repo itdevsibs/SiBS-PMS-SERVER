@@ -1,5 +1,4 @@
 import { readHeaderRow, iterateWorksheetRowChunks } from "../../shared/workbookReaderService.js";
-import { createCountryTaskOrderResolver } from "../countryTaskOrderResolver.js";
 import {
   mapDocumentedCallRow,
   documentedCallCreatedByIdentity,
@@ -42,7 +41,6 @@ export async function processDocumentedCallWorkbook({ workbook,batch,profile,wor
   counters,chunkSize=1000,onProgress }) {
   const started=Date.now();let processedChunks=0;
   const seenRows=new Map();
-  const resolver=await createCountryTaskOrderResolver({modality:"CALL",label:"Documented Calls Owner"});
   // Pre-resolve each unique Created By once per workbook, as in Email imports.
   // This avoids a separate DB lookup for every documented-call row.
   const identitiesByKey = new Map();
@@ -72,14 +70,8 @@ export async function processDocumentedCallWorkbook({ workbook,batch,profile,wor
           result.mappedRow=m;
           const creatorWarning=documentedCallCreatorMappingWarning(m);
           if (creatorWarning) result.warnings.push(creatorWarning);
-          const resolution=m.country_region ? resolver.resolve(`${m.country_region} CALL`) : null;
-          if (resolution?.status === "MATCHED") {
-            m.country_region=resolution.country || m.country_region;
-            m.task_order_id=resolution.taskOrderId;
-          } else if(m.country_region) {
-            result.warnings.push({fieldName:"Owner",errorCode:"DOCUMENTED_CALL_TASK_ORDER_UNMAPPED",
-              message:resolution?.warning || "No active Task Order for this owner country."});
-          }
+          // Owner provides the country independently of the Task Order Ledger.
+          // Current country ownership is resolved only when WoW AHT is queried.
           const rowHash=createDocumentedCallIdentityHash(m);
           return { sheetName:sheet.sheetName,excelRowNumber:source.excelRowNumber,
             rowJson:source.rowJson,mappedRow:m,warnings:result.warnings,errors:result.errors,

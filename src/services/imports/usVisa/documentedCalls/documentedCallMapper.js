@@ -113,7 +113,7 @@ export function mapDocumentedCallRow(source = {}) {
   if (!crmId) errors.push({ fieldName: "(Do Not Modify) Call Log", errorCode: "MISSING_CALL_LOG_GUID", rawValue: crmId, message: "CRM Call Log GUID is required for safe deduplication." });
   if (!productionDate) errors.push({ fieldName: "Name", errorCode: "MISSING_DOCUMENTED_CALL_DATE", rawValue: callName, message: "Name must have YYYY-DD-MM date prefix, or Modified On must contain a valid date." });
   if (durationSeconds === null) warnings.push({ fieldName: "Call Duration", errorCode: "DOCUMENTED_CALL_DURATION_MISSING", rawValue: text(source["Call Duration"]), message: "Call log retained, but excluded from AHT because Call Duration is blank or invalid." });
-  if (!country) warnings.push({ fieldName: "Owner", errorCode: "DOCUMENTED_CALL_COUNTRY_UNMAPPED", rawValue: ownerRaw, message: "Owner does not identify a Country Data Owner; row retained without country/Task Order." });
+  if (!country) warnings.push({ fieldName: "Owner", errorCode: "DOCUMENTED_CALL_COUNTRY_UNMAPPED", rawValue: ownerRaw, message: "Owner does not identify a Country Data Owner; row retained without a country." });
   return {
     errors, warnings,
     mappedRow: {
@@ -123,7 +123,7 @@ export function mapDocumentedCallRow(source = {}) {
       created_on: createdOn, modified_on: modifiedOn,
       created_by_raw: text(source["Created By"]), owner_raw: ownerRaw,
       sibs_id: null, mapping_status: "UNMATCHED", mapping_method: null,
-      country_region: country, task_order_id: null,
+      country_region: country,
       category: text(source.Category), subcategory: text(source.Subcategory),
       call_duration_seconds: durationSeconds,
       aht_eligible: durationSeconds !== null ? 1 : 0,

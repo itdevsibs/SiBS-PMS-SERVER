@@ -132,7 +132,6 @@ export function mapSkillStatisticsRow(rowJson = {}, context = {}) {
       production_date: date.value, interval_start: intervalStart, interval_end: intervalEnd,
       skill_name_raw: skillName,
       country_region: String(findSkillStatisticValue(rowJson, SKILL_STATISTIC_FIELD_ALIASES.countryRegion) || "").trim() || null,
-      task_order_id: null,
       total_calls_offered: offered, net_calls_offered: net, total_calls_handled: handled,
       total_calls_abandoned: abandoned, abandoned_after_slt: abandonedAfterSlt, handled_within_slt: within,
       total_calls_ivr: callsIvr, failed_calls: failedCalls, handled_above_slt: above,

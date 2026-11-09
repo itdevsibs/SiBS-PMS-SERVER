@@ -4,8 +4,6 @@ export function mergeDocumentedAhtIntoCallDashboard(dashboard, documentedDashboa
   const counts=Number(documentedDashboard?.summary?.ahtCalls || 0);
   const days=new Set(documentedRows.map((row)=>row.productionDate));
   const sourceAvailable=counts>0;
-  const missingReason = Array.isArray(filters.skill)
-    ? filters.skill.length>0 : Boolean(String(filters.skill || "").trim());
   const seriesAht=new Map((documentedDashboard?.series || []).map((r)=>[r.key,r]));
   const series=(dashboard.series || []).map((item)=>{
     const aht=seriesAht.get(item.key);
@@ -21,7 +19,6 @@ export function mergeDocumentedAhtIntoCallDashboard(dashboard, documentedDashboa
     ahtCalls:counts, ahtCoveragePct:null},
     metricSources:{...dashboard.metricSources,aht:sourceAvailable ? "DOCUMENTED_CALLS" : "MISSING_DOCUMENTED_CALLS"},
     ahtCoverage:{status,documentedCalls:counts,missingDates,...coverage,
-      note:missingReason ? "The documented-call export has no Skill field; skill-filtered AHT is unavailable."
-        : "AHT = sum of valid MS Dynamics Call Duration / number of documented calls with valid durations AND a resolved Task Order. Unmapped owners and blank durations are excluded; telephony counts are not used."},
+      note:"AHT = sum of valid MS Dynamics Call Duration / number of documented calls with valid durations and current country-based Task Order ownership. Blank durations and unresolvable owners are excluded; Skill filters do not affect this AHT."},
   };
 }

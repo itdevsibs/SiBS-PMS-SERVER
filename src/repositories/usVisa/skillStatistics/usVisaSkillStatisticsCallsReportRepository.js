@@ -52,7 +52,7 @@ export function selectSkillSourceRows(records = [], requestedGrain = null) {
   const bySkill = new Map();
   for (const record of records) {
     const key = [record.sourceSystem, record.productionDate, record.skillName,
-      record.countryRegion || "", record.taskOrderId || ""].join("\u0001");
+      record.countryRegion || ""].join("\u0001");
     if (!bySkill.has(key)) bySkill.set(key, []);
     bySkill.get(key).push(record);
   }
@@ -76,7 +76,7 @@ export async function getSelectedSkillStatistics(options = {}) {
   const [records] = await pmsDb.query(`
     SELECT c.source_system AS source_system,
       DATE_FORMAT(c.production_date, '%Y-%m-%d') AS production_date,
-      c.skill_name_raw, c.country_region, c.task_order_id, c.data_grain,
+      c.skill_name_raw, c.country_region, c.data_grain,
       COUNT(*) AS row_count,
       COUNT(DISTINCT TIME(c.interval_start)) AS slot_count,
       SUM(c.total_calls_offered) AS offered,
@@ -91,7 +91,7 @@ export async function getSelectedSkillStatistics(options = {}) {
     ${JOIN}
     WHERE ${conditions.join(" AND ")}
     GROUP BY c.source_system, c.production_date, c.skill_name_raw,
-      c.country_region, c.task_order_id, c.data_grain
+      c.country_region, c.data_grain
     ORDER BY c.production_date, c.source_system, c.skill_name_raw
   `, values);
 
@@ -103,7 +103,6 @@ export async function getSelectedSkillStatistics(options = {}) {
       productionDate: r.production_date,
       skillName: r.skill_name_raw,
       countryRegion: r.country_region,
-      taskOrderId: r.task_order_id,
       dataGrain: r.data_grain,
       rowCount: count,
       slotCount: r.data_grain === "SKILL_DAY" ? count : Number(r.slot_count),
@@ -123,7 +122,7 @@ export async function getSelectedSkillStatistics(options = {}) {
   const [ahtRows] = await pmsDb.query(`
     SELECT c.source_system AS source_system,
       DATE_FORMAT(c.production_date, '%Y-%m-%d') AS production_date,
-      c.skill_name_raw, c.country_region, c.task_order_id, c.data_grain,
+      c.skill_name_raw, c.country_region, c.data_grain,
       c.total_calls_handled AS handled_calls,
       COALESCE(
         JSON_UNQUOTE(JSON_EXTRACT(rr.row_json, '$."AVG Handle Time"')),
@@ -142,7 +141,7 @@ export async function getSelectedSkillStatistics(options = {}) {
   `, values);
   const mapped = ahtRows.map((r) => ({sourceSystem:r.source_system,
     productionDate:r.production_date,skillName:r.skill_name_raw,
-    countryRegion:r.country_region,taskOrderId:r.task_order_id,
+    countryRegion:r.country_region,
     dataGrain:r.data_grain,handledCalls:r.handled_calls,avgHandleRaw:r.avg_handle_raw,
     abandonedAfterSltRaw:r.abandoned_after_slt_raw}));
   const withAht = attachWeightedAhtToSelectedGrains(result.selected, mapped);
