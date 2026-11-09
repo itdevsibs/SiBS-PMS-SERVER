@@ -30,7 +30,7 @@ export function formatCallsReportAht(seconds) {
 
 export function skillStatsGroupKey(row) {
   return [row.sourceSystem, row.productionDate, row.skillName,
-    row.countryRegion || '', row.taskOrderId || '', row.dataGrain].join('\u0001');
+    row.countryRegion || '', row.dataGrain].join('\u0001');
 }
 
 // Caller must only use the selected, reconciled grain. Positive handled-call

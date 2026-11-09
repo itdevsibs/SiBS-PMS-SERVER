@@ -55,7 +55,17 @@ export async function getWfmCallKpiDashboard(query = {}) {
   const requestedFrom = normalizeDate(query.from || query.dateFrom);
   const requestedTo = normalizeDate(query.to || query.dateTo);
   const taskOrder = normalizeUsVisaTaskOrder(sourceSystem, query.taskOrder);
-  const ledgerScope = await getSkillStatisticsTaskOrderCountryScope(taskOrder);
+  // Shared runtime ownership scope for both queue counts and Dynamics AHT.
+  const sourceToolTaskOrders = {
+    FUSECOM: ['TO12', 'TO16'], FUSENET: ['TO14'], HERODASH: ['TO4', 'TO10'],
+  };
+  const [ledgerScope, allLedgerScope, sourceToolScope] = await Promise.all([
+    getSkillStatisticsTaskOrderCountryScope(taskOrder),
+    getSkillStatisticsTaskOrderCountryScope(['TO4','TO10','TO12','TO14','TO16']),
+    sourceToolTaskOrders[sourceSystem]
+      ? getSkillStatisticsTaskOrderCountryScope(sourceToolTaskOrders[sourceSystem])
+      : Promise.resolve({ countries: [] }),
+  ]);
   // Direct Task Orders are scoped from the active Country -> Task Order ledger.
   // The old virtual subgroup filters retain their existing country behavior.
   const taskOrderCountries = ledgerScope.countries.length ||
@@ -75,10 +85,21 @@ export async function getWfmCallKpiDashboard(query = {}) {
     throw error;
   }
   if (requestedFrom && requestedTo && requestedFrom > requestedTo) rangeError();
-  const filter = {sourceSystem,taskOrder,taskOrderCountries,country,skill};
+  const filter = {
+    sourceSystem, taskOrder, taskOrderCountries, country, skill,
+    knownTaskOrderCountries: allLedgerScope.countries,
+    sourceToolCountries: sourceToolScope.countries,
+  };
+  // MS Dynamics has no Skill field. Never pass the queue Skill selection into
+  // any Documented Calls query, bound lookup, KPI bucket, or AHT calculation.
+  const documentedFilter = {
+    sourceSystem, taskOrder, taskOrderCountries, country,
+    knownTaskOrderCountries: allLedgerScope.countries,
+    sourceToolCountries: sourceToolScope.countries,
+  };
   const [skillBounds, documentedBounds, availableSkillGrains] = await Promise.all([
     getSkillKpiDateBounds(filter),
-    getDocumentedCallAhtDateBounds(filter),
+    getDocumentedCallAhtDateBounds(documentedFilter),
     listAvailableSkillKpiDataGrains(filter),
   ]);
   const mins = [skillBounds.minDate,documentedBounds.minDate].filter(Boolean).sort();
@@ -104,10 +125,11 @@ export async function getWfmCallKpiDashboard(query = {}) {
   }
   if (dateFrom && dateTo && dateFrom > dateTo) rangeError();
   const rangeFilter={...filter,dateFrom,dateTo};
+  const documentedRangeFilter={...documentedFilter,dateFrom,dateTo};
   const [selection,documentedRows,documentedCoverage]=await Promise.all([
     getSelectedSkillStatistics({...rangeFilter,dataGrain}),
-    getDailyDocumentedCallAhtRows(rangeFilter),
-    getDocumentedCallCoverageStats(rangeFilter),
+    getDailyDocumentedCallAhtRows(documentedRangeFilter),
+    getDocumentedCallCoverageStats(documentedRangeFilter),
   ]);
   const queueDashboard=buildWoWSkillQueueDashboard({
     selection,period,sourceSystem,dataGrain:dataGrain || 'SKILL_STATISTICS',
@@ -115,16 +137,16 @@ export async function getWfmCallKpiDashboard(query = {}) {
   });
   const documentedDashboard=buildWfmCallKpiDashboard({
     rows:documentedRows,period,sourceSystem,dataGrain:'DOCUMENTED_CALLS',
-    dateFrom,dateTo,referenceDate,taskOrder,country,skill,
+    dateFrom,dateTo,referenceDate,taskOrder,country,skill:null,
   });
   const withAht=mergeDocumentedAhtIntoCallDashboard(
-    queueDashboard,documentedDashboard,documentedRows,{skill},documentedCoverage,
+    queueDashboard,documentedDashboard,documentedRows,{},documentedCoverage,
   );
   return {...withAht,
     filters:{...withAht.filters,rangeMode},availableGrains,availableDateRange:bounds,
     queueCoverage:{...withAht.queueCoverage,
       ledgerScopeAmbiguousCountries:ledgerScope.ambiguousCountries,
-      recoveredUnmappedGroups:selection.selected.filter((row) => !row.taskOrderId).length,
+      runtimeCountryScopedGroups: selection.selected.length,
     },
   };
 }

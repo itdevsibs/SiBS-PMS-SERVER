@@ -14,7 +14,7 @@ import {
   classifyPreparedChunkRows,
   reconcileClassificationsWithStoredRows,
 } from "../importChunkClassifier.js";
-import { createCountryTaskOrderResolver } from "../countryTaskOrderResolver.js";
+import { parseSkillStatisticsCountry } from "./skillStatisticsCountryParser.js";
 import { readHeaderRow, iterateWorksheetRowChunks } from "../../shared/workbookReaderService.js";
 import { createSkillStatisticsContentHash, createSkillStatisticsIdentityHash } from "./skillStatisticsHashService.js";
 import { mapSkillStatisticsRow } from "./skillStatisticsMapper.js";
@@ -33,7 +33,7 @@ function canonicalRow(row, batch, profile) {
     sourceRowNumber: m.source_row_number, dataGrain: m.data_grain,
     productionDate: m.production_date, intervalStart: m.interval_start,
     intervalEnd: m.interval_end, skillNameRaw: m.skill_name_raw,
-    countryRegion: m.country_region, taskOrderId: m.task_order_id,
+    countryRegion: m.country_region,
     totalCallsOffered: m.total_calls_offered, netCallsOffered: m.net_calls_offered,
     totalCallsHandled: m.total_calls_handled,
     totalCallsAbandoned: m.total_calls_abandoned, abandonedAfterSlt: m.abandoned_after_slt,
@@ -62,7 +62,6 @@ function issue(row, options = {}) {
 export async function processSkillStatisticsWorkbook({ workbook, batch, profile, workbookValidation,
   counters, chunkSize = 1000, reportDateFrom, reportDateTo, onProgress }) {
   const started = Date.now();
-  const resolver = await createCountryTaskOrderResolver({ modality: "CALL", label: "Skill Statistics" });
   const seenRows = new Map();
   const coverage = [];
   let processedChunks = 0;
@@ -77,16 +76,15 @@ export async function processSkillStatisticsWorkbook({ workbook, batch, profile,
             dataGrain: sheet.dataGrain, excelRowNumber: source.excelRowNumber,
             reportDateFrom, reportDateTo,
           });
-          const taskResolution = resolver.resolve(mapped.mappedRow.skill_name_raw);
-          if (taskResolution.status === "MATCHED") {
-            mapped.mappedRow.task_order_id = taskResolution.taskOrderId;
-          }
-          // Keep a recognized country even if the ledger has no active matching TO.
-          mapped.mappedRow.country_region = taskResolution.country || mapped.mappedRow.country_region || null;
+          // Parse country independently of the current client Task Order Ledger.
+          // Unrecognized countries remain valid raw/canonical rows with a warning.
+          mapped.mappedRow.country_region = parseSkillStatisticsCountry(
+            mapped.mappedRow.skill_name_raw, mapped.mappedRow.country_region,
+          );
           return {
             excelRowNumber: source.excelRowNumber, sheet, rowJson: source.rowJson,
             mappedRow: mapped.mappedRow, conversionErrors: mapped.conversionErrors,
-            taskResolution, isValid: mapped.conversionErrors.length === 0,
+            isValid: mapped.conversionErrors.length === 0,
             rowHash: createSkillStatisticsIdentityHash(mapped.mappedRow),
             contentHash: createSkillStatisticsContentHash(mapped.mappedRow, source.rowJson),
           };
@@ -134,12 +132,12 @@ export async function processSkillStatisticsWorkbook({ workbook, batch, profile,
           } else {
             counters.validRows += 1;
             coverage.push({ ...row.mappedRow, intervalStart: row.mappedRow.interval_start });
-            if (row.taskResolution.status !== "MATCHED") {
+            if (!row.mappedRow.country_region) {
               counters.warningRows += 1;
-              errors.push(issue(row, { ...base, severity: "WARNING", errorType: "TASK_ORDER_MAPPING",
-                errorCode: "SKILL_TASK_ORDER_UNMAPPED", columnName: "Skill",
+              errors.push(issue(row, { ...base, severity: "WARNING", errorType: "COUNTRY_MAPPING",
+                errorCode: "SKILL_COUNTRY_UNRECOGNIZED", columnName: "Skill",
                 rawValue: row.mappedRow.skill_name_raw,
-                message: row.taskResolution.warning || "Country/Task Order is not mapped; queue statistic was preserved." }));
+                message: "Country could not be identified from the supplied Skill/Country; queue statistic was preserved for later review." }));
             }
           }
         }

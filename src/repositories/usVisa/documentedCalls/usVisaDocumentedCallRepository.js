@@ -1,15 +1,16 @@
 import { pmsDb, pmsTables } from "../../../config/db.js";
+import { buildDocumentedAhtFilters } from "../../../services/kpi/usVisa/calls/documentedAhtFilterService.js";
 const cols = ["batch_id","raw_import_row_id","import_profile_id","source_sheet","source_row_number",
   "crm_call_log_id","system_call_id","source_name","production_date","source_date_basis",
   "created_on","modified_on","created_by_raw","sibs_id","mapping_status","mapping_method",
-  "owner_raw","country_region","task_order_id",
+  "owner_raw","country_region",
   "category","subcategory","call_duration_seconds","aht_eligible","row_content_hash"];
 
 const from = (row) => [row.batchId,row.rawImportRowId,row.importProfileId,row.sourceSheet,row.sourceRowNumber,
   row.crm_call_log_id,row.system_call_id,row.source_name,row.production_date,row.source_date_basis,
   row.created_on,row.modified_on,row.created_by_raw,row.sibs_id ?? null,
   row.mapping_status || "UNMATCHED",row.mapping_method ?? null,
-  row.owner_raw,row.country_region,row.task_order_id,
+  row.owner_raw,row.country_region,
   row.category,row.subcategory,row.call_duration_seconds,row.aht_eligible,
   row.rowContentHash];
 export async function findDocumentedCallsByIdentityHashes(hashes = []) {
@@ -35,45 +36,9 @@ export async function insertDocumentedCallsWithDuplicateProtection(rows = []) {
   return { affectedCount:result.affectedRows || 0 };
 }
 
-// AHT is the average of valid documented Call Duration (seconds), NOT a ratio
-// to the Skill Statistics handled-call count: their populations can differ.
-// The workbook has no call Skill, so skill-scoped queries deliberately return no AHT.
-export function buildDocumentedAhtFilters({dateFrom,dateTo,country,taskOrder,taskOrderCountries=[],skill,sourceSystem} = {},
-  { requireMappedTaskOrder = true } = {}) {
-  const conditions = ["b.status IN ('COMPLETED','COMPLETED_WITH_ERRORS')"];
-  if (requireMappedTaskOrder) conditions.push("d.aht_eligible = 1", "d.task_order_id IS NOT NULL");
-  const params = [];
-  if (dateFrom) {conditions.push("d.production_date >= ?");params.push(dateFrom);}
-  if (dateTo) {conditions.push("d.production_date <= ?");params.push(dateTo);}
-  const values = (v) => (Array.isArray(v) ? v : String(v || "").split(","))
-    .map((s)=>String(s).trim()).filter((s)=>s && !/^all(?: countries| task orders| skills)?$/i.test(s));
-  const countries = values(country);
-  const tasks = values(taskOrder).map((s)=>s.toUpperCase());
-  const taskCountries = values(taskOrderCountries);
-  if (countries.length) {conditions.push(`LOWER(TRIM(d.country_region)) IN (${countries.map(()=>"?").join(",")})`);params.push(...countries.map((s)=>s.toLowerCase()));}
-  if (tasks.length && !tasks.every((s)=>["TO18","TO22","OTHER"].includes(s))) {
-    conditions.push(`d.task_order_id IN (${tasks.map(()=>"?").join(",")})`);params.push(...tasks);
-  } else if (taskCountries.length) {
-    conditions.push(`LOWER(TRIM(d.country_region)) IN (${taskCountries.map(()=>"?").join(",")})`);params.push(...taskCountries.map((s)=>s.toLowerCase()));
-  }
-  // Cannot attribute Microsoft Dynamics call logs to an individual telephony tool
-  // unless the chosen Task Order uniquely identifies that source tool.
-  const src = String(sourceSystem || "US_VISA").toUpperCase().replace(/ /g,"_");
-  const toolTasks = { FUSECOM:["TO12","TO16"], FUSENET:["TO14"], HERODASH:["TO4","TO10"] };
-  if (toolTasks[src]) {
-    const supportsVirtualNesami = src === "FUSENET" && tasks.every((s)=>["TO18","TO22","OTHER"].includes(s));
-    if (tasks.length && !supportsVirtualNesami && tasks.some((s)=>!toolTasks[src].includes(s))) {
-      conditions.push("1=0");
-    } else {
-      // The existing account configuration defines the association between
-      // Task Orders and telephony tools. MS Dynamics does not export tool name.
-      conditions.push(`d.task_order_id IN (${toolTasks[src].map(()=>"?").join(",")})`);
-      params.push(...toolTasks[src]);
-    }
-  }
-  if (values(skill).length) conditions.push("1=0");
-  return { conditions, params };
-}
+// Query-time country scope is shared by all Documented Calls AHT reads.
+export { buildDocumentedAhtFilters };
+
 export async function getDailyDocumentedCallAhtRows(filters = {}) {
   const {conditions,params} = buildDocumentedAhtFilters(filters);
   const [rows] = await pmsDb.query(`SELECT DATE_FORMAT(d.production_date,'%Y-%m-%d') AS production_date,
@@ -102,8 +67,8 @@ export async function getDocumentedCallCoverageStats(filters = {}) {
   const {conditions,params}=buildDocumentedAhtFilters(filters,{requireMappedTaskOrder:false});
   const [rows]=await pmsDb.query(`SELECT COUNT(*) AS total_rows,
     SUM(CASE WHEN d.aht_eligible = 0 THEN 1 ELSE 0 END) AS no_duration_rows,
-    SUM(CASE WHEN d.task_order_id IS NULL THEN 1 ELSE 0 END) AS unmapped_task_order_rows,
-    SUM(CASE WHEN d.aht_eligible = 1 AND d.task_order_id IS NOT NULL THEN 1 ELSE 0 END) AS eligible_rows
+    SUM(CASE WHEN d.country_region IS NULL OR TRIM(d.country_region) = '' THEN 1 ELSE 0 END) AS unmapped_task_order_rows,
+    SUM(CASE WHEN d.aht_eligible = 1 AND d.country_region IS NOT NULL AND TRIM(d.country_region) <> '' THEN 1 ELSE 0 END) AS eligible_rows
     FROM ${pmsTables.usVisaRawDocumentedCalls} d
     INNER JOIN ${pmsTables.usVisaImportBatches} b ON b.id=d.batch_id
     WHERE ${conditions.join(" AND ")}`,params);

@@ -1,3 +1,4 @@
+import { getSkillStatisticsTaskOrderCountryScope } from "../services/kpi/usVisa/calls/skillStatisticsTaskOrderScope.js";
 import { pmsDb, pmsTables } from "../config/db.js";
 import {
   listImportBatches,
@@ -32,7 +33,11 @@ export async function getCallsReport(req, res) {
       skill,
     } = req.query;
     const selectedSource = sourceSystem || source || "US_VISA";
-    const taskOrderCountries = getUsVisaTaskOrderCountries(selectedSource, taskOrder || null);
+    const selectedTaskOrders = taskOrder || null;
+    const ledgerScope = await getSkillStatisticsTaskOrderCountryScope(selectedTaskOrders);
+    const taskOrderCountries = ledgerScope.countries.length ||
+      !selectedTaskOrders || String(selectedTaskOrders).match(/TO(?:4|10|12|14|16)(?:\b|,)/i)
+      ? ledgerScope.countries : getUsVisaTaskOrderCountries(selectedSource, selectedTaskOrders);
     let effectiveDateFrom = dateFrom || date || undefined;
     let effectiveDateTo = dateTo || date || undefined;
 
