@@ -1,8 +1,8 @@
 import { getWfmChatKpiDashboard } from "../services/kpi/usVisa/chats/chatKpiQueryService.js";
+import { getCountryOwnedReportScope } from "../services/kpi/usVisa/calls/countryOwnedReportScope.js";
 import {
   getChatKpiDateBounds,
   getChatReportData,
-  listChatValidTaskOrders,
 } from "../repositories/usVisa/chats/usVisaChatKpiRepository.js";
 
 const BAD_REQUEST_CODES = new Set([
@@ -52,6 +52,7 @@ export async function getChatReport(req, res) {
     } = req.query;
 
     const selectedSource = sourceSystem || source || "US_VISA";
+    const ownership = await getCountryOwnedReportScope(taskOrder || null);
     let effectiveDateFrom = dateFrom || date || undefined;
     let effectiveDateTo = dateTo || date || undefined;
 
@@ -62,6 +63,8 @@ export async function getChatReport(req, res) {
       sourceSystem: selectedSource,
       taskOrder: taskOrder || undefined,
       skill: skill || undefined,
+      ownership,
+      taskOrderCountries: ownership.taskOrderCountries,
     });
 
     let resolvedDate = date || null;
@@ -69,6 +72,7 @@ export async function getChatReport(req, res) {
       const bounds = await getChatKpiDateBounds({
         sourceSystem: selectedSource,
         taskOrder: taskOrder || undefined,
+        taskOrderCountries: ownership.taskOrderCountries,
         country: country || undefined,
         skill: skill || undefined,
       });
@@ -84,11 +88,13 @@ export async function getChatReport(req, res) {
           sourceSystem: selectedSource,
           taskOrder: taskOrder || undefined,
           skill: skill || undefined,
+          ownership,
+          taskOrderCountries: ownership.taskOrderCountries,
         });
       }
     }
 
-    const availableTaskOrders = await listChatValidTaskOrders();
+    const availableTaskOrders = ownership.availableTaskOrders;
 
     return res.json({
       success: true,

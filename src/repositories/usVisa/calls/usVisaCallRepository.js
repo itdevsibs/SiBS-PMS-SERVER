@@ -1,5 +1,6 @@
 // Inserts and looks up canonical US VISA Call Report (EOD) rows.
 import { pmsDb, pmsTables } from "../../../config/db.js";
+import { createCallContentHash } from "../../../services/imports/usVisa/calls/callHashService.js";
 
 const INSERT_COLUMNS = [
   "batch_id",
@@ -21,7 +22,6 @@ const INSERT_COLUMNS = [
   "mapping_method",
   "skill_name_raw",
   "country_region",
-  "task_order_id",
   "direction",
   "interaction_status",
   "arrival_at",
@@ -69,7 +69,10 @@ function mapCallRow(row) {
     callId: row.call_id,
     productionDate: row.production_date,
     rowIdentityHash: row.row_identity_hash,
-    rowContentHash: row.row_content_hash,
+    // Recalculate from persisted source fields without legacy derived country/Task Order.
+    // This keeps an identical historical re-upload a duplicate after the column migration.
+    rowContentHash: createCallContentHash(row),
+    rawRowJson: row.raw_row_json,
     createdAt: row.created_at,
   };
 }
@@ -95,7 +98,6 @@ function getInsertValues(row = {}) {
     toNullableValue(row.mappingMethod ?? row.mapping_method),
     toNullableValue(row.skillNameRaw ?? row.skill_name_raw),
     toNullableValue(row.countryRegion ?? row.country_region),
-    toNullableValue(row.taskOrderId ?? row.task_order_id),
     toNullableValue(row.direction),
     toNullableValue(row.interactionStatus ?? row.interaction_status),
     toNullableValue(row.arrivalAt ?? row.arrival_at),
@@ -127,12 +129,16 @@ export async function findCallsByIdentityHashes(rowIdentityHashes = []) {
   const [rows] = await pmsDb.query(
     `
       SELECT
-        c.id,
-        c.batch_id,
-        c.raw_import_row_id,
+        c.*,
         rr.row_identity_hash,
+        rr.row_json AS raw_row_json,
         c.row_content_hash,
-        c.created_at
+        c.created_at,
+        DATE_FORMAT(c.production_date, '%Y-%m-%d') AS production_date,
+        DATE_FORMAT(c.arrival_at, '%Y-%m-%d %H:%i:%s') AS arrival_at,
+        DATE_FORMAT(c.queue_at, '%Y-%m-%d %H:%i:%s') AS queue_at,
+        DATE_FORMAT(c.answer_at, '%Y-%m-%d %H:%i:%s') AS answer_at,
+        DATE_FORMAT(c.end_at, '%Y-%m-%d %H:%i:%s') AS end_at
       FROM ${pmsTables.usVisaRawCalls} c
       INNER JOIN ${pmsTables.usVisaRawImportRows} rr
         ON rr.id = c.raw_import_row_id

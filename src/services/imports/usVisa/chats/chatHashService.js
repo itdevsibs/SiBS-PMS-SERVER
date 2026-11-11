@@ -8,8 +8,6 @@ const CONTENT_FIELDS = [
   "source_chat_id",
   "production_date",
   "skill_name_raw",
-  "country_region",
-  "task_order_id",
   "agent_name_raw",
   "personal_id",
   "sibs_id",
@@ -63,13 +61,23 @@ export function createChatIdentityHash(row = {}) {
   return stableHash(buildChatIdentityParts(row));
 }
 
+const NUMERIC_CONTENT_FIELDS = new Set(["duration_seconds", "wait_seconds", "first_response_seconds", "art_seconds", "is_answered", "is_no_response", "is_abandoned", "session_count", "adjusted_chat_seconds"]);
+
+function normalizeContentField(field, value) {
+  if (NUMERIC_CONTENT_FIELDS.has(field) && value !== null && value !== undefined && value !== '') {
+    const number = Number(value);
+    if (Number.isFinite(number)) return String(number);
+  }
+  return normalize(value);
+}
+
 export function createChatContentHash(row = {}) {
   return stableHash(
     CONTENT_FIELDS.map((field) => [
       // Existing persisted Chat hashes use this historical field label.
       // Only the serialization label is legacy; the data source is sibs_id.
       field === "sibs_id" ? "employee_uid" : field,
-      normalize(row[field]),
+      normalizeContentField(field, row[field]),
     ]),
   );
 }

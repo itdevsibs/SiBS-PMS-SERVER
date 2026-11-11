@@ -80,23 +80,8 @@ export function validateCanonicalCallRow(row = {}, options = {}) {
     ));
   }
 
-  if (options.taskResolution?.status === "UNMATCHED") {
-    issues.push(issue(
-      CALL_VALIDATION_ERROR_CODES.TASK_ORDER_SKILL_UNMATCHED,
-      "skill_name_raw",
-      row.skill_name_raw,
-      "Country could not be identified from Call Skill or is not mapped to an active Task Order.",
-    ));
-  } else if (options.taskResolution?.status === "CONFLICT") {
-    issues.push(issue(
-      CALL_VALIDATION_ERROR_CODES.TASK_ORDER_SKILL_CONFLICT,
-      "skill_name_raw",
-      row.skill_name_raw,
-      options.taskResolution.warning || "Country parsed from Call Skill conflicts with the active Task Order mapping.",
-    ));
-  } else {
-    addRequired(issues, row, "task_order_id");
-  }
+  // Task Order is reporting metadata resolved from the current ledger, not
+  // an import-time validation requirement. Country mapping may be unavailable.
 
   if (!isBlank(row.production_date) && !isValidDateOnly(row.production_date)) {
     issues.push(issue(

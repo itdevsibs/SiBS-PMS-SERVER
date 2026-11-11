@@ -319,7 +319,6 @@ export function mapCallRow(sourceRow = {}, options = {}) {
     mapping_method: null,
     skill_name_raw: skill,
     country_region: null,
-    task_order_id: null,
     direction: getString(sourceRow, ["Direction", "Call Direction", "Type"]),
     interaction_status: recordType,
     arrival_at: combineDateAndTime(productionDate, arrivalSeconds),
