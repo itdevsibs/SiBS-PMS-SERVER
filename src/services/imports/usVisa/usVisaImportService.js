@@ -409,12 +409,8 @@ export async function importUsVisaRawWorkbook(options = {}) {
       String(profile.reportType || "").trim().toUpperCase() === "AGENT_LEVEL";
     const isAgentOccupancy = processor.domain === "AGENT_OCCUPANCY";
     const isEmailRawData = processor.domain === "EMAIL_RAW_DATA";
-    const isCallReport = processor.domain === "CALL_REPORT_EOD";
-    const isChatReport = processor.domain === "CHAT_REPORT_EOD";
     let occupancyTaskOrder = null;
     let emailTaskOrder = null;
-    let callTaskOrder = null;
-    let chatTaskOrder = null;
 
     if (isAgentOccupancy) {
       const occupancySourceSystem = String(
@@ -470,89 +466,8 @@ export async function importUsVisaRawWorkbook(options = {}) {
       }
     }
 
-    if (isCallReport && String(profile.sourceSystem || "").trim().toUpperCase() === "HERODASH") {
-      try {
-        callTaskOrder = assertUsVisaTaskOrder(
-          options.taskOrderId,
-          "HeroDash Call Report (EOD) imports",
-        );
-      } catch (error) {
-        return {
-          batch: null,
-          rejected: true,
-          code: error.code || "INVALID_TASK_ORDER",
-          message: error.message,
-          profile,
-          profileCode,
-          fileHash,
-          worksheetNames: [],
-          workbookValidation: null,
-          counters,
-        };
-      }
-    } else if (isCallReport && options.taskOrderId) {
-      try {
-        callTaskOrder = assertUsVisaTaskOrder(
-          options.taskOrderId,
-          "Call Report (EOD) imports",
-        );
-      } catch (error) {
-        return {
-          batch: null,
-          rejected: true,
-          code: error.code || "INVALID_TASK_ORDER",
-          message: error.message,
-          profile,
-          profileCode,
-          fileHash,
-          worksheetNames: [],
-          workbookValidation: null,
-          counters,
-        };
-      }
-    }
-
-    if (isChatReport && String(profile.sourceSystem || "").trim().toUpperCase() === "HERODASH") {
-      try {
-        chatTaskOrder = assertUsVisaTaskOrder(
-          options.taskOrderId,
-          "HeroDash Chat Report (EOD) imports",
-        );
-      } catch (error) {
-        return {
-          batch: null,
-          rejected: true,
-          code: error.code || "INVALID_TASK_ORDER",
-          message: error.message,
-          profile,
-          profileCode,
-          fileHash,
-          worksheetNames: [],
-          workbookValidation: null,
-          counters,
-        };
-      }
-    } else if (isChatReport && options.taskOrderId) {
-      try {
-        chatTaskOrder = assertUsVisaTaskOrder(
-          options.taskOrderId,
-          "Chat Report (EOD) imports",
-        );
-      } catch (error) {
-        return {
-          batch: null,
-          rejected: true,
-          code: error.code || "INVALID_TASK_ORDER",
-          message: error.message,
-          profile,
-          profileCode,
-          fileHash,
-          worksheetNames: [],
-          workbookValidation: null,
-          counters,
-        };
-      }
-    }
+    // Calls EOD and Chat imports no longer require a Task Order selection.
+    // Their country is parsed independently; ownership is report-time metadata.
 
     if (isAgentLevel) {
       agentPerformance = {
@@ -751,8 +666,6 @@ export async function importUsVisaRawWorkbook(options = {}) {
         taskOrderId:
           occupancyTaskOrder?.id ||
           emailTaskOrder?.id ||
-          callTaskOrder?.id ||
-          chatTaskOrder?.id ||
           null,
       }),
     );
@@ -776,8 +689,6 @@ export async function importUsVisaRawWorkbook(options = {}) {
       taskOrderId:
         occupancyTaskOrder?.id ||
         emailTaskOrder?.id ||
-        callTaskOrder?.id ||
-        chatTaskOrder?.id ||
         batch.taskOrderId ||
         null,
       fileHash,

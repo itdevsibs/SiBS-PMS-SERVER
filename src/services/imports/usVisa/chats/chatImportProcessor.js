@@ -25,8 +25,9 @@ import {
   createBulkAgentIdentityResolver,
 } from "../agentInteractions/agentIdentityMatchingService.js";
 import { createChatContentHash, createChatIdentityHash } from "./chatHashService.js";
+import { sourceRowFingerprint } from "../sourceRowFingerprint.js";
 import { mapChatIdentity, mapChatRow } from "./chatMapper.js";
-import { createChatTaskOrderResolver } from "./chatTaskOrderResolver.js";
+import { parseSkillStatisticsCountry } from "../skillStatistics/skillStatisticsCountryParser.js";
 import { validateCanonicalChatRow } from "./chatValidator.js";
 
 function getRawStatusForClassification(classification) {
@@ -36,7 +37,9 @@ function getRawStatusForClassification(classification) {
   return "VALID";
 }
 
-function mapRowsByHash(rows = []) {
+function mapRowsByHash(rows = [], preparedRows = []) {
+  const prepared = new Map(preparedRows.filter((row) => row.rowHash)
+    .map((row) => [row.rowHash, row]));
   return new Map(
     rows
       .filter((row) => row?.rowIdentityHash || row?.row_identity_hash || row?.rowHash)
@@ -45,7 +48,15 @@ function mapRowsByHash(rows = []) {
         {
           ...row,
           rowHash: row.rowIdentityHash || row.row_identity_hash || row.rowHash,
-          contentHash: row.rowContentHash || row.row_content_hash || row.contentHash,
+          contentHash: (
+            prepared.has(row.rowIdentityHash || row.row_identity_hash || row.rowHash) &&
+            sourceRowFingerprint(row.rawRowJson) &&
+            sourceRowFingerprint(row.rawRowJson) === sourceRowFingerprint(
+              prepared.get(row.rowIdentityHash || row.row_identity_hash || row.rowHash)?.rowJson
+            )
+          )
+            ? prepared.get(row.rowIdentityHash || row.row_identity_hash || row.rowHash).contentHash
+            : (row.rowContentHash || row.row_content_hash || row.contentHash),
         },
       ]),
   );
@@ -159,7 +170,6 @@ function buildCanonicalRow({ mappedRow, contentHash, batch, rawRowId, profile })
     productionDate: mappedRow.production_date,
     skillNameRaw: mappedRow.skill_name_raw,
     countryRegion: mappedRow.country_region,
-    taskOrderId: mappedRow.task_order_id,
     agentNameRaw: mappedRow.agent_name_raw,
     personalId: mappedRow.personal_id,
     sourceAgentKey: mappedRow.source_agent_key,
@@ -245,11 +255,9 @@ export async function processChatReportWorkbook({
   profile,
   workbookValidation,
   counters,
-  taskOrderId,
   onProgress,
 }) {
   const startedAt = Date.now();
-  const taskOrderResolver = await createChatTaskOrderResolver();
   const sourceSystem = String(profile.sourceSystem || "").trim().toUpperCase();
   const preparedRows = [];
   const identitiesByKey = new Map();
@@ -302,15 +310,9 @@ export async function processChatReportWorkbook({
   );
 
   for (const row of preparedRows) {
-    const taskResolution = taskOrderResolver.resolve(row.mappedRow.skill_name_raw, {
-      expectedTaskOrderId: taskOrderId || null,
-    });
-    row.taskResolution = taskResolution;
-
-    if (taskResolution.status === "MATCHED") {
-      row.mappedRow.task_order_id = taskResolution.taskOrderId;
-      row.mappedRow.country_region = taskResolution.country;
-    }
+    row.mappedRow.country_region = parseSkillStatisticsCountry(
+      row.mappedRow.skill_name_raw, row.mappedRow.country_region,
+    );
 
     if (String(row.mappedRow.agent_name_raw || "").trim()) {
       const identityMatch = identityResolver.resolve(row.identity);
@@ -326,9 +328,7 @@ export async function processChatReportWorkbook({
   applyConcurrencyAdjustment(preparedRows);
 
   for (const row of preparedRows) {
-    const validation = validateCanonicalChatRow(row.mappedRow, {
-      taskResolution: row.taskResolution,
-    });
+    const validation = validateCanonicalChatRow(row.mappedRow);
     row.validationErrors = validation.errors;
     row.isValid = row.conversionErrors.length === 0 && validation.errors.length === 0;
     row.rowHash = createChatIdentityHash(row.mappedRow);
@@ -339,7 +339,7 @@ export async function processChatReportWorkbook({
     preparedRows.filter((row) => row.isValid).map((row) => row.rowHash),
   )];
   const existingRows = await findChatsByIdentityHashes(validHashes);
-  const existingByHash = mapRowsByHash(existingRows);
+  const existingByHash = mapRowsByHash(existingRows, preparedRows);
   const classifiedRows = classifyPreparedChunkRows({
     rows: preparedRows,
     existingByHash,
@@ -396,7 +396,7 @@ export async function processChatReportWorkbook({
     : existingRows;
   const finalRows = reconcileClassificationsWithStoredRows({
     rows: classifiedRows,
-    storedByHash: mapRowsByHash(storedRows),
+    storedByHash: mapRowsByHash(storedRows, preparedRows),
     batchId: batch.id,
   });
 
@@ -441,6 +441,19 @@ export async function processChatReportWorkbook({
     if (row.classification === IMPORT_ROW_CLASSIFICATIONS.ROW_CONFLICT) {
       importErrors.push(createConflictImportError(row, context));
       continue;
+    }
+
+    if (row.classification === IMPORT_ROW_CLASSIFICATIONS.NEW && !row.mappedRow.country_region) {
+      importErrors.push({
+        batchId: batch.id, rawRowId: context.rawRowId,
+        sheetName: context.sheetName, excelRowNumber: context.excelRowNumber,
+        severity: "WARNING", errorType: "COUNTRY_MAPPING",
+        errorCode: "CHAT_COUNTRY_UNMAPPED", columnName: "Skill",
+        rawValue: row.mappedRow.skill_name_raw,
+        errorMessage: "Country not recognized from the original Chat Skill. The row was imported without Task Order ownership.",
+        existingRowId: null,
+      });
+      counters.warningRows += 1;
     }
 
     if (

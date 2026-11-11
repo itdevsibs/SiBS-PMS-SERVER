@@ -1,3 +1,4 @@
+import { getCountryOwnedReportScope } from "../services/kpi/usVisa/calls/countryOwnedReportScope.js";
 import { getSkillStatisticsTaskOrderCountryScope } from "../services/kpi/usVisa/calls/skillStatisticsTaskOrderScope.js";
 import { pmsDb, pmsTables } from "../config/db.js";
 import {
@@ -159,9 +160,13 @@ export async function getWfmSkills(req, res) {
       }
       return res.json({success:true,data:skills,countryScopes,taskOrders:[...byOrder.values()]});
     }
-    const [callSkills, chatSkills] = await Promise.all([
+    const [callSkills, chatSkills, chatOwnership, [profiles]] = await Promise.all([
       getDistinctSkillStatisticsSkillsByCountry(),
       getDistinctChatSkillsByCountry(),
+      getCountryOwnedReportScope(),
+      pmsDb.query(`SELECT task_order_code, task_order_name
+        FROM ${pmsTables.usVisaTaskOrderLedgerProfiles}
+        WHERE is_active = 1 ORDER BY task_order_name`),
     ]);
     const skillsByCountry = { ...callSkills };
     for (const [country, skills] of Object.entries(chatSkills || {})) {
@@ -171,6 +176,12 @@ export async function getWfmSkills(req, res) {
     return res.json({
       success: true,
       data: skillsByCountry,
+      chatSkillsByCountry: chatSkills,
+      chatCountryScopes: chatOwnership.countryDisplayScopes,
+      taskOrders: profiles.map((profile) => {
+        const match = String(profile.task_order_code || '').toUpperCase().match(/TO\s*(\d+)/);
+        return match ? {value: `TO${Number(match[1])}`, label: String(profile.task_order_name || match[0])} : null;
+      }).filter(Boolean),
     });
   } catch (error) {
     console.error("GET /api/kpis/skills error:", error);

@@ -13,8 +13,6 @@ const CONTENT_FIELDS = [
   "personal_id",
   "source_agent_key",
   "skill_name_raw",
-  "country_region",
-  "task_order_id",
   "direction",
   "interaction_status",
   "arrival_at",
@@ -69,9 +67,19 @@ export function createCallIdentityHash(row = {}) {
   return stableHash(buildCallIdentityParts(row));
 }
 
+const NUMERIC_CONTENT_FIELDS = new Set(["queue_seconds", "duration_seconds", "hold_seconds", "hold_count", "is_answered", "is_abandoned", "is_within_sla"]);
+
+function normalizeContentField(field, value) {
+  if (NUMERIC_CONTENT_FIELDS.has(field) && value !== null && value !== undefined && value !== '') {
+    const number = Number(value);
+    if (Number.isFinite(number)) return String(number);
+  }
+  return normalize(value);
+}
+
 export function createCallContentHash(row = {}) {
   return stableHash(
-    CONTENT_FIELDS.map((field) => [field, normalize(row[field])]),
+    CONTENT_FIELDS.map((field) => [field, normalizeContentField(field, row[field])]),
   );
 }
 

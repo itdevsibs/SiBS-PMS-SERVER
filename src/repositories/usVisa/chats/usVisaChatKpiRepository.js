@@ -1,5 +1,7 @@
 // Queries canonical Chat Report (EOD) rows for WFM/WoW KPI reporting.
 import { pmsDb, pmsTables } from "../../../config/db.js";
+import { expandSkillStatisticsCountryAliases } from "../../../services/kpi/usVisa/calls/skillStatisticsTaskOrderOwnership.js";
+import { getCountryOwnedReportScope } from "../../../services/kpi/usVisa/calls/countryOwnedReportScope.js";
 
 const KPI_BATCH_STATUSES = ["COMPLETED", "COMPLETED_WITH_ERRORS"];
 
@@ -28,25 +30,19 @@ function appendSourceSystemFilter(conditions, values, sourceSystem) {
 }
 
 function appendTaskOrderFilter(conditions, values, taskOrder, taskOrderCountries = []) {
-  const taskOrders = normalizeFilterList(taskOrder, ["all", "all task orders"])
-    .map((item) => item.toUpperCase());
-
-  if (taskOrders.length) {
-    conditions.push(`UPPER(TRIM(c.task_order_id)) IN (${taskOrders.map(() => "?").join(", ")})`);
-    values.push(...taskOrders);
+  const taskOrders = normalizeFilterList(taskOrder, ["all", "all task orders"]);
+  if (!taskOrders.length) return;
+  const countries = expandSkillStatisticsCountryAliases(normalizeFilterList(taskOrderCountries));
+  if (!countries.length) {
+    conditions.push("1 = 0");
     return;
   }
-
-  const countries = normalizeFilterList(taskOrderCountries).map((item) => item.toLowerCase());
-  if (countries.length) {
-    conditions.push(`LOWER(TRIM(c.country_region)) IN (${countries.map(() => "?").join(", ")})`);
-    values.push(...countries);
-  }
+  conditions.push(`LOWER(TRIM(c.country_region)) IN (${countries.map(() => "?").join(", ")})`);
+  values.push(...countries);
 }
 
 function appendCountryFilter(conditions, values, country) {
-  const countries = normalizeFilterList(country, ["all", "all countries"])
-    .map((item) => item.toLowerCase());
+  const countries = expandSkillStatisticsCountryAliases(normalizeFilterList(country, ["all", "all countries"]));
   if (!countries.length) return;
   conditions.push(`LOWER(TRIM(c.country_region)) IN (${countries.map(() => "?").join(", ")})`);
   values.push(...countries);
@@ -181,19 +177,8 @@ export async function getDailyChatKpiRows(filters = {}) {
 }
 
 export async function listChatValidTaskOrders() {
-  const [rows] = await pmsDb.query(
-    `
-      SELECT DISTINCT c.task_order_id
-      ${joinSql()}
-      WHERE b.status IN (${KPI_BATCH_STATUSES.map(() => "?").join(", ")})
-        AND p.report_type = 'CHAT_REPORT_EOD'
-        AND c.task_order_id IS NOT NULL
-        AND TRIM(c.task_order_id) <> ''
-      ORDER BY c.task_order_id ASC
-    `,
-    [...KPI_BATCH_STATUSES],
-  );
-  return rows.map((row) => row.task_order_id);
+  const ownership = await getCountryOwnedReportScope();
+  return ownership.availableTaskOrders;
 }
 
 export async function getDistinctChatSkillsByCountry() {
@@ -236,12 +221,16 @@ export async function getChatReportData({
   sourceSystem = "US_VISA",
   taskOrder = null,
   skill = null,
+  taskOrderCountries = null,
+  ownership = null,
 } = {}) {
+  const currentOwnership = ownership || await getCountryOwnedReportScope(taskOrder);
   const { conditions, values } = buildBaseFilters({
     sourceSystem,
     dateFrom,
     dateTo,
     taskOrder,
+    taskOrderCountries: taskOrderCountries ?? currentOwnership.taskOrderCountries,
     country: country && country !== "All Countries" ? country : null,
     skill,
   });
@@ -252,7 +241,6 @@ export async function getChatReportData({
     `
       SELECT
         COALESCE(NULLIF(TRIM(c.country_region), ''), 'Other') AS country,
-        c.task_order_id,
         COUNT(DISTINCT ${identitySql}) AS chats_received,
         COUNT(DISTINCT CASE WHEN c.is_answered = 1 THEN ${identitySql} END) AS chats_answered,
         COUNT(DISTINCT CASE WHEN c.is_no_response = 1 THEN ${identitySql} END) AS no_response,
@@ -261,8 +249,8 @@ export async function getChatReportData({
         SUM(CASE WHEN c.duration_seconds IS NOT NULL THEN 1 ELSE 0 END) AS duration_seconds_denominator
       ${joinSql()}
       WHERE ${conditions.join("\n        AND ")}
-      GROUP BY COALESCE(NULLIF(TRIM(c.country_region), ''), 'Other'), c.task_order_id
-      ORDER BY country ASC, c.task_order_id ASC
+      GROUP BY COALESCE(NULLIF(TRIM(c.country_region), ''), 'Other')
+      ORDER BY country ASC
     `,
     values,
   );
@@ -284,7 +272,7 @@ export async function getChatReportData({
 
     return {
       country: row.country || "Other",
-      taskOrderId: row.task_order_id || null,
+      taskOrderId: currentOwnership.resolve(row.country),
       chatsReceived,
       chatsAnswered,
       noResponse,

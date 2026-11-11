@@ -27,6 +27,9 @@ for (const group of COUNTRY_ALIAS_GROUPS) {
 }
 const canonical = (country) => ALIAS_TO_CANONICAL.get(normalizedCountry(country)) || normalizedCountry(country);
 
+// Shared by the Task Order management editor to validate aliases exactly as reports do.
+export const normalizeCountryOwnershipKey = canonical;
+
 export function expandSkillStatisticsCountryAliases(values = []) {
   const result = new Set();
   for (const value of values) {
@@ -40,7 +43,7 @@ export function expandSkillStatisticsCountryAliases(values = []) {
 }
 
 const parseTaskOrder = (value) => {
-  const match = String(value || '').toUpperCase().match(/\bTO\s*([0-9]+)\b/);
+  const match = String(value || '').toUpperCase().match(/(?:^|[^A-Z0-9])TO\s*([0-9]+)(?![0-9])/);
   return match ? `TO${Number(match[1])}` : null;
 };
 
@@ -74,3 +77,27 @@ export function buildUniqueTaskOrderCountryScope(rows = [], requestedTaskOrders 
   return {countries: expandSkillStatisticsCountryAliases(allowed), ambiguousCountries: ambiguous.sort()};
 }
 
+
+// Country-based reports display one current Task Order per country. No JOIN to
+// ledger Skill rows is permitted: duplicate Skills must never multiply counts.
+export function buildUniqueCountryTaskOrderIndex(rows = []) {
+  const entries = new Map();
+  for (const row of rows) {
+    if (row.status != null && String(row.status).trim().toUpperCase() !== 'ACTIVE') continue;
+    const country = canonical(row.country);
+    const taskOrder = parseTaskOrder(row.task_order ?? row.taskOrder);
+    if (!country || !taskOrder) continue;
+    if (!entries.has(country)) entries.set(country, new Set());
+    entries.get(country).add(taskOrder);
+  }
+  const result = new Map();
+  for (const [country, owners] of entries) {
+    if (owners.size === 1) result.set(country, [...owners][0]);
+  }
+  return {
+    owners: result,
+    ambiguousCountries: [...entries].filter(([, owners]) => owners.size > 1)
+      .map(([country]) => country).sort(),
+    resolve: (country) => result.get(canonical(country)) || null,
+  };
+}

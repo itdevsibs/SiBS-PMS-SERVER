@@ -64,49 +64,30 @@ function appendTaskOrderFilter({
     .map((item) => item.toUpperCase());
 
   const direct = taskOrders.filter((item) => DIRECT_TASK_ORDERS.has(item));
-  // Skill Statistics ownership is always resolved from the current, unique
-  // country -> Task Order ledger. Never consult a persisted Task Order ID.
-  if (reportType === "SKILL_STATISTICS" && direct.length) {
-    const countries = expandSkillStatisticsCountryAliases(
-      normalizeFilterList(taskOrderCountries),
-    );
-    if (!countries.length) {
-      conditions.push("1 = 0"); // A selected TO without an unambiguous country has no rows.
-      return;
-    }
-    const placeholders = countries.map(() => "?").join(", ");
-    conditions.push(`(LOWER(TRIM(c.country_region)) IN (${placeholders})
-      OR (NULLIF(TRIM(c.country_region), '') IS NULL
-        AND ${SKILL_STATISTICS_RAW_COUNTRY_SQL} IN (${placeholders})))`);
-    values.push(...countries, ...countries);
-    return;
-  }
-
-  if (direct.length) {
-    conditions.push(`UPPER(TRIM(c.task_order_id)) IN (${direct.map(() => "?").join(", ")})`);
-    values.push(...direct);
-    return;
-  }
-
-  // Legacy virtual subgroups retain their country scope. They do not depend
-  // on any stored Skill Statistics Task Order either.
-  const countries = reportType === "SKILL_STATISTICS"
-    ? expandSkillStatisticsCountryAliases(normalizeFilterList(taskOrderCountries))
-    : normalizeFilterList(taskOrderCountries).map((item) => item.toLowerCase());
+  // Direct Task Orders for both Skill Statistics and Raw Calls EOD are
+  // resolved by the current ledger country scope, never a stored TO column.
+  const countries = expandSkillStatisticsCountryAliases(normalizeFilterList(taskOrderCountries));
   if (countries.length) {
-    conditions.push(`LOWER(TRIM(c.country_region)) IN (${countries.map(() => "?").join(", ")})`);
-    values.push(...countries);
-  } else if (reportType === "SKILL_STATISTICS" && taskOrders.length) {
-    conditions.push("1 = 0");
+    const placeholders = countries.map(() => '?').join(', ');
+    if (reportType === 'SKILL_STATISTICS') {
+      conditions.push(`(LOWER(TRIM(c.country_region)) IN (${placeholders})
+        OR (NULLIF(TRIM(c.country_region), '') IS NULL
+          AND ${SKILL_STATISTICS_RAW_COUNTRY_SQL} IN (${placeholders})))`);
+      values.push(...countries, ...countries);
+    } else {
+      conditions.push(`LOWER(TRIM(c.country_region)) IN (${placeholders})`);
+      values.push(...countries);
+    }
+  } else if (direct.length || taskOrders.length) {
+    // An empty scope must never silently widen a selected TO to all countries.
+    conditions.push('1 = 0');
   }
 }
 
 function appendCountryFilter({ conditions, values, country, reportType }) {
   const requested = normalizeFilterList(country, ["all", "all countries"]);
   if (!requested.length) return;
-  const countries = reportType === "SKILL_STATISTICS"
-    ? expandSkillStatisticsCountryAliases(requested)
-    : requested.map((item) => item.toLowerCase());
+  const countries = expandSkillStatisticsCountryAliases(requested);
   const placeholders = countries.map(() => "?").join(", ");
   if (reportType === "SKILL_STATISTICS") {
     conditions.push(`(LOWER(TRIM(c.country_region)) IN (${placeholders})

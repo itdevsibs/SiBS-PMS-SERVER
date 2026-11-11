@@ -26,12 +26,13 @@ import {
   createBulkAgentIdentityResolver,
 } from "../agentInteractions/agentIdentityMatchingService.js";
 import { createCallContentHash, createCallIdentityHash } from "./callHashService.js";
+import { sourceRowFingerprint } from "../sourceRowFingerprint.js";
 import {
   getCallIdentityFieldMappings,
   mapCallIdentity,
   mapCallRow,
 } from "./callMapper.js";
-import { createCallTaskOrderResolver } from "./callTaskOrderResolver.js";
+import { parseSkillStatisticsCountry } from "../skillStatistics/skillStatisticsCountryParser.js";
 import { validateCanonicalCallRow } from "./callValidator.js";
 
 const AGENT_IDENTITY_FIELDS = [
@@ -119,7 +120,9 @@ function getRawStatusForClassification(classification) {
   return "VALID";
 }
 
-function mapRowsByHash(rows = []) {
+function mapRowsByHash(rows = [], preparedRows = []) {
+  const prepared = new Map(preparedRows.filter((row) => row.rowHash)
+    .map((row) => [row.rowHash, row]));
   return new Map(
     rows
       .filter((row) => row?.rowIdentityHash || row?.row_identity_hash || row?.rowHash)
@@ -128,7 +131,15 @@ function mapRowsByHash(rows = []) {
         {
           ...row,
           rowHash: row.rowIdentityHash || row.row_identity_hash || row.rowHash,
-          contentHash: row.rowContentHash || row.row_content_hash || row.contentHash,
+          contentHash: (
+            prepared.has(row.rowIdentityHash || row.row_identity_hash || row.rowHash) &&
+            sourceRowFingerprint(row.rawRowJson) &&
+            sourceRowFingerprint(row.rawRowJson) === sourceRowFingerprint(
+              prepared.get(row.rowIdentityHash || row.row_identity_hash || row.rowHash)?.rowJson
+            )
+          )
+            ? prepared.get(row.rowIdentityHash || row.row_identity_hash || row.rowHash).contentHash
+            : (row.rowContentHash || row.row_content_hash || row.contentHash),
         },
       ]),
   );
@@ -239,20 +250,16 @@ function createRowContext(batch, sheet, row, rawRow) {
   };
 }
 
-async function prepareCallRow({ profileCode, sourceRow, sheet, identityResolver, taskOrderResolver, expectedTaskOrderId }) {
+async function prepareCallRow({ profileCode, sourceRow, sheet, identityResolver }) {
   const mapped = mapCallRow(sourceRow.rowJson, {
     profileCode,
     sheetName: sheet.sheetName,
   });
 
-  const taskResolution = taskOrderResolver.resolve(mapped.mappedRow.skill_name_raw, {
-    expectedTaskOrderId,
-  });
-
-  if (taskResolution.status === "MATCHED") {
-    mapped.mappedRow.task_order_id = taskResolution.taskOrderId;
-    mapped.mappedRow.country_region = taskResolution.country;
-  }
+  // Source country is independent of the current country -> Task Order ledger.
+  mapped.mappedRow.country_region = parseSkillStatisticsCountry(
+    mapped.mappedRow.skill_name_raw, mapped.mappedRow.country_region,
+  );
 
   if (String(mapped.mappedRow.agent_name_raw || "").trim()) {
     const identityMatch = identityResolver.resolve({
@@ -271,7 +278,7 @@ async function prepareCallRow({ profileCode, sourceRow, sheet, identityResolver,
     mapped.mappedRow.mapping_method = identityMatch.matchMethod;
   }
 
-  const validationResult = validateCanonicalCallRow(mapped.mappedRow, { taskResolution });
+  const validationResult = validateCanonicalCallRow(mapped.mappedRow);
   const rowHash = createCallIdentityHash(mapped.mappedRow);
   const contentHash = createCallContentHash(mapped.mappedRow);
 
@@ -281,7 +288,6 @@ async function prepareCallRow({ profileCode, sourceRow, sheet, identityResolver,
     rowJson: mapped.rowJson,
     conversionErrors: mapped.conversionErrors,
     validationErrors: validationResult.errors,
-    taskResolution,
     rowHash,
     contentHash,
     isValid: mapped.conversionErrors.length === 0 && validationResult.errors.length === 0,
@@ -308,7 +314,6 @@ function buildCanonicalRow({ mappedRow, contentHash, batch, rawRowId, profile })
     mappingMethod: mappedRow.mapping_method,
     skillNameRaw: mappedRow.skill_name_raw,
     countryRegion: mappedRow.country_region,
-    taskOrderId: mappedRow.task_order_id,
     direction: mappedRow.direction,
     interactionStatus: mappedRow.interaction_status,
     arrivalAt: mappedRow.arrival_at,
@@ -340,21 +345,19 @@ function updateCountersForRows(counters, rows = []) {
   }
 }
 
-async function processCallChunk({ rowChunk, batch, profile, profileCode, sheet, counters, seenRows, identityResolver, taskOrderResolver, expectedTaskOrderId }) {
+async function processCallChunk({ rowChunk, batch, profile, profileCode, sheet, counters, seenRows, identityResolver }) {
   const preparedRows = await Promise.all(rowChunk.map((sourceRow) =>
     prepareCallRow({
       profileCode,
       sourceRow,
       sheet,
       identityResolver,
-      taskOrderResolver,
-      expectedTaskOrderId,
     }),
   ));
 
   const validHashes = [...new Set(preparedRows.filter((row) => row.isValid).map((row) => row.rowHash))];
   const existingRows = await findCallsByIdentityHashes(validHashes);
-  const existingByHash = mapRowsByHash(existingRows);
+  const existingByHash = mapRowsByHash(existingRows, preparedRows);
   const classifiedRows = classifyPreparedChunkRows({ rows: preparedRows, existingByHash, seenRows });
 
   await insertRawImportRows(
@@ -394,7 +397,7 @@ async function processCallChunk({ rowChunk, batch, profile, profileCode, sheet, 
   }
 
   const storedRows = newRows.length ? await findCallsByIdentityHashes(validHashes) : existingRows;
-  const storedByHash = mapRowsByHash(storedRows);
+  const storedByHash = mapRowsByHash(storedRows, preparedRows);
   const finalRows = reconcileClassificationsWithStoredRows({ rows: classifiedRows, storedByHash, batchId: batch.id });
 
   const rawStatusUpdates = finalRows
@@ -434,6 +437,19 @@ async function processCallChunk({ rowChunk, batch, profile, profileCode, sheet, 
       continue;
     }
 
+    if (row.classification === IMPORT_ROW_CLASSIFICATIONS.NEW && !row.mappedRow.country_region) {
+      importErrors.push({
+        batchId: batch.id, rawRowId: context.rawRowId,
+        sheetName: context.sheetName, excelRowNumber: context.excelRowNumber,
+        severity: "WARNING", errorType: "COUNTRY_MAPPING",
+        errorCode: "CALL_COUNTRY_UNMAPPED", columnName: "Skill",
+        rawValue: row.mappedRow.skill_name_raw,
+        errorMessage: "Country not recognized from the original Call Skill. The row was imported without Task Order ownership.",
+        existingRowId: null,
+      });
+      counters.warningRows += 1;
+    }
+
     if (
       Number(row.mappedRow.is_answered) === 1 &&
       row.mappedRow.mapping_status !== AGENT_MAPPING_STATUSES.MATCHED
@@ -455,7 +471,6 @@ export async function processCallReportWorkbook({
   workbookValidation,
   counters,
   chunkSize,
-  taskOrderId,
   onProgress,
 }) {
   const processorStartedAt = Date.now();
@@ -481,7 +496,6 @@ export async function processCallReportWorkbook({
     { matchMode: AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY, allowKronosNameFallback: true },
   );
   const identityResolutionMs = Date.now() - identityResolutionStartedAt;
-  const taskOrderResolver = await createCallTaskOrderResolver();
 
   let processedChunks = 0;
   let processedRows = 0;
@@ -493,7 +507,7 @@ export async function processCallReportWorkbook({
     percent: 58,
     processedRows: 0,
     totalRows: processingTotalRows,
-    message: "Employee and Task Order mappings resolved. Processing Call Report records.",
+    message: "Employee identities resolved. Processing Call Report records.",
   });
 
   for (const sheet of workbookValidation.sheets) {
@@ -513,8 +527,6 @@ export async function processCallReportWorkbook({
           counters,
           seenRows,
           identityResolver,
-          taskOrderResolver,
-          expectedTaskOrderId: taskOrderId || null,
         });
 
         processedChunks += 1;

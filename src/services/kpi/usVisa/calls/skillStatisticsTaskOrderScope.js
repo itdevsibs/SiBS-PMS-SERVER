@@ -15,7 +15,7 @@ export async function getSkillStatisticsTaskOrderCountryScope(taskOrder) {
     return {countries: [], ambiguousCountries: []};
   }
   const [rows] = await pmsDb.query(`
-    SELECT l.country, p.task_order_name AS task_order, l.status
+    SELECT l.country, p.task_order_code AS task_order, l.status
     FROM ${pmsTables.usVisaTaskOrderLedger} l
     INNER JOIN ${pmsTables.usVisaTaskOrderLedgerProfiles} p
       ON p.id = l.task_order_profile_id AND p.is_active = 1
@@ -28,7 +28,7 @@ export async function getSkillStatisticsTaskOrderCountryScope(taskOrder) {
 // hard-coded country list. Each alias appears only under one unambiguous TO.
 export async function getActiveSkillStatisticsCountryScopes() {
   const [rows] = await pmsDb.query(`
-    SELECT l.country, p.task_order_name AS task_order, l.status
+    SELECT l.country, p.task_order_code AS task_order, l.status
     FROM ${pmsTables.usVisaTaskOrderLedger} l
     INNER JOIN ${pmsTables.usVisaTaskOrderLedgerProfiles} p
       ON p.id = l.task_order_profile_id AND p.is_active = 1

@@ -202,7 +202,6 @@ export function mapChatRow(sourceRow = {}, options = {}) {
     production_date: dateResult.value,
     skill_name_raw: getString(sourceRow, ["Skill", "Skill Name"]),
     country_region: null,
-    task_order_id: null,
     agent_name_raw: getString(sourceRow, ["Agent Name", "Agent name", "Agent"]),
     personal_id: getString(sourceRow, ["Personal ID", "Personal Id", "Agent ID"]),
     source_agent_key: getString(sourceRow, ["Agent Name", "Agent name", "Agent"]),
