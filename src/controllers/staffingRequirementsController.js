@@ -8,6 +8,7 @@ import { normalizeUsVisaTaskOrderId } from '../config/usVisaTaskOrders.js';
 import { resolveUsVisaOrgScope } from '../services/usVisa/usVisaOrgScopeService.js';
 import { getStaffingHeadcountForDashboard } from '../services/kpi/usVisa/staffing/staffingHeadcountQueryService.js';
 import { clearAbsenteeismCache } from '../services/cache/absenteeismCacheService.js';
+import { staffingAuditActorCode } from '../services/kpi/usVisa/staffing/staffingAuditActorCodes.js';
 
 function respondError(res, error) {
   if (error?.status === 403) return res.status(403).json({ success: false, code: error.code, message: error.message });
@@ -60,7 +61,7 @@ export async function getStaffingHistory(req, res) {
 }
 export async function saveStaffingRequirements(req, res) {
   try {
-    const actor = String(req.user?.sibs_id || req.user?.gy_emp_code || req.user?.gy_emp_id || req.user?.username || '').trim();
+    const actor = staffingAuditActorCode(req.user);
     if (!actor) return res.status(401).json({ success: false, code: 'ACTOR_REQUIRED', message: 'Authenticated employee ID is required.' });
     const entries = Array.isArray(req.body?.entries) ? req.body.entries : [req.body];
     const saved = await validateAndSaveRequirements({ entries, actor, reason: req.body?.reason });
@@ -73,7 +74,7 @@ export async function saveStaffingRequirements(req, res) {
 
 export async function deleteStaffingRequirementsHandler(req, res) {
   try {
-    const actor = String(req.user?.sibs_id || req.user?.gy_emp_code || req.user?.gy_emp_id || req.user?.username || '').trim();
+    const actor = staffingAuditActorCode(req.user);
     if (!actor) return res.status(401).json({ success: false, code: 'ACTOR_REQUIRED', message: 'Authenticated employee ID is required.' });
     const entries = Array.isArray(req.body?.entries) ? req.body.entries : [req.body];
     const result = await validateAndDeleteRequirements({ entries, actor, reason: req.body?.reason });

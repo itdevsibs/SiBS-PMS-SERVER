@@ -4,6 +4,7 @@ import { getTaskOrderLedger } from '../controllers/taskOrderLedgerController.js'
 import {
   getTaskOrderManagement, getTaskOrderChangeHistory, transferCountry, addCountry,
   addSkill, editSkill, addProfile, editProfile,
+  getTaskOrderVersions, getTaskOrderVersionDetail, getTaskOrderVersionDiff,
 } from '../controllers/taskOrderManagementController.js';
 import authMiddleware from '../middleware/authMiddleware.js';
 import { requireRole } from '../middleware/roleMiddleware.js';
@@ -14,6 +15,9 @@ router.use(requireRole([7, 9]));
 router.get('/task-order-ledger', getTaskOrderLedger);
 router.get('/task-order-ledger/management', getTaskOrderManagement);
 router.get('/task-order-ledger/history', getTaskOrderChangeHistory);
+router.get('/task-order-ledger/versions', getTaskOrderVersions);
+router.get('/task-order-ledger/versions/diff', getTaskOrderVersionDiff);
+router.get('/task-order-ledger/versions/:id', getTaskOrderVersionDetail);
 router.post('/task-order-ledger/country-transfer', transferCountry);
 router.post('/task-order-ledger/countries', addCountry);
 router.post('/task-order-ledger/skills', addSkill);

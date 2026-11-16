@@ -12,6 +12,7 @@ import {
   normalizeKronosAttendanceRows,
 } from "./kronosAttendanceFieldService.js";
 import { resolveCallCenterOperationsAccountScope } from "./kronosAccountScopeService.js";
+import { cleanKronosEmployeeName, getKronosEmployeeNameFromRow } from "./kronosAttendanceEmployeeNames.js";
 
 const ATTENDANCE_ENDPOINT = "/api/v1/employee-attendance";
 const TRACKER_HISTORY_ENDPOINT = "/api/v1/employee-tracker-history";
@@ -56,13 +57,13 @@ function rawField(row, paths) {
 // /employee-attendance already returns the internal employee_id on the optimized
 // view. Reuse it for Attendance Sheet schedule resolution instead of calling
 // /api/v1/employees/{code} again for the same employee.
-function getAttendanceScheduleSeeds(rows = [], defaultKronosAccountId = null) {
+function getAttendanceScheduleSeeds(rows = [], defaultKronosAccountId = null, accountName = "") {
   const byUid = new Map();
   for (const row of rows) {
     const uid = normalizeEmployeeUid(row?.employeeUid ?? row?.gyEmpCode);
     if (!uid) continue;
     let gyEmpId = null;
-    let employeeName = String(row?.employeeName || "").trim();
+    let employeeName = cleanKronosEmployeeName(row?.employeeName, accountName) || "";
     let kronosAccountId = positiveInternalId(row?.kronosAccountId) ||
       positiveInternalId(defaultKronosAccountId);
 
@@ -77,9 +78,7 @@ function getAttendanceScheduleSeeds(rows = [], defaultKronosAccountId = null) {
         throw error;
       }
       gyEmpId ||= candidateId;
-      employeeName ||= String(rawField(raw, [
-        "gy_emp_fullname", "employee.gy_emp_fullname", "employee_name", "full_name",
-      ]) || "").trim();
+      employeeName ||= getKronosEmployeeNameFromRow(raw, accountName) || "";
       kronosAccountId ||= positiveInternalId(rawField(raw, [
         "gy_acc_id", "employee.gy_acc_id", "account_id", "account.gy_acc_id",
       ]));
@@ -855,6 +854,7 @@ async function buildAttendanceSheetDay(accountId, workDate) {
   const seedEmployees = getAttendanceScheduleSeeds(
     dataset.rows,
     dataset.scope.kronosMapping?.kronosAccountId,
+    dataset.scope.accountName,
   );
   const attendanceEmployeeUids = [...new Set(
     dataset.rows.map((row) => normalizeEmployeeUid(row.employeeUid)).filter(Boolean),
@@ -876,6 +876,20 @@ async function buildAttendanceSheetDay(accountId, workDate) {
   const joinStart = process.hrtime.bigint();
 
   const { schedules: accountSchedules, teamLeaders } = scheduleData;
+  const directoryNamesByUid = new Map(
+    (scheduleData.directoryEmployeeNames || []).map((employee) => [
+      normalizeEmployeeUid(employee.employeeUid),
+      cleanKronosEmployeeName(employee.employeeName, dataset.scope.accountName),
+    ]),
+  );
+  const resolveSheetName = (uid, attendance, scheduled) =>
+    directoryNamesByUid.get(uid) ||
+    cleanKronosEmployeeName(attendance?.employeeName, dataset.scope.accountName) ||
+    (Array.isArray(attendance?.rawJson)
+      ? attendance.rawJson.map((raw) => getKronosEmployeeNameFromRow(raw, dataset.scope.accountName)).find(Boolean)
+      : null) ||
+    cleanKronosEmployeeName(scheduled?.employeeName, dataset.scope.accountName) ||
+    null;
   const teamLeadersByUid = new Map(
     teamLeaders.map((leader) => [normalizeEmployeeUid(leader.employeeUid), leader]),
   );
@@ -912,7 +926,7 @@ async function buildAttendanceSheetDay(accountId, workDate) {
         const leader = teamLeadersByUid.get(normalizeEmployeeUid(row.employeeUid));
         return {
           ...row,
-          employeeName: leader.employeeName || null,
+          employeeName: resolveSheetName(normalizeEmployeeUid(row.employeeUid), row, leader),
           employeeRole: "TEAM_LEADER",
           hrisAccountId: dataset.scope.accountId,
           accountName: dataset.scope.accountName,
@@ -972,7 +986,7 @@ async function buildAttendanceSheetDay(accountId, workDate) {
 
     return {
       ...row,
-      employeeName: row.employeeName || schedule?.employeeName || null,
+      employeeName: resolveSheetName(uid, row, schedule),
       employeeRole: row.employeeRole || schedule?.employeeRole || null,
       scheduleIn: isRestDay ? "Rest Day" : scheduleIn,
       scheduleOut: isRestDay ? "Rest Day" : scheduleOut,
@@ -1005,7 +1019,7 @@ async function buildAttendanceSheetDay(accountId, workDate) {
         joinedRows.push({
           gyEmpCode: sched.gyEmpCode,
           employeeUid: uid,
-          employeeName: sched.employeeName,
+          employeeName: resolveSheetName(uid, null, sched),
           workDate: sched.schedDay,
           scheduleIn: isRestDay ? "Rest Day" : sched.schedLogin || null,
           scheduleOut: isRestDay ? "Rest Day" : sched.schedLogout || null,

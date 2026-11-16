@@ -1,3 +1,6 @@
+import { resolveUsVisaKpiTargets } from '../targets/usVisaKpiTargetService.js';
+import { PINNED_VERSION_COMPARISON_WINDOW } from '../../../taskOrderManagement/taskOrderVersionReportFilters.js';
+import { normalizeTaskOrderComparisonSources, unavailableDocumentedAhtReason, UNVERIFIABLE_DOCUMENTED_AHT } from '../../../taskOrderManagement/taskOrderComparisonSources.js';
 // WoW Calls KPIs use Skill Statistics for queue metrics and documented calls
 // for AHT. Individual Calls EOD rows are deliberately not queried here.
 import {
@@ -19,7 +22,8 @@ import {
 } from './callKpiService.js';
 import { buildWoWSkillQueueDashboard } from './wowSkillQueueAggregation.js';
 import { getUsVisaTaskOrderCountries, normalizeUsVisaTaskOrder } from './taskOrderFilter.js';
-import { getSkillStatisticsTaskOrderCountryScope } from './skillStatisticsTaskOrderScope.js';
+import { getSkillStatisticsTaskOrderCountryScope, getAllMappedTaskOrderCountries } from './skillStatisticsTaskOrderScope.js';
+import { getPublishedVersion } from '../../../taskOrderManagement/taskOrderVersionService.js';
 
 const SOURCES = new Set(['US_VISA','US VISA','FUSECOM','FUSENET','HERODASH']);
 // Legacy 30-minute canonical rows are no longer selectable in WoW.
@@ -49,29 +53,38 @@ function outOfBounds(reference, bounds) {
 
 export async function getWfmCallKpiDashboard(query = {}) {
   const period = normalizeCallKpiPeriod(query.period);
+  const comparisonWindow = query[PINNED_VERSION_COMPARISON_WINDOW];
   const requestedSource = String(query.sourceSystem || query.source || 'US_VISA').trim().toUpperCase();
-  const sourceSystem = SOURCES.has(requestedSource) ? requestedSource : 'US_VISA';
+  // Comparison-only: preserve subsets such as FUSECOM,FUSENET for queue queries.
+  const sourceSystem = normalizeTaskOrderComparisonSources(requestedSource);
+  const unavailableAhtReason = comparisonWindow ? query[UNVERIFIABLE_DOCUMENTED_AHT]
+    : (sourceSystem.includes(',') ? unavailableDocumentedAhtReason(sourceSystem,query.skill) : null);
   const reference = validateReferenceDate(query.referenceDate || query.reference);
   const requestedFrom = normalizeDate(query.from || query.dateFrom);
   const requestedTo = normalizeDate(query.to || query.dateTo);
   const taskOrder = normalizeUsVisaTaskOrder(sourceSystem, query.taskOrder);
   // Shared runtime ownership scope for both queue counts and Dynamics AHT.
+  const version = await getPublishedVersion(query.taskOrderVersionId || 'current');
+  const versionId = version.id; // Pin Current once, even when publication is concurrent.
+  // Source tool groupings are a legacy Documented Calls approximation; the
+  // source workbook contains no telephony tool field. Use the pinned mapping.
   const sourceToolTaskOrders = {
     FUSECOM: ['TO12', 'TO16'], FUSENET: ['TO14'], HERODASH: ['TO4', 'TO10'],
   };
-  const [ledgerScope, allLedgerScope, sourceToolScope] = await Promise.all([
-    getSkillStatisticsTaskOrderCountryScope(taskOrder),
-    getSkillStatisticsTaskOrderCountryScope(['TO4','TO10','TO12','TO14','TO16']),
+  const [ledgerScope, allCountries, sourceToolScope] = await Promise.all([
+    getSkillStatisticsTaskOrderCountryScope(taskOrder,versionId),
+    getAllMappedTaskOrderCountries(versionId),
     sourceToolTaskOrders[sourceSystem]
-      ? getSkillStatisticsTaskOrderCountryScope(sourceToolTaskOrders[sourceSystem])
+      ? getSkillStatisticsTaskOrderCountryScope(sourceToolTaskOrders[sourceSystem],versionId)
       : Promise.resolve({ countries: [] }),
   ]);
-  // Direct Task Orders are scoped from the active Country -> Task Order ledger.
-  // The old virtual subgroup filters retain their existing country behavior.
-  const taskOrderCountries = ledgerScope.countries.length ||
-    (Array.isArray(taskOrder) ? taskOrder.every((to) => ['TO4','TO10','TO12','TO14','TO16'].includes(to))
-      : ['TO4','TO10','TO12','TO14','TO16'].includes(taskOrder))
-    ? ledgerScope.countries : getUsVisaTaskOrderCountries(sourceSystem, taskOrder);
+  // Direct TO requests must NEVER fall back to static/current country lists.
+  const requestedTaskOrders = (Array.isArray(taskOrder) ? taskOrder : String(taskOrder || '').split(','))
+    .map((entry) => String(entry || '').trim()).filter(Boolean);
+  const directTaskOrder = requestedTaskOrders.length > 0 && requestedTaskOrders.every(
+    (entry) => /(?:^|[^A-Z0-9])TO\s*\d+(?!\d)/i.test(entry));
+  const taskOrderCountries = directTaskOrder ? ledgerScope.countries :
+    requestedTaskOrders.length ? getUsVisaTaskOrderCountries(sourceSystem,taskOrder) : [];
   const country = Array.isArray(query.country) ? query.country : String(query.country || '').trim() || null;
   const skill = Array.isArray(query.skill) ? query.skill : String(query.skill || '').trim() || null;
   // CALL_DETAIL (from saved legacy filters) must not alter WoW queue reporting.
@@ -79,7 +92,7 @@ export async function getWfmCallKpiDashboard(query = {}) {
   const dataGrain = GRAINS.has(requestedGrain) ? requestedGrain : null;
   const isCustomRange = period === 'custom';
   const isLegacyRange = !isCustomRange && !reference && Boolean(requestedFrom || requestedTo);
-  if (isCustomRange && (!requestedFrom || !requestedTo)) {
+  if (isCustomRange && !comparisonWindow && (!requestedFrom || !requestedTo)) {
     const error = new Error('Custom reporting requires both From and To dates.');
     error.code = 'INVALID_CUSTOM_DATE_RANGE';
     throw error;
@@ -87,19 +100,19 @@ export async function getWfmCallKpiDashboard(query = {}) {
   if (requestedFrom && requestedTo && requestedFrom > requestedTo) rangeError();
   const filter = {
     sourceSystem, taskOrder, taskOrderCountries, country, skill,
-    knownTaskOrderCountries: allLedgerScope.countries,
+    knownTaskOrderCountries: allCountries,
     sourceToolCountries: sourceToolScope.countries,
   };
   // MS Dynamics has no Skill field. Never pass the queue Skill selection into
   // any Documented Calls query, bound lookup, KPI bucket, or AHT calculation.
   const documentedFilter = {
     sourceSystem, taskOrder, taskOrderCountries, country,
-    knownTaskOrderCountries: allLedgerScope.countries,
+    knownTaskOrderCountries: allCountries,
     sourceToolCountries: sourceToolScope.countries,
   };
   const [skillBounds, documentedBounds, availableSkillGrains] = await Promise.all([
     getSkillKpiDateBounds(filter),
-    getDocumentedCallAhtDateBounds(documentedFilter),
+    unavailableAhtReason ? Promise.resolve({minDate:null,maxDate:null}) : getDocumentedCallAhtDateBounds(documentedFilter),
     listAvailableSkillKpiDataGrains(filter),
   ]);
   const mins = [skillBounds.minDate,documentedBounds.minDate].filter(Boolean).sort();
@@ -108,7 +121,13 @@ export async function getWfmCallKpiDashboard(query = {}) {
   const availableGrains = [...new Set(availableSkillGrains.map((g) => g.data_grain).filter((g) => GRAINS.has(g)))];
   let dateFrom=requestedFrom, dateTo=requestedTo, referenceDate=null;
   let rangeMode='legacy';
-  if (isCustomRange) rangeMode='custom';
+  if (comparisonWindow) {
+    // The version comparison controller validated and resolved the report's
+    // window once. Preserve the original report period for aggregation.
+    ({dateFrom,dateTo}=comparisonWindow);
+    referenceDate=reference;
+    rangeMode='version_comparison';
+  } else if (isCustomRange) rangeMode='custom';
   else if (isLegacyRange) {
     const defaults=resolveDefaultCallKpiDateRange({...bounds,period});
     dateFrom=dateFrom || defaults.dateFrom;
@@ -128,22 +147,35 @@ export async function getWfmCallKpiDashboard(query = {}) {
   const documentedRangeFilter={...documentedFilter,dateFrom,dateTo};
   const [selection,documentedRows,documentedCoverage]=await Promise.all([
     getSelectedSkillStatistics({...rangeFilter,dataGrain}),
-    getDailyDocumentedCallAhtRows(documentedRangeFilter),
-    getDocumentedCallCoverageStats(documentedRangeFilter),
+    unavailableAhtReason ? Promise.resolve([]) : getDailyDocumentedCallAhtRows(documentedRangeFilter),
+    unavailableAhtReason ? Promise.resolve({}) : getDocumentedCallCoverageStats(documentedRangeFilter),
   ]);
   const queueDashboard=buildWoWSkillQueueDashboard({
     selection,period,sourceSystem,dataGrain:dataGrain || 'SKILL_STATISTICS',
     dateFrom,dateTo,referenceDate,taskOrder,country,skill,
   });
-  const documentedDashboard=buildWfmCallKpiDashboard({
-    rows:documentedRows,period,sourceSystem,dataGrain:'DOCUMENTED_CALLS',
-    dateFrom,dateTo,referenceDate,taskOrder,country,skill:null,
-  });
-  const withAht=mergeDocumentedAhtIntoCallDashboard(
-    queueDashboard,documentedDashboard,documentedRows,{},documentedCoverage,
+  const withAht=unavailableAhtReason ? {
+    ...queueDashboard,
+    summary:{...queueDashboard.summary,ahtSeconds:null,ahtCalls:null},
+    series:queueDashboard.series.map((bucket)=>({...bucket,ahtSeconds:null,ahtCalls:null,
+      ahtSource:'UNVERIFIABLE_DOCUMENTED_AHT'})),
+    metricSources:{...queueDashboard.metricSources,aht:'UNVERIFIABLE_DOCUMENTED_AHT'},
+    ahtCoverage:{status:'UNVERIFIABLE',note:unavailableAhtReason},
+  } : mergeDocumentedAhtIntoCallDashboard(
+    queueDashboard,buildWfmCallKpiDashboard({
+      rows:documentedRows,period,sourceSystem,dataGrain:'DOCUMENTED_CALLS',
+      dateFrom,dateTo,referenceDate,taskOrder,country,skill:null,
+    }),documentedRows,{},documentedCoverage,
   );
+  const targetPolicy = await resolveUsVisaKpiTargets({
+    category: 'CALLS', sourceSystem, taskOrder, dateFrom, dateTo,
+  });
   return {...withAht,
-    filters:{...withAht.filters,rangeMode},availableGrains,availableDateRange:bounds,
+    targets: targetPolicy.targets,
+    targetPolicy: { asOfDate: targetPolicy.asOfDate, applied: targetPolicy.applied,
+      mixedTargetPeriods: targetPolicy.mixedTargetPeriods, notice: targetPolicy.notice },
+    filters:{...withAht.filters,rangeMode,taskOrderVersionId:versionId},taskOrderVersion:version,
+    availableGrains,availableDateRange:bounds,
     queueCoverage:{...withAht.queueCoverage,
       ledgerScopeAmbiguousCountries:ledgerScope.ambiguousCountries,
       runtimeCountryScopedGroups: selection.selected.length,

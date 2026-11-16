@@ -26,10 +26,8 @@ import { validateEmailTaskOrderWorkbookStructure } from "./emailRawData/emailRaw
 import { updateImportProgress } from "./importProgressTracker.js";
 import { getImportIssueSummaryByBatchId } from "../../../repositories/usVisa/imports/usVisaImportErrorRepository.js";
 import { normalizeBatchIssueSummary } from "./importIssueClassification.js";
-import {
-  assertUsVisaTaskOrder,
-  assertUsVisaTaskOrderForSource,
-} from "../../../config/usVisaTaskOrders.js";
+import { readVersionSnapshot } from "../../taskOrderManagement/taskOrderVersionService.js";
+import { assertPublishedImportTaskOrder } from "../../taskOrderManagement/taskOrderFilterResolver.js";
 
 const DEFAULT_ROW_CHUNK_SIZE = 1000;
 const US_VISA_IMPORT_LOCK_NAME = "sibs:pms:us-visa:raw-import";
@@ -423,9 +421,8 @@ export async function importUsVisaRawWorkbook(options = {}) {
       // ignore any legacy client-supplied Task Order for these two profiles.
       if (!["FUSECOM", "FUSENET"].includes(occupancySourceSystem)) {
         try {
-          occupancyTaskOrder = assertUsVisaTaskOrderForSource(
-            occupancySourceSystem,
-            options.taskOrderId,
+          occupancyTaskOrder = assertPublishedImportTaskOrder(
+            await readVersionSnapshot('current'), options.taskOrderId, occupancySourceSystem,
           );
         } catch (error) {
           return {
@@ -446,9 +443,8 @@ export async function importUsVisaRawWorkbook(options = {}) {
 
     if (isEmailRawData) {
       try {
-        emailTaskOrder = assertUsVisaTaskOrder(
-          options.taskOrderId,
-          "Email Raw Data imports",
+        emailTaskOrder = assertPublishedImportTaskOrder(
+          await readVersionSnapshot('current'), options.taskOrderId,
         );
       } catch (error) {
         return {

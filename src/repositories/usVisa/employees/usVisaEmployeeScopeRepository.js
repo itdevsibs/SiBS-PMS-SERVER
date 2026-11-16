@@ -288,13 +288,14 @@ export async function findUsVisaRosterEmployeeUids({
   ];
 }
 
-/** Ledger population for schedule-based Actual HC, including absent agents.
- * Employment dates are evaluated for EACH schedule day, not just today's status.
+/** Read the US Visa ledger once and return two independent views:
+ * 1) original de-duplicated schedule assignments (Attrition % unchanged),
+ * 2) each distinct employment window (historical HC, including rehires).
  */
-export async function findUsVisaScheduledRosterAssignments({ taskOrder = null, dateFrom, dateTo } = {}) {
+export async function findUsVisaHeadcountRosterAssignments({ taskOrder = null, dateFrom, dateTo } = {}) {
   const from = normalizeDateKey(dateFrom);
   const to = normalizeDateKey(dateTo);
-  if (!from || !to || from > to) return [];
+  if (!from || !to || from > to) return { scheduledAssignments: [], employmentAssignments: [] };
   const allowed = new Set(normalizeTaskOrderList(taskOrder));
   const [rows] = await pmsDb.query(`
     SELECT TRIM(l.sibs_id) AS employeeUid,
@@ -308,7 +309,8 @@ export async function findUsVisaScheduledRosterAssignments({ taskOrder = null, d
       AND (l.us_visa_join_date IS NULL OR l.us_visa_join_date <= ?)
       AND (l.us_visa_departure_date IS NULL OR l.us_visa_departure_date >= ?)
   `, [to, from]);
-  const result = new Map();
+  const scheduled = new Map();
+  const employment = new Map();
   for (const row of rows) {
     const taskOrderId = normalizeTaskOrder(row.taskOrderRaw);
     const employeeUid = normalizeUid(row.employeeUid).toUpperCase();
@@ -319,9 +321,19 @@ export async function findUsVisaScheduledRosterAssignments({ taskOrder = null, d
       effectiveTo: row.effectiveTo || null,
       inactiveWithoutDeparture: row.rosterStatus === 'INACTIVE' && !row.effectiveTo,
     };
-    result.set(`${employeeUid}|${taskOrderId}`, assignment);
+    // Preserve the original schedule-dedup key and fallback exactly.
+    scheduled.set(`${employeeUid}|${taskOrderId}`, assignment);
+    // Distinct dated windows are necessary to accurately count rehires.
+    const employmentAssignment = { ...assignment, effectiveFrom: row.effectiveFrom || null };
+    employment.set(`${employeeUid}|${taskOrderId}|${employmentAssignment.effectiveFrom || ''}|${employmentAssignment.effectiveTo || ''}`, employmentAssignment);
   }
-  return [...result.values()];
+  return { scheduledAssignments: [...scheduled.values()], employmentAssignments: [...employment.values()] };
+}
+
+/** Backward-compatible scheduled roster scope. */
+export async function findUsVisaScheduledRosterAssignments(filters = {}) {
+  const result = await findUsVisaHeadcountRosterAssignments(filters);
+  return result.scheduledAssignments;
 }
 
 /** Attrition events are employee departures, not a schedule or attendance proxy. */
@@ -343,3 +355,4 @@ export async function findUsVisaAttritionEvents({ taskOrder = null, dateFrom, da
     departureDate: row.departureDate,
   })).filter(row => row.employeeUid && row.taskOrderId && (!allowed.size || allowed.has(row.taskOrderId)));
 }
+

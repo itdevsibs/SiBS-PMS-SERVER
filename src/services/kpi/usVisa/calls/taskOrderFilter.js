@@ -149,7 +149,9 @@ export function normalizeUsVisaTaskOrder(sourceSystem, value) {
     if (!taskOrder || taskOrder === "ALL") continue;
 
     const config = TASK_ORDER_CONFIG[taskOrder];
-    if (!config) {
+    // Dynamic country-owned Task Orders are created through the management UI.
+    // Accept their codes even before this legacy filter catalog knows about them.
+    if (!config && !/^TO[1-9]\d*$/.test(taskOrder)) {
       if (rawList.length > 1) continue;
       throw createInvalidTaskOrderError(normalizedSourceSystem, taskOrder);
     }
