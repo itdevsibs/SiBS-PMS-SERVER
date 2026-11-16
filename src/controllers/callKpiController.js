@@ -1,5 +1,7 @@
 import { getCountryOwnedReportScope } from "../services/kpi/usVisa/calls/countryOwnedReportScope.js";
 import { getSkillStatisticsTaskOrderCountryScope } from "../services/kpi/usVisa/calls/skillStatisticsTaskOrderScope.js";
+import { readVersionSnapshot, getPublishedVersion } from "../services/taskOrderManagement/taskOrderVersionService.js";
+import { buildTaskOrderFilterMetadata, validateTaskOrderReportScope } from "../services/taskOrderManagement/taskOrderFilterResolver.js";
 import { pmsDb, pmsTables } from "../config/db.js";
 import {
   listImportBatches,
@@ -19,6 +21,9 @@ const BAD_REQUEST_CODES = new Set([
   "INVALID_DATE_RANGE",
   "INVALID_REFERENCE_DATE",
   "INVALID_TASK_ORDER",
+  "INVALID_VERSION",
+  "VERSION_NOT_FOUND",
+  "TASK_ORDER_SOURCE_MISMATCH", "COUNTRY_TASK_ORDER_MISMATCH", "INVALID_SOURCE_SYSTEM",
 ]);
 
 export async function getCallsReport(req, res) {
@@ -32,13 +37,19 @@ export async function getCallsReport(req, res) {
       source,
       taskOrder,
       skill,
+      taskOrderVersionId,
     } = req.query;
+    const version = await getPublishedVersion(taskOrderVersionId || 'current');
+    if (taskOrder || country || (sourceSystem && sourceSystem !== 'US_VISA')) {
+      validateTaskOrderReportScope(await readVersionSnapshot(version.id),req.query);
+    }
     const selectedSource = sourceSystem || source || "US_VISA";
     const selectedTaskOrders = taskOrder || null;
-    const ledgerScope = await getSkillStatisticsTaskOrderCountryScope(selectedTaskOrders);
-    const taskOrderCountries = ledgerScope.countries.length ||
-      !selectedTaskOrders || String(selectedTaskOrders).match(/TO(?:4|10|12|14|16)(?:\b|,)/i)
-      ? ledgerScope.countries : getUsVisaTaskOrderCountries(selectedSource, selectedTaskOrders);
+    const ledgerScope = await getSkillStatisticsTaskOrderCountryScope(selectedTaskOrders,version.id);
+    const isDirectTo = selectedTaskOrders && String(selectedTaskOrders).split(',').every(
+      (part) => /(?:^|[^A-Z0-9])TO\s*\d+(?!\d)/i.test(part.trim()));
+    const taskOrderCountries = isDirectTo || !selectedTaskOrders ? ledgerScope.countries
+      : getUsVisaTaskOrderCountries(selectedSource, selectedTaskOrders);
     let effectiveDateFrom = dateFrom || date || undefined;
     let effectiveDateTo = dateTo || date || undefined;
 
@@ -84,14 +95,15 @@ export async function getCallsReport(req, res) {
       data: result.rows,
       coverage: result.coverage,
       metricSource: "SKILL_STATISTICS",
+      taskOrderVersion: version,
       resolvedDate,
     });
   } catch (error) {
     console.error("GET /api/kpis/calls-report error:", error);
-    return res.status(500).json({
+    return res.status(error.status||500).json({
       success: false,
-      code: "CALLS_REPORT_ERROR",
-      message: "Unable to fetch Calls Report data.",
+      code: error.code || "CALLS_REPORT_ERROR",
+      message: error.code ? error.message : "Unable to fetch Calls Report data.",
     });
   }
 }
@@ -109,6 +121,9 @@ export async function getCallsReportSkillOptions(req, res) {
 
 export async function getWfmCallsKpi(req, res) {
   try {
+    if (req.query.taskOrder || req.query.country || req.query.sourceSystem) {
+      validateTaskOrderReportScope(await readVersionSnapshot(req.query.taskOrderVersionId || 'current'),req.query);
+    }
     const dashboard = await getWfmCallKpiDashboard(req.query);
 
     return res.json({
@@ -139,57 +154,28 @@ export async function getWfmCallsKpi(req, res) {
 
 export async function getWfmSkills(req, res) {
   try {
-    // WoW Calls must display exactly the imported Skill Statistics options;
-    // Chat Reports preserve the existing mixed-sources response by default.
-    if (String(req.query?.reportType || '').toUpperCase() === 'SKILL_STATISTICS') {
-      const [skills, countryScopes, [profiles]] = await Promise.all([
-        getDistinctSkillStatisticsSkillsByCountry(),
-        getActiveSkillStatisticsCountryScopes(),
-        pmsDb.query(`SELECT task_order_code, task_order_name
-          FROM ${pmsTables.usVisaTaskOrderLedgerProfiles}
-          WHERE is_active = 1 ORDER BY task_order_name`),
-      ]);
-      const byOrder = new Map();
-      for (const profile of profiles) {
-        const match = String(profile.task_order_code || '').toUpperCase().match(/TO\s*(\d+)/);
-        if (!match) continue;
-        const code = `TO${Number(match[1])}`;
-        if (!byOrder.has(code)) byOrder.set(code, {
-          value:code,label:String(profile.task_order_name || code),
-        });
-      }
-      return res.json({success:true,data:skills,countryScopes,taskOrders:[...byOrder.values()]});
+    const snapshot = await readVersionSnapshot(req.query.taskOrderVersionId || 'current');
+    if (req.query.reportType === 'PROFILE_ONLY') {
+      const metadata = buildTaskOrderFilterMetadata(snapshot);
+      return res.json({success:true,...metadata});
     }
-    const [callSkills, chatSkills, chatOwnership, [profiles]] = await Promise.all([
-      getDistinctSkillStatisticsSkillsByCountry(),
-      getDistinctChatSkillsByCountry(),
-      getCountryOwnedReportScope(),
-      pmsDb.query(`SELECT task_order_code, task_order_name
-        FROM ${pmsTables.usVisaTaskOrderLedgerProfiles}
-        WHERE is_active = 1 ORDER BY task_order_name`),
+    const [callSkills, chatSkills] = await Promise.all([
+      getDistinctSkillStatisticsSkillsByCountry(), getDistinctChatSkillsByCountry(),
     ]);
-    const skillsByCountry = { ...callSkills };
-    for (const [country, skills] of Object.entries(chatSkills || {})) {
-      const current = skillsByCountry[country] || [];
-      skillsByCountry[country] = [...new Set([...current, ...skills])];
+    const {taskOrders, countryScopes} = buildTaskOrderFilterMetadata(snapshot, callSkills);
+    if (String(req.query?.reportType || '').toUpperCase() === 'SKILL_STATISTICS') {
+      return res.json({success:true,data:callSkills,countryScopes,taskOrders,taskOrderVersion:snapshot.version});
     }
-    return res.json({
-      success: true,
-      data: skillsByCountry,
-      chatSkillsByCountry: chatSkills,
-      chatCountryScopes: chatOwnership.countryDisplayScopes,
-      taskOrders: profiles.map((profile) => {
-        const match = String(profile.task_order_code || '').toUpperCase().match(/TO\s*(\d+)/);
-        return match ? {value: `TO${Number(match[1])}`, label: String(profile.task_order_name || match[0])} : null;
-      }).filter(Boolean),
-    });
+    const skillsByCountry = {...callSkills};
+    for (const [country, skills] of Object.entries(chatSkills || {})) {
+      skillsByCountry[country] = [...new Set([...(skillsByCountry[country]||[]),...skills])];
+    }
+    return res.json({success:true,data:skillsByCountry,chatSkillsByCountry:chatSkills,
+      chatCountryScopes:countryScopes,taskOrders,taskOrderVersion:snapshot.version});
   } catch (error) {
-    console.error("GET /api/kpis/skills error:", error);
-    return res.status(500).json({
-      success: false,
-      code: "WFM_SKILLS_ERROR",
-      message: "Unable to fetch WFM skills.",
-    });
+    console.error('GET /api/kpis/skills error:',error);
+    return res.status(error.status||500).json({success:false,code:error.code||'WFM_SKILLS_ERROR',
+      message:error.code?error.message:'Unable to fetch WFM skills.'});
   }
 }
 

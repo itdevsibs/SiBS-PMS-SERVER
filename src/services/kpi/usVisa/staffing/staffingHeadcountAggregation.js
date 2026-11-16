@@ -14,12 +14,17 @@ function dateRange(from, to) {
 const round = value => Math.round((value + Number.EPSILON) * 100) / 100;
 
 /**
- * For combined Task Orders, every scheduled Task Order must have its published
- * target for each day. Missing targets never become zero. Daily HC is distinct
- * scheduled active employees (not attendance); weekly HC is average daily HC.
+ * Required FTE comes only from published Staffing Requirements, using all
+ * configured Task Orders (or the explicitly selected Task Orders) for the
+ * requested period. Missing published targets never become zero. Actual HC
+ * counts distinct employees by ledger join/departure dates, independent of
+ * Kronos schedules, attendance, rest days and LOA. Weekly HC is the opening-
+ * week employment snapshot. Kronos schedules remain the existing independent
+ * denominator for Attrition %, which must not change in this feature.
  */
 export function buildStaffingHeadcountSeries({
-  scheduledRows = [], requirementRows = [], rosterAssignments = [], attritionEvents = [],
+  scheduledRows = [], requirementRows = [], rosterAssignments = [], employmentAssignments = null,
+  attritionEvents = [],
   period = 'weekly', dateFrom, dateTo, taskOrder = null,
   scheduleAvailable = true,
 } = {}) {
@@ -31,8 +36,9 @@ export function buildStaffingHeadcountSeries({
     .filter(to => /^TO\d+$/.test(to || ''));
   const filter = selectedOrders.length ? new Set(selectedOrders) : null;
   const allDates = dateRange(dateFrom, dateTo);
+  // Existing schedule matching is retained separately for Attrition %.
+  // The new employment snapshot cannot alter the schedule-backed denominator.
   const byEmployee = new Map();
-  const expectedByDay = new Map(allDates.map(date => [date, new Set()]));
   for (const assignment of rosterAssignments) {
     const id = String(assignment.employeeUid || '').trim().toUpperCase();
     const to = normalizeUsVisaTaskOrderId(assignment.taskOrderId);
@@ -41,21 +47,47 @@ export function buildStaffingHeadcountSeries({
     const end = assignment.effectiveTo || '9999-12-31';
     for (const date of allDates) {
       if (date < start || date > end || (assignment.inactiveWithoutDeparture && !assignment.effectiveTo)) continue;
-      expectedByDay.get(date).add(to);
       const key = `${id}|${date}`;
       if (!byEmployee.has(key)) byEmployee.set(key, new Set());
       byEmployee.get(key).add(to);
     }
   }
+  // Employment HC uses complete historical join/departure windows; a rehire
+  // must not erase an earlier employment span. No attendance dependency.
+  const activeByDay = new Map(allDates.map(date => [date, new Set()]));
+  const missingJoinDateUids = new Set();
+  for (const assignment of employmentAssignments ?? rosterAssignments) {
+    const id = String(assignment.employeeUid || '').trim().toUpperCase();
+    const to = normalizeUsVisaTaskOrderId(assignment.taskOrderId);
+    if (!id || !/^TO\d+$/.test(to || '') || (filter && !filter.has(to))) continue;
+    const joinDate = /^\d{4}-\d{2}-\d{2}$/.test(String(assignment.effectiveFrom || ''))
+      ? assignment.effectiveFrom : null;
+    if (!joinDate) { missingJoinDateUids.add(id); continue; }
+    if (assignment.inactiveWithoutDeparture && !assignment.effectiveTo) continue;
+    const end = assignment.effectiveTo || '9999-12-31';
+    for (const date of allDates) {
+      if (date >= joinDate && date <= end) activeByDay.get(date).add(id);
+    }
+  }
+  const expectedByDay = new Map(allDates.map(date => [date, new Set()]));
   const requirementMap = new Map();
+  const configuredOrders = new Set();
   for (const r of requirementRows) {
     const to = normalizeUsVisaTaskOrderId(r.taskOrderId);
     const date = String(r.requirementDate || '').slice(0, 10);
-    if (!expectedByDay.has(date) || (filter && !filter.has(to))) continue;
-    requirementMap.set(`${to}|${date}`, Number(r.requiredHeadcount));
-    expectedByDay.get(date).add(to);
+    if (!/^TO\d+$/.test(to || '') || !expectedByDay.has(date) || (filter && !filter.has(to))) continue;
+    const headcount = Number(r.requiredHeadcount);
+    if (r.requiredHeadcount == null || r.requiredHeadcount === '' || !Number.isFinite(headcount) || headcount < 0) continue;
+    requirementMap.set(`${to}|${date}`, headcount);
+    configuredOrders.add(to);
   }
-  if (filter) for (const values of expectedByDay.values()) for (const to of filter) values.add(to);
+  // Across All Task Orders, count only Task Orders with published staffing
+  // requirements. Unconfigured roster assignments do not invent an FTE need.
+  // When explicitly filtered, every requested Task Order must be covered.
+  const expectedOrders = filter || configuredOrders;
+  for (const values of expectedByDay.values()) {
+    for (const to of expectedOrders) values.add(to);
+  }
   const scheduledByDay = new Map(allDates.map(date => [date, new Set()]));
   for (const row of scheduledRows) {
     const date = String(row.workDate || '').slice(0, 10);
@@ -69,7 +101,7 @@ export function buildStaffingHeadcountSeries({
     const expected = expectedByDay.get(date) || new Set();
     const complete = expected.size > 0 && [...expected].every(to => requirementMap.has(`${to}|${date}`));
     const requiredHeadcount = complete ? [...expected].reduce((sum, to) => sum + requirementMap.get(`${to}|${date}`), 0) : null;
-    const actualHeadcount = scheduleAvailable ? scheduledByDay.get(date).size : null;
+    const actualHeadcount = activeByDay.get(date).size;
     return { date, requiredHeadcount, actualHeadcount,
       buffer: requiredHeadcount == null || actualHeadcount == null ? null : actualHeadcount - requiredHeadcount,
       targetCoverage: complete ? 'COMPLETE' : 'MISSING', taskOrderCount: expected.size };
@@ -90,23 +122,66 @@ export function buildStaffingHeadcountSeries({
   }
   function aggregate(rows, fullWeek = false) {
     const count = rows.length;
-    const complete = count > 0 && (!fullWeek || count === 7) && rows.every(r => r.requiredHeadcount !== null);
-    const actualComplete = scheduleAvailable && count > 0 && (!fullWeek || count === 7);
-    const requiredHeadcount = complete ? round(rows.reduce((s, r) => s + r.requiredHeadcount, 0) / count) : null;
-    const actualHeadcount = actualComplete ? round(rows.reduce((s, r) => s + r.actualHeadcount, 0) / count) : null;
+    // A partial week cannot prove its Sunday opening snapshot. The ordinary
+    // report resolver supplies six complete Sunday-Saturday weeks.
+    const periodComplete = count > 0 && (!fullWeek ||
+      (count === 7 && new Date(`${rows[0].date}T00:00:00Z`).getUTCDay() === 0));
+    // Staffing Requirements are daily. A weekly Required FTE is taken from
+    // the first fully published day of that week; never average daily FTE or
+    // invent missing Task Order targets. Custom uses the exact selected day.
+    const requiredSnapshot = periodComplete
+      ? rows.find(r => r.requiredHeadcount !== null) : null;
+    const requiredHeadcount = requiredSnapshot?.requiredHeadcount ?? null;
+    // Each employee must have joined on or before the opening date and not
+    // departed before it. Midweek joiners start counting next Sunday;
+    // midweek departures remain in their opening week.
+    const actualHeadcount = periodComplete ? rows[0].actualHeadcount : null;
     const attrited = new Set(rows.flatMap(r => attritionEvents
       .filter(e => e.departureDate === r.date && (!filter || filter.has(normalizeUsVisaTaskOrderId(e.taskOrderId))))
       .map(e => String(e.employeeUid).trim().toUpperCase()))).size;
-    return { requiredHeadcount, actualHeadcount, attritedHeadcount: attrited,
-      attritionPct: actualHeadcount > 0 ? round(attrited / actualHeadcount * 100) : null,
+    // Leave the original Kronos scheduled-HC denominator for Attrition %;
+    // the displayed employment HC is a different metric and must never
+    // silently change People Metrics.
+    const scheduledMean = scheduleAvailable && count > 0 && (!fullWeek || periodComplete)
+      ? round(rows.reduce((sum, r) => sum + (scheduledByDay.get(r.date)?.size || 0), 0) / count)
+      : null;
+    return {
+      requiredHeadcount, actualHeadcount, attritedHeadcount: attrited,
+      attritionPct: scheduledMean > 0 ? round(attrited / scheduledMean * 100) : null,
       buffer: requiredHeadcount === null || actualHeadcount === null ? null : round(actualHeadcount - requiredHeadcount),
       staffingCoverage: requiredHeadcount > 0 && actualHeadcount !== null ? round(actualHeadcount / requiredHeadcount * 100) : null,
-      staffingCoverageStatus: complete ? 'COMPLETE' : 'INCOMPLETE',
-      scheduledHeadcountStatus: actualComplete ? 'AVAILABLE' : 'UNAVAILABLE',
-      coveredDays: rows.filter(r => r.requiredHeadcount !== null).length, days: count };
+      staffingCoverageStatus: requiredSnapshot ? 'COMPLETE' : 'INCOMPLETE',
+      scheduledHeadcountStatus: scheduleAvailable ? 'AVAILABLE' : 'UNAVAILABLE',
+      headcountStatus: periodComplete ? 'AVAILABLE' : 'UNAVAILABLE',
+      requiredSnapshotDate: requiredSnapshot?.date || null,
+      coveredDays: rows.filter(r => r.requiredHeadcount !== null).length, days: count,
+    };
   }
-  return { summary: aggregate(days), days,
-    series: [...buckets.values()].sort((a, b) => a.key.localeCompare(b.key))
-      .map(b => ({ key: b.key, label: b.label, ...aggregate(b.rows, period === 'weekly') })),
-    source: { required: 'STAFFING_REQUIREMENTS_PUBLISHED', actual: 'KRONOS_ACTIVE_SCHEDULES_PLUS_PMS_EMPLOYEE_LEDGER' } };
+  const orderedBuckets = [...buckets.values()].sort((a, b) => a.key.localeCompare(b.key));
+  const series = orderedBuckets.map(bucket => ({
+    key: bucket.key, label: bucket.label,
+    ...aggregate(bucket.rows, period === 'weekly'),
+  }));
+  // Summary represents the latest reporting bucket, NOT an average over the
+  // six-week/period window. Keep the existing overall attrition calculation.
+  const legacySummary = aggregate(days);
+  const latest = series.at(-1);
+  const summary = latest ? {
+    ...legacySummary,
+    requiredHeadcount: latest.requiredHeadcount,
+    actualHeadcount: latest.actualHeadcount,
+    buffer: latest.buffer,
+    staffingCoverage: latest.staffingCoverage,
+    staffingCoverageStatus: latest.staffingCoverageStatus,
+    headcountStatus: latest.headcountStatus,
+    requiredSnapshotDate: latest.requiredSnapshotDate,
+  } : legacySummary;
+  return {
+    summary, days, series,
+    source: {
+      required: 'STAFFING_REQUIREMENTS_PUBLISHED',
+      actual: 'US_VISA_EMPLOYEE_LEDGER_EMPLOYMENT_DATES',
+    },
+    headcountDataQuality: { missingJoinDateEmployees: missingJoinDateUids.size },
+  };
 }

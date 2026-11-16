@@ -1,6 +1,7 @@
 // Client-approved daily Required HC. Raw schedules and attendance are NOT stored here.
-import { pmsDb, pmsTables } from '../../config/db.js';
+import { pmsDb, pmsTables, kronosDb, kronosTables } from '../../config/db.js';
 import { mapActiveStaffingTaskOrderProfiles } from './staffingTaskOrderProfileMapper.js';
+import { displayStaffingAuditActorCodes } from '../../services/kpi/usVisa/staffing/staffingAuditActorCodes.js';
 
 const REQUIREMENTS_TABLE = pmsTables.usVisaStaffingRequirements;
 const HISTORY_TABLE = pmsTables.usVisaStaffingRequirementHistory;
@@ -58,7 +59,30 @@ export async function listStaffingRequirementHistory({ taskOrderId, dateFrom, da
     FROM ${HISTORY_TABLE} WHERE ${where.join(' AND ')}
     ORDER BY changed_at DESC, id DESC LIMIT ?
   `, params);
-  return rows;
+  // Older versions sometimes wrote gy_user_id / gy_emp_id instead of the public
+  // gy_user_code. Resolve those values for display without altering audit history.
+  const actorValues = [...new Set(rows.map(row => String(row.changedBy ?? '').trim()).filter(Boolean))];
+  if (!actorValues.length) return rows;
+  const numericActorIds = actorValues.filter(value => /^\d+$/.test(value) && Number.isSafeInteger(Number(value)));
+  const placeholders = values => values.map(() => '?').join(', ');
+  const codeClause = `u.gy_user_code IN (${placeholders(actorValues)})`;
+  const idClause = numericActorIds.length
+    ? ` OR u.gy_user_id IN (${placeholders(numericActorIds)}) OR e.gy_emp_id IN (${placeholders(numericActorIds)})`
+    : '';
+  try {
+    const [users] = await kronosDb.query(`
+      SELECT u.gy_user_id, u.gy_user_code, e.gy_emp_id
+      FROM ${kronosTables.user} u
+      LEFT JOIN ${kronosTables.employee} e ON e.gy_emp_code = u.gy_user_code
+      WHERE ${codeClause}${idClause}
+    `, [...actorValues, ...numericActorIds, ...numericActorIds]);
+    return displayStaffingAuditActorCodes(rows, users);
+  } catch (error) {
+    // Audit history must remain readable even if the Kronos lookup is offline.
+    console.warn('Staffing audit user-code lookup unavailable:', error?.message || error);
+    return rows;
+  }
+
 }
 
 export async function taskOrderIsRecognized(taskOrderId) {

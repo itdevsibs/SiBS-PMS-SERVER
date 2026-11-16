@@ -16,7 +16,9 @@ import {
   getWfmUtilizationKpi,
 } from "../controllers/occupancyKpiController.js";
 import authMiddleware from "../middleware/authMiddleware.js";
+import { getReportTaskOrderVersions, compareTaskOrderReports } from "../controllers/taskOrderVersionReportController.js";
 import { requireRole } from "../middleware/roleMiddleware.js";
+import { getUsVisaKpiTargetSettings, getUsVisaKpiTargetHistory, saveUsVisaKpiTarget } from "../controllers/usVisa/usVisaKpiTargetController.js";
 
 const router = express.Router();
 
@@ -24,6 +26,16 @@ const requirePerformanceViewer = [
   authMiddleware,
   requireRole([5, 6, 7, 8, 9, 10]),
 ];
+
+// US Visa target configuration: WFM (9) and Super Admin (7) only.
+// Protect list, history, and publish operations on the server—not just in the UI.
+const requireKpiTargetAdmin = [authMiddleware, requireRole([7, 9])];
+router.get('/kpis/us-visa/targets', ...requireKpiTargetAdmin, getUsVisaKpiTargetSettings);
+router.get('/kpis/us-visa/targets/history', ...requireKpiTargetAdmin, getUsVisaKpiTargetHistory);
+router.post('/kpis/us-visa/targets', ...requireKpiTargetAdmin, saveUsVisaKpiTarget);
+
+router.get('/kpis/task-order-versions', ...requirePerformanceViewer, getReportTaskOrderVersions);
+router.post('/kpis/task-order-version-comparison', ...requirePerformanceViewer, compareTaskOrderReports);
 
 router.get(
   "/kpis/calls-report",

@@ -1,5 +1,7 @@
 // Writes to the existing ledger with serialized, atomic transactions and append-only history.
 import { randomUUID } from 'node:crypto';
+import { assertLiveLedgerMatchesPublishedHead, publishVersionInTransaction, listPublishedVersions, readVersionSnapshot, compareVersionSnapshots } from '../services/taskOrderManagement/taskOrderVersionService.js';
+import { requireSourceSystem, VersioningError } from '../services/taskOrderManagement/taskOrderVersionDomain.js';
 import { pmsDb, pmsTables } from '../config/db.js';
 import {
   buildCountryAssignments, cleanText, countryKey, getEditableCountry,
@@ -25,16 +27,20 @@ async function readRows(conn, forUpdate = false) {
   return rows;
 }
 async function readProfiles(conn, forUpdate = false) {
-  const [rows] = await conn.query(`SELECT id, task_order_code, task_order_name, region, description, is_active
+  const [rows] = await conn.query(`SELECT id, task_order_code, task_order_name, region, description, is_active, source_system
     FROM ${PROFILES} ORDER BY id ASC${forUpdate ? ' FOR UPDATE' : ''}`);
   return rows;
 }
 async function logChange(conn, req, info) {
+  const groupId = randomUUID();
+  req.taskOrderChangeGroupId = groupId;
+  req.taskOrderVersionReason = info.reason;
+  req.taskOrderBusinessDate = info.date || null;
   await conn.query(`INSERT INTO ${HISTORY}
     (change_group_id, change_type, country, skill, previous_task_order_profile_id,
      new_task_order_profile_id, previous_values, new_values, reason, changed_by, business_effective_date)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  [randomUUID(), info.type, info.country || null, info.skill || null,
+  [groupId, info.type, info.country || null, info.skill || null,
     info.beforeId ?? null, info.afterId ?? null, JSON.stringify(info.before ?? {}),
     JSON.stringify(info.after ?? {}), info.reason, userId(req), info.date ?? null]);
 }
@@ -49,14 +55,25 @@ async function withWriteTransaction(req, res, handler) {
     if (Number(lock.acquired) !== 1) throw new LedgerEditError('Another Task Order edit is in progress. Retry shortly.', 409);
     lockAcquired = true;
     await conn.beginTransaction(); inTransaction = true;
+    await assertLiveLedgerMatchesPublishedHead(conn);
+    req.taskOrderChangeGroupId = null;
+    req.taskOrderVersionReason = null;
+    req.taskOrderBusinessDate = null;
     const data = await handler(conn);
+    // Publication and ledger mutation are one atomic transaction. A Skill-only
+    // edit does not create a new version unless country/profile snapshot changes.
+    const publication = await publishVersionInTransaction(conn, {
+      publishedBy:userId(req), changeGroupId:req.taskOrderChangeGroupId,
+      reason:req.taskOrderVersionReason || 'Task Order management update',
+      businessEffectiveDate:req.taskOrderBusinessDate,
+    });
     await conn.commit(); inTransaction = false;
-    return success(res, data);
+    return success(res, {...data, publishedVersion: publication});
   } catch (error) {
     if (inTransaction) { try { await conn.rollback(); } catch (rollbackError) { console.error('Ledger rollback failed', rollbackError); } }
-    if (!(error instanceof LedgerEditError)) console.error('Task Order write failed:', error);
+    if (!(error instanceof LedgerEditError || error instanceof VersioningError)) console.error('Task Order write failed:', error);
     return res.status(error.status || 500).json({ success: false,
-      message: error instanceof LedgerEditError ? error.message : 'Task Order update failed. Verify that the migration is installed.' });
+      message: error instanceof LedgerEditError || error instanceof VersioningError ? error.message : 'Task Order update failed. Verify that the migration is installed.' });
   } finally {
     if (conn) {
       if (lockAcquired) { try { await conn.query('SELECT RELEASE_LOCK(?)', [WRITE_LOCK]); } catch (err) { console.error('Ledger lock release failed', err); } }
@@ -220,6 +237,7 @@ export async function addProfile(req, res) {
     const name = requireText(req.body.taskOrderName, 'Task Order name', 150);
     const region = requireText(req.body.region, 'Region', 100);
     const description = cleanText(req.body.description).slice(0, 1000);
+    const sourceSystem = requireSourceSystem(req.body.sourceSystem);
     const { reason, date } = requiredMeta(req.body);
     if (!/^GSS_2\.0_TO\d+_[A-Z0-9_]+$/.test(code) || !profileNameValid(name, code))
       throw new LedgerEditError('Use a GSS_2.0_TO#_REGION code and include the matching TO number in the name.');
@@ -229,10 +247,10 @@ export async function addProfile(req, res) {
       String(p.task_order_code).toUpperCase().match(/_TO(\d+)_/)?.[1] === codeTo))
       throw new LedgerEditError('A Task Order with this code or TO number already exists.', 409);
     const [result] = await conn.query(`INSERT INTO ${PROFILES}
-      (task_order_code, task_order_name, region, description, is_active) VALUES (?, ?, ?, ?, 1)`,
-      [code, name, region, description]);
+      (task_order_code, task_order_name, region, description, is_active, source_system) VALUES (?, ?, ?, ?, 1, ?)`,
+      [code, name, region, description, sourceSystem]);
     await logChange(conn, req, { type: 'TASK_ORDER_ADDED', afterId: result.insertId,
-      after: { id: result.insertId, task_order_code: code, task_order_name: name, region, description, is_active: 1 }, reason, date });
+      after: { id: result.insertId, task_order_code: code, task_order_name: name, region, description, source_system: sourceSystem, is_active: 1 }, reason, date });
     return { id: result.insertId };
   });
 }
@@ -243,6 +261,7 @@ export async function editProfile(req, res) {
     const region = requireText(req.body.region, 'Region', 100);
     const description = cleanText(req.body.description).slice(0, 1000);
     const active = req.body.isActive === true || req.body.isActive === 1 || req.body.isActive === '1' ? 1 : 0;
+    const sourceSystem = requireSourceSystem(req.body.sourceSystem);
     const { reason, date } = requiredMeta(req.body);
     const [rows, profiles] = await Promise.all([readRows(conn, true), readProfiles(conn, true)]);
     const current = profiles.find((p) => Number(p.id) === id);
@@ -253,14 +272,28 @@ export async function editProfile(req, res) {
     if (!active && rows.some((row) => isActive(row.status) && Number(row.task_order_profile_id) === id))
       throw new LedgerEditError('Transfer or deactivate assigned Skills before disabling this Task Order.', 409);
     const before = { task_order_name: current.task_order_name, region: current.region,
-      description: current.description, is_active: Number(current.is_active) };
-    const after = { task_order_name: name, region, description, is_active: active };
+      description: current.description, is_active: Number(current.is_active), source_system: current.source_system };
+    const after = { task_order_name: name, region, description, is_active: active, source_system: sourceSystem };
     if (JSON.stringify(before) === JSON.stringify(after)) throw new LedgerEditError('No changes to save.');
-    await conn.query(`UPDATE ${PROFILES} SET task_order_name = ?, region = ?, description = ?, is_active = ? WHERE id = ?`,
-      [name, region, description, active, id]);
+    await conn.query(`UPDATE ${PROFILES} SET task_order_name = ?, region = ?, description = ?, is_active = ?, source_system = ? WHERE id = ?`,
+      [name, region, description, active, sourceSystem, id]);
     // Maintain the denormalized legacy column while read APIs use the profile join.
     if (name !== current.task_order_name) await conn.query(`UPDATE ${LEDGER} SET task_order = ? WHERE task_order_profile_id = ?`, [name, id]);
     await logChange(conn, req, { type: 'TASK_ORDER_UPDATED', beforeId: id, afterId: id, before, after, reason, date });
     return { id, ...after };
   });
+}
+
+// Read-only version views. Writes to published versions are never exposed.
+export async function getTaskOrderVersions(req,res) {
+  try { return success(res,await listPublishedVersions(req.query)); }
+  catch (error) { console.error('Task Order versions:',error); return res.status(500).json({success:false,message:'Unable to load published Task Order versions.'}); }
+}
+export async function getTaskOrderVersionDetail(req,res) {
+  try { return success(res,await readVersionSnapshot(req.params.id)); }
+  catch (error) { return res.status(error.status||500).json({success:false,code:error.code||'VERSION_ERROR',message:error.message}); }
+}
+export async function getTaskOrderVersionDiff(req,res) {
+  try { return success(res,await compareVersionSnapshots(req.query.baseVersionId||1,req.query.targetVersionId||'current')); }
+  catch (error) { return res.status(error.status||500).json({success:false,code:error.code||'VERSION_ERROR',message:error.message}); }
 }

@@ -21,7 +21,7 @@ function buildAbsenteeismCacheKey({
   taskOrder,
 }) {
   return `ABSENTEEISM_DASHBOARD:${JSON.stringify({
-    version: 14,
+    version: 17,
     source: "KRONOS_API",
     account: "US_VISA",
     period: period || null,
@@ -36,8 +36,8 @@ async function loadAbsenteeismDashboard(resolved) {
   const { period, dateFrom, dateTo, referenceDate, taskOrder } = resolved;
 
   // Population comes from the US Visa roster. Presence then comes exclusively
-  // from the live Kronos API, so agents count as Actual HC even when they had no
-  // calls, chats, emails, or Occupancy source activity.
+  // from live Kronos API. Actual HC is the ledger employment-date snapshot;
+  // Kronos schedule counts remain the Attrition % denominator.
   const targetEmployeeUids = await findUsVisaRosterEmployeeUids({
     taskOrder,
     dateFrom,
@@ -54,7 +54,7 @@ async function loadAbsenteeismDashboard(resolved) {
         source: "KRONOS_API",
         storageMode: "LIVE_ONLY",
         fetchMode: "OPTIMIZED_ATTENDANCE_DIRECTORY_PLUS_DATE_FILTERED_SCHEDULES",
-        headcountBasis: "DISTINCT_ACTIVE_ROSTERED_AGENTS_WITH_KRONOS_SCHEDULE_PER_DAY",
+        headcountBasis: "EMPLOYMENT_DATE_OPENING_WEEK_SNAPSHOT_OR_CUSTOM_DAILY",
         presenceBasis: "KRONOS_TRACKER_LOGIN",
         formula: "ABSENT_EMPLOYEE_DAYS / SCHEDULED_EMPLOYEE_DAYS * 100",
         targetRosterEmployeeCount: 0,
@@ -93,7 +93,7 @@ async function loadAbsenteeismDashboard(resolved) {
         source: "KRONOS_API",
         storageMode: "LIVE_ONLY",
         fetchMode: attendanceDataset.fetchMode,
-        headcountBasis: "DISTINCT_ACTIVE_ROSTERED_AGENTS_WITH_KRONOS_SCHEDULE_PER_DAY",
+        headcountBasis: "EMPLOYMENT_DATE_OPENING_WEEK_SNAPSHOT_OR_CUSTOM_DAILY",
         presenceBasis: "KRONOS_TRACKER_LOGIN",
         formula: "ABSENT_EMPLOYEE_DAYS / SCHEDULED_EMPLOYEE_DAYS * 100",
         detailFormula:
@@ -145,7 +145,7 @@ async function loadAbsenteeismDashboard(resolved) {
         source: "KRONOS_API",
         storageMode: "LIVE_ONLY",
         fetchMode: "OPTIMIZED_ATTENDANCE_DIRECTORY_PLUS_DATE_FILTERED_SCHEDULES",
-        headcountBasis: "DISTINCT_ACTIVE_ROSTERED_AGENTS_WITH_KRONOS_SCHEDULE_PER_DAY",
+        headcountBasis: "EMPLOYMENT_DATE_OPENING_WEEK_SNAPSHOT_OR_CUSTOM_DAILY",
         presenceBasis: "KRONOS_TRACKER_LOGIN",
         formula: "ABSENT_EMPLOYEE_DAYS / SCHEDULED_EMPLOYEE_DAYS * 100",
         message: "Live Kronos optimized attendance/directory/schedule data are currently unavailable.",

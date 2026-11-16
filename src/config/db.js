@@ -168,10 +168,15 @@ export const pmsTables = {
   usVisaEmployeeLedger: dbTable(
     PMS_DB_NAME, "us_visa_employee_ledger"
   ),
+  usVisaKpiTargets: dbTable(PMS_DB_NAME, "us_visa_kpi_targets"),
   usVisaTaskOrderLedger: dbTable(
     PMS_DB_NAME, "us_visa_task_order_ledger"
   ),
   usVisaTaskOrderChangeHistory: dbTable(PMS_DB_NAME, "us_visa_task_order_change_history"),
+  usVisaTaskOrderVersions: dbTable(PMS_DB_NAME, "us_visa_task_order_versions"),
+  usVisaTaskOrderVersionProfiles: dbTable(PMS_DB_NAME, "us_visa_task_order_version_profiles"),
+  usVisaTaskOrderVersionCountries: dbTable(PMS_DB_NAME, "us_visa_task_order_version_countries"),
+  usVisaTaskOrderVersionHead: dbTable(PMS_DB_NAME, "us_visa_task_order_version_head"),
   usVisaStaffingRequirements: dbTable(PMS_DB_NAME, "us_visa_staffing_requirements"),
   usVisaStaffingRequirementHistory: dbTable(PMS_DB_NAME, "us_visa_staffing_requirement_history"),
   usVisaTaskOrderLedgerProfiles: dbTable(

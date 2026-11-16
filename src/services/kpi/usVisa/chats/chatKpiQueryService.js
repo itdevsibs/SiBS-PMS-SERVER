@@ -1,3 +1,8 @@
+import { resolveUsVisaKpiTargets } from '../targets/usVisaKpiTargetService.js';
+import { PINNED_VERSION_COMPARISON_WINDOW } from '../../../taskOrderManagement/taskOrderVersionReportFilters.js';
+import { normalizeTaskOrderComparisonSources } from '../../../taskOrderManagement/taskOrderComparisonSources.js';
+import { getPublishedVersion } from '../../../taskOrderManagement/taskOrderVersionService.js';
+import { getSkillStatisticsTaskOrderCountryScope } from '../calls/skillStatisticsTaskOrderScope.js';
 // Resolves Chat KPI filters/date ranges and queries canonical Chat Report (EOD) rows.
 import {
   getChatKpiDateBounds,
@@ -10,7 +15,6 @@ import {
   resolveDefaultCallKpiDateRange,
 } from "../calls/callKpiService.js";
 import {
-  getUsVisaTaskOrderCountries,
   normalizeUsVisaTaskOrder,
 } from "../calls/taskOrderFilter.js";
 import { buildWfmChatKpiDashboard } from "./chatKpiService.js";
@@ -47,12 +51,17 @@ function isOutsideBounds(date, bounds = {}) {
 
 export async function getWfmChatKpiDashboard(query = {}) {
   const period = normalizeCallKpiPeriod(query.period);
-  const sourceSystem = normalizeSourceSystem(query.sourceSystem || query.source);
+  const sourceSystem = normalizeTaskOrderComparisonSources(query.sourceSystem || query.source);
   const requestedReferenceDate = validateReferenceDate(query.referenceDate || query.reference);
   const requestedDateFrom = normalizeDate(query.from || query.dateFrom);
   const requestedDateTo = normalizeDate(query.to || query.dateTo);
   const taskOrder = normalizeUsVisaTaskOrder(sourceSystem, query.taskOrder);
-  const taskOrderCountries = getUsVisaTaskOrderCountries(sourceSystem, taskOrder);
+  // Resolve countries using the selected immutable mapping, not the retired
+  // static TO-country catalog. Compare requests pin the same version in both runs.
+  const version = await getPublishedVersion(query.taskOrderVersionId || 'current');
+  const taskOrderCountries = taskOrder
+    ? (await getSkillStatisticsTaskOrderCountryScope(taskOrder,version.id)).countries
+    : [];
   const country = Array.isArray(query.country)
     ? query.country
     : (String(query.country || "").trim() || null);
@@ -61,11 +70,12 @@ export async function getWfmChatKpiDashboard(query = {}) {
     : (String(query.skill || "").trim() || null);
 
   const isCustomRange = period === "custom";
+  const comparisonWindow = query[PINNED_VERSION_COMPARISON_WINDOW];
   const isLegacyManualRange = !isCustomRange
     && !requestedReferenceDate
     && Boolean(requestedDateFrom || requestedDateTo);
 
-  if (isCustomRange && (!requestedDateFrom || !requestedDateTo)) {
+  if (isCustomRange && !comparisonWindow && (!requestedDateFrom || !requestedDateTo)) {
     const error = new Error("Custom reporting requires both From and To dates.");
     error.code = "INVALID_CUSTOM_DATE_RANGE";
     throw error;
@@ -86,19 +96,27 @@ export async function getWfmChatKpiDashboard(query = {}) {
   });
 
   if (!bounds.minDate || !bounds.maxDate) {
+    const targetPolicy = await resolveUsVisaKpiTargets({
+      category: 'CHAT', sourceSystem, taskOrder,
+      dateFrom: comparisonWindow?.dateFrom ?? requestedDateFrom,
+      dateTo: comparisonWindow?.dateTo ?? requestedDateTo,
+    });
     return {
       ...buildWfmChatKpiDashboard({
         rows: [],
         period,
         sourceSystem,
-        dateFrom: requestedDateFrom,
-        dateTo: requestedDateTo,
+        dateFrom: comparisonWindow?.dateFrom ?? requestedDateFrom,
+        dateTo: comparisonWindow?.dateTo ?? requestedDateTo,
         referenceDate: requestedReferenceDate,
         taskOrder,
         country,
         skill,
         availableTaskOrders: [],
       }),
+      targets: targetPolicy.targets,
+      targetPolicy: { asOfDate: targetPolicy.asOfDate, applied: targetPolicy.applied,
+        mixedTargetPeriods: targetPolicy.mixedTargetPeriods, notice: targetPolicy.notice },
       availableDateRange: bounds,
     };
   }
@@ -108,7 +126,13 @@ export async function getWfmChatKpiDashboard(query = {}) {
   let referenceDate = null;
   let rangeMode = "legacy";
 
-  if (isCustomRange) {
+  if (comparisonWindow) {
+    // Both versions share the validated parent-report dates, even when their
+    // individual mapped data has different availability bounds.
+    ({ dateFrom, dateTo } = comparisonWindow);
+    referenceDate = requestedReferenceDate;
+    rangeMode = "version_comparison";
+  } else if (isCustomRange) {
     rangeMode = "custom";
   } else if (isLegacyManualRange) {
     const defaults = resolveDefaultCallKpiDateRange({
@@ -165,8 +189,14 @@ export async function getWfmChatKpiDashboard(query = {}) {
     availableTaskOrders,
   });
 
+  const targetPolicy = await resolveUsVisaKpiTargets({
+    category: 'CHAT', sourceSystem, taskOrder, dateFrom, dateTo,
+  });
   return {
     ...dashboard,
+    targets: targetPolicy.targets,
+    targetPolicy: { asOfDate: targetPolicy.asOfDate, applied: targetPolicy.applied,
+      mixedTargetPeriods: targetPolicy.mixedTargetPeriods, notice: targetPolicy.notice },
     filters: {
       ...dashboard.filters,
       rangeMode,

@@ -1,7 +1,7 @@
 // Runtime-only Task Order country scope for Skill Statistics filters.
 // Active country -> Task Order mappings come from the ledger; this never
 // rewrites canonical imports; reporting ownership is determined on each query.
-import { pmsDb, pmsTables } from '../../../../config/db.js';
+import { readVersionedCountryRows } from './versionedCountryRows.js';
 
 import {
   expandSkillStatisticsCountryAliases,
@@ -10,33 +10,28 @@ import {
 export { expandSkillStatisticsCountryAliases, buildUniqueTaskOrderCountryScope }
   from './skillStatisticsTaskOrderOwnership.js';
 
-export async function getSkillStatisticsTaskOrderCountryScope(taskOrder) {
+export async function getSkillStatisticsTaskOrderCountryScope(taskOrder, versionId = 'current') {
   if (!taskOrder || (Array.isArray(taskOrder) && taskOrder.length === 0)) {
     return {countries: [], ambiguousCountries: []};
   }
-  const [rows] = await pmsDb.query(`
-    SELECT l.country, p.task_order_code AS task_order, l.status
-    FROM ${pmsTables.usVisaTaskOrderLedger} l
-    INNER JOIN ${pmsTables.usVisaTaskOrderLedgerProfiles} p
-      ON p.id = l.task_order_profile_id AND p.is_active = 1
-    WHERE UPPER(TRIM(l.status)) = 'ACTIVE'
-  `);
+  const {rows} = await readVersionedCountryRows(versionId);
   return buildUniqueTaskOrderCountryScope(rows, taskOrder);
 }
 
-// Filter dropdown metadata: use current active ledger assignments, not a
-// hard-coded country list. Each alias appears only under one unambiguous TO.
-export async function getActiveSkillStatisticsCountryScopes() {
-  const [rows] = await pmsDb.query(`
-    SELECT l.country, p.task_order_code AS task_order, l.status
-    FROM ${pmsTables.usVisaTaskOrderLedger} l
-    INNER JOIN ${pmsTables.usVisaTaskOrderLedgerProfiles} p
-      ON p.id = l.task_order_profile_id AND p.is_active = 1
-    WHERE UPPER(TRIM(l.status)) = 'ACTIVE'
-  `);
+// Dynamic version-specific dropdown options, including added Task Orders.
+export async function getActiveSkillStatisticsCountryScopes(versionId = 'current') {
+  const {rows,profiles} = await readVersionedCountryRows(versionId);
   const scopes = {};
-  for (const to of ['TO4','TO10','TO12','TO14','TO16']) {
-    scopes[to] = buildUniqueTaskOrderCountryScope(rows, to).countries;
+  for (const profile of profiles.filter((p) => p.active === 1)) {
+    const match = String(profile.code).toUpperCase().match(/TO\s*(\d+)/);
+    if (!match) continue;
+    const to = `TO${Number(match[1])}`;
+    scopes[to] = buildUniqueTaskOrderCountryScope(rows,to).countries;
   }
   return scopes;
+}
+
+export async function getAllMappedTaskOrderCountries(versionId = 'current') {
+  const {rows} = await readVersionedCountryRows(versionId);
+  return expandSkillStatisticsCountryAliases(rows.map((r) => r.country));
 }

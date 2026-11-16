@@ -1,5 +1,6 @@
 import { getKronosApiResponse } from "../../services/kronos/kronosApiClient.js";
 import { findUsVisaRosterEmployeeUids } from "../usVisa/employees/usVisaEmployeeScopeRepository.js";
+import { cleanKronosEmployeeName, getKronosEmployeeNameFromRow } from "../../services/kronos/kronosAttendanceEmployeeNames.js";
 
 function normalizeEmployeeUid(value) {
   return String(value || "").trim().replace(/^SIB-\s*/i, "").trim();
@@ -254,9 +255,9 @@ async function getAccountEmployees(accountId) {
       ]));
       if (!internalId) missingInternalIds += 1;
 
-      const name = String(getField(row, [
-        "gy_emp_fullname", "employee.gy_emp_fullname", "employee_name", "full_name",
-      ]) || "").trim();
+      const name = getKronosEmployeeNameFromRow(
+        row, accountId === TEAM_LEADERS_KRONOS_ACCOUNT_ID ? "Team Leaders" : "US Visa",
+      );
       const previous = byUid.get(uid);
       if (previous?.gyEmpId && internalId && previous.gyEmpId !== internalId) {
         throw scheduleSourceError(`Conflicting internal IDs for Kronos employee ${uid}.`);
@@ -295,8 +296,10 @@ function mergeEmployeeCandidate(map, employee, { preferIncoming = false } = {}) 
     gyEmpCode: uid,
     gyEmpId: incomingId || current?.gyEmpId || null,
     employeeName: preferIncoming
-      ? String(employee?.employeeName || current?.employeeName || "").trim()
-      : String(current?.employeeName || employee?.employeeName || "").trim(),
+      ? (cleanKronosEmployeeName(employee?.employeeName, "US Visa") ||
+          cleanKronosEmployeeName(current?.employeeName, "US Visa") || "")
+      : (cleanKronosEmployeeName(current?.employeeName, "US Visa") ||
+          cleanKronosEmployeeName(employee?.employeeName, "US Visa") || ""),
     kronosAccountId: positiveId(employee?.kronosAccountId) || current?.kronosAccountId || null,
     employeeRole: employee?.employeeRole || current?.employeeRole || null,
   });
@@ -472,43 +475,68 @@ export async function getKronosAttendanceSheetScheduleData({
     missingInternalIds: 0,
   };
 
-  let unresolvedUids = [...requiredUids].filter((uid) => !candidates.get(uid)?.gyEmpId);
+  // Some attendance/schedule API rows carry employee IDs but no person name.
+  // Resolve those by exact public employee code in the account-scoped Kronos
+  // directory, instead of showing a generic account label in the sheet.
+  const needsDirectory = (uid) => {
+    const employee = candidates.get(uid);
+    return !employee?.gyEmpId || !cleanKronosEmployeeName(employee?.employeeName, accountName);
+  };
+  let unresolvedUids = [...requiredUids].filter(needsDirectory);
 
-  // Primary-account directory fallback for employees that had no attendance row.
   if (unresolvedUids.length) {
-    accountDirectory = await getAccountEmployees(accountId);
-    const accountByUid = new Map(
-      accountDirectory.employees.map((employee) => [employee.employeeUid, employee]),
-    );
-    for (const uid of unresolvedUids) {
-      const employee = accountByUid.get(uid);
-      if (!employee?.gyEmpId) continue;
-      mergeEmployeeCandidate(candidates, {
-        ...employee,
-        kronosAccountId: accountId,
-        employeeRole: null,
-      });
+    // A name-only lookup must not make an otherwise healthy attendance request
+    // fail if the directory happens to be unavailable.
+    const identityLookupRequired = unresolvedUids.some((uid) => !candidates.get(uid)?.gyEmpId);
+    try {
+      accountDirectory = await getAccountEmployees(accountId);
+      const accountByUid = new Map(
+        accountDirectory.employees.map((employee) => [employee.employeeUid, employee]),
+      );
+      for (const uid of unresolvedUids) {
+        const employee = accountByUid.get(uid);
+        if (!employee) continue;
+        const verifiedName = cleanKronosEmployeeName(employee.employeeName, accountName);
+        mergeEmployeeCandidate(candidates, {
+          ...employee,
+          employeeName: verifiedName || candidates.get(uid)?.employeeName || "",
+          kronosAccountId: accountId,
+          employeeRole: null,
+        }, { preferIncoming: Boolean(verifiedName) });
+      }
+    } catch (error) {
+      if (identityLookupRequired) throw error;
     }
   }
 
-  unresolvedUids = [...requiredUids].filter((uid) => !candidates.get(uid)?.gyEmpId);
+  unresolvedUids = [...requiredUids].filter(needsDirectory);
 
-  // US Visa Team Leaders live under Kronos account 78. Query that directory only
-  // when a verified US Visa roster employee still cannot be resolved in account 20.
-  const unresolvedRosterUids = unresolvedUids.filter((uid) => rosterUidSet.has(uid));
+  // US Visa Team Leaders live under Kronos account 78. Only already-verified
+  // US Visa roster employees may be considered for cross-account resolution.
+  const unresolvedRosterUids = unresolvedUids.filter((uid) =>
+    rosterUidSet.has(uid) &&
+    (!candidates.get(uid)?.gyEmpId || candidates.get(uid)?.employeeRole === "TEAM_LEADER"),
+  );
   if (isUsVisa && unresolvedRosterUids.length) {
-    teamLeaderDirectory = await getAccountEmployees(TEAM_LEADERS_KRONOS_ACCOUNT_ID);
-    const leaderByUid = new Map(
-      teamLeaderDirectory.employees.map((employee) => [employee.employeeUid, employee]),
-    );
-    for (const uid of unresolvedRosterUids) {
-      const leader = leaderByUid.get(uid);
-      if (!leader?.gyEmpId) continue;
-      mergeEmployeeCandidate(candidates, {
-        ...leader,
-        kronosAccountId: TEAM_LEADERS_KRONOS_ACCOUNT_ID,
-        employeeRole: "TEAM_LEADER",
-      });
+    const identityLookupRequired = unresolvedRosterUids.some((uid) => !candidates.get(uid)?.gyEmpId);
+    try {
+      teamLeaderDirectory = await getAccountEmployees(TEAM_LEADERS_KRONOS_ACCOUNT_ID);
+      const leaderByUid = new Map(
+        teamLeaderDirectory.employees.map((employee) => [employee.employeeUid, employee]),
+      );
+      for (const uid of unresolvedRosterUids) {
+        const leader = leaderByUid.get(uid);
+        if (!leader) continue;
+        const verifiedName = cleanKronosEmployeeName(leader.employeeName, "Team Leaders");
+        mergeEmployeeCandidate(candidates, {
+          ...leader,
+          employeeName: verifiedName || candidates.get(uid)?.employeeName || "",
+          kronosAccountId: TEAM_LEADERS_KRONOS_ACCOUNT_ID,
+          employeeRole: "TEAM_LEADER",
+        }, { preferIncoming: Boolean(verifiedName) });
+      }
+    } catch (error) {
+      if (identityLookupRequired) throw error;
     }
   }
 
@@ -575,9 +603,22 @@ export async function getKronosAttendanceSheetScheduleData({
     scheduleCacheMisses: results.filter((result) => !result.cacheHit).length,
   };
 
+  // Explicit code-matched directory names, including employees with no schedule.
+  // The caller uses these to enrich absent, rest-day and attendance-only rows.
+  const directoryEmployeeNames = new Map();
+  for (const directory of [accountDirectory, teamLeaderDirectory]) {
+    for (const employee of directory.employees) {
+      const verifiedName = cleanKronosEmployeeName(employee.employeeName, accountName);
+      if (verifiedName) directoryEmployeeNames.set(employee.employeeUid, verifiedName);
+    }
+  }
+
   return {
     schedules: [...byEmployeeDay.values()],
     teamLeaders,
+    directoryEmployeeNames: [...directoryEmployeeNames].map(([employeeUid, employeeName]) => ({
+      employeeUid, employeeName,
+    })),
     coveredEmployeeUids: allEmployees.map((employee) => employee.employeeUid),
     unresolvedEmployeeUids,
     scheduleFailures,
