@@ -15,6 +15,7 @@ import employeeRoutes from "./routes/employees.js";
 import sampleRoutes from "./routes/sample.js";
 import usVisaImportRoutes from "./routes/usVisa/usVisaImports.js";
 import frontStepsImportRoutes from "./routes/frontSteps/frontStepsImports.js";
+import frontStepsEmployeeLedgerRoutes from "./routes/frontSteps/frontStepsEmployeeLedger.js";
 import userRoutes from "./routes/users.js";
 import performanceRoutes from "./routes/performance.js";
 import historyRoutes from "./routes/history.js";
@@ -330,6 +331,7 @@ app.use(
   "/api/frontsteps",
   frontStepsImportRoutes
 );
+app.use("/api/frontsteps/employee-ledger", frontStepsEmployeeLedgerRoutes);
 
 /*
   Employee Master Data & Identity Ledger
