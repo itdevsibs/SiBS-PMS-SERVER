@@ -26,10 +26,16 @@ import loginRoutes from "./routes/login.js";
 import superAdminRoutes from "./routes/super-admin.js";
 import kronosRoutes from "./routes/kronos.js";
 import frontstepsPolicyRoutes from "./routes/frontstepsPolicies.js";
+import frontStepsAiReportRoutes from "./modules/frontStepsAiReport/routes/frontStepsAiReportRoutes.js";
+import policyProcessingRoutes from "./routes/policyProcessing.js";
 import {
   initializeKronosTokenService,
   stopKronosTokenService,
 } from "./services/kronos/kronosTokenService.js";
+import {
+  startFrontStepsAiJobWorker,
+  stopFrontStepsAiJobWorker,
+} from "./modules/frontStepsAiReport/services/frontStepsAiJobWorker.js";
 
 const app = express();
 
@@ -349,6 +355,22 @@ app.use(
   frontstepsPolicyRoutes
 );
 
+/*
+  FrontSteps AI Report Module (Isolated Read-Only Pipeline)
+*/
+app.use(
+  "/api/frontsteps/ai-report",
+  frontStepsAiReportRoutes
+);
+
+/*
+  AI Report Policy Processing & Knowledge Extraction
+*/
+app.use(
+  "/api/policy-processing",
+  policyProcessingRoutes
+);
+
 /* ================================
    ROOT
 ================================ */
@@ -469,10 +491,12 @@ const startServer =
           console.log(
             `Server running on http://localhost:${PORT}`
           );
+          startFrontStepsAiJobWorker();
         }
       );
 
       const gracefulShutdown = () => {
+        stopFrontStepsAiJobWorker();
         stopKronosTokenService();
         server.close(() => {
           process.exit(0);
@@ -480,6 +504,7 @@ const startServer =
       };
 
       process.once("SIGUSR2", () => {
+        stopFrontStepsAiJobWorker();
         stopKronosTokenService();
         server.close(() => {
           process.kill(process.pid, "SIGUSR2");

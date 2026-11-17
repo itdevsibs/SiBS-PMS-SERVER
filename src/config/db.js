@@ -191,8 +191,86 @@ export const pmsTables = {
   frontstepsPoliciesRepository: dbTable(
     PMS_DB_NAME, "frontsteps_policies_repository"
   ),
+  policyProcessingDocuments: dbTable(
+    PMS_DB_NAME, "policy_processing_documents"
+  ),
+  policyExtractedPages: dbTable(
+    PMS_DB_NAME, "policy_extracted_pages"
+  ),
+  policyExtractedSections: dbTable(
+    PMS_DB_NAME, "policy_extracted_sections"
+  ),
+  policyProcessingJobs: dbTable(
+    PMS_DB_NAME, "policy_processing_jobs"
+  ),
   userAccessibleInterfaces: dbTable(
     PMS_DB_NAME, "frontsteps_admin_access"
+  ),
+  frontstepsAiPolicyVersions: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_policy_versions"
+  ),
+  frontstepsAiPolicySyncRuns: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_policy_sync_runs"
+  ),
+  frontstepsAiPolicyEvents: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_policy_events"
+  ),
+  frontstepsAiPolicyExtractionRuns: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_policy_extraction_runs"
+  ),
+  frontstepsAiPolicyPages: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_policy_pages"
+  ),
+  frontstepsAiPolicyChunks: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_policy_chunks"
+  ),
+  frontstepsAiPolicyInterpretationRuns: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_policy_interpretation_runs"
+  ),
+  frontstepsAiPolicyRuleCandidates: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_policy_rule_candidates"
+  ),
+  frontstepsAiPolicyInterpretationIssues: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_policy_interpretation_issues"
+  ),
+  frontstepsAiReportJobs: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_report_jobs"
+  ),
+  frontstepsAiReportSnapshots: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_report_snapshots"
+  ),
+  frontstepsAiReportSnapshotDependencies: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_report_snapshot_dependencies"
+  ),
+  frontstepsAiRuleValidations: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_rule_validations"
+  ),
+  frontstepsAiRuleValidationIssues: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_rule_validation_issues"
+  ),
+  frontstepsAiPolicyRuleSnapshots: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_policy_rule_snapshots"
+  ),
+  frontstepsAiPolicySnapshotRules: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_policy_snapshot_rules"
+  ),
+  frontstepsAiReportMetricResults: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_report_metric_results"
+  ),
+  frontstepsAiReportIntervals: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_report_intervals"
+  ),
+  frontstepsAiCalculationAudits: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_calculation_audits"
+  ),
+  frontstepsAiOperationalSettings: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_operational_settings"
+  ),
+  frontstepsAiOperationalSettingAudits: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_operational_setting_audits"
+  ),
+  frontstepsAiCaseClosureEvents: dbTable(
+    PMS_DB_NAME, "frontsteps_ai_case_closure_events"
   ),
 };
 

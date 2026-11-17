@@ -1,0 +1,85 @@
+-- ==============================================================================
+-- FRONTSTEPS AI - PHASE 4B DATABASE MIGRATION
+-- Policy-Driven Report Calculation Engine: Metric Results, Intervals & Audits
+-- ==============================================================================
+
+CREATE TABLE IF NOT EXISTS `pms_db`.`frontsteps_ai_report_metric_results` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `snapshot_id` BIGINT UNSIGNED NOT NULL COMMENT 'Reference to frontsteps_ai_report_snapshots.id',
+  `policy_rule_snapshot_id` BIGINT UNSIGNED NULL COMMENT 'Reference to frontsteps_ai_policy_rule_snapshots.id',
+  `report_type` VARCHAR(50) NOT NULL COMMENT 'SUMMARY, ACCOUNT_KPI, INDIVIDUAL_KPI_PMP',
+  `reporting_period` VARCHAR(50) NOT NULL COMMENT 'monthly, weekly, daily, annually, bi-hourly, custom',
+  `scope_type` VARCHAR(40) NOT NULL COMMENT 'GLOBAL, CALL_QUEUE, CASE_QUEUE, CASE_ORIGIN, EMPLOYEE',
+  `scope_key` VARCHAR(120) NOT NULL COMMENT 'all, queue_name, origin, or sibs_id',
+  `scope_label` VARCHAR(191) NULL,
+  `metric_code` VARCHAR(80) NOT NULL COMMENT 'CASES_CLOSED, AHT, AHT_COMPLIANCE, CRM_RESOLUTION, CRM_SUB_CODE_COMPLETION, CRM_SUMMARY_COMPLETION, FINAL_KPI_SCORE, etc.',
+  `metric_label` VARCHAR(120) NOT NULL,
+  `metric_status` VARCHAR(40) NOT NULL DEFAULT 'CALCULATED' COMMENT 'CALCULATED, VERIFIED, INCOMPLETE, BLOCKED, NO_DATA, UNAVAILABLE',
+  `numerator_value` DECIMAL(18,4) NULL,
+  `denominator_value` DECIMAL(18,4) NULL,
+  `raw_value` DECIMAL(18,4) NULL,
+  `unit` VARCHAR(40) NULL,
+  `target_value` DECIMAL(18,4) NULL,
+  `weight_percent` DECIMAL(6,2) NULL,
+  `weighted_score` DECIMAL(10,4) NULL,
+  `source_rule_code` VARCHAR(120) NULL,
+  `formula_operation` VARCHAR(60) NULL,
+  `blocking_reason` TEXT NULL,
+  `metadata_json` JSON NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_fs_ai_metric_snap` (`snapshot_id`),
+  KEY `idx_fs_ai_metric_lookup` (`snapshot_id`, `scope_type`, `scope_key`, `metric_code`),
+  KEY `idx_fs_ai_metric_status` (`metric_code`, `metric_status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `pms_db`.`frontsteps_ai_report_intervals` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `snapshot_id` BIGINT UNSIGNED NOT NULL COMMENT 'Reference to frontsteps_ai_report_snapshots.id',
+  `interval_granularity` VARCHAR(30) NOT NULL COMMENT '30_MIN, BI_HOURLY, DAILY',
+  `interval_sort_key` VARCHAR(60) NOT NULL,
+  `interval_start_utc` DATETIME NULL,
+  `interval_label_est` VARCHAR(60) NOT NULL,
+  `interval_label_mt` VARCHAR(60) NOT NULL,
+  `timezone_conversion_mode` VARCHAR(120) NOT NULL,
+  `timezone_confidence` VARCHAR(40) NOT NULL DEFAULT 'CONFIRMED',
+  `offered_calls` INT NOT NULL DEFAULT 0,
+  `answered_calls` INT NOT NULL DEFAULT 0,
+  `abandoned_calls` INT NOT NULL DEFAULT 0,
+  `closed_cases` INT NOT NULL DEFAULT 0,
+  `asa_seconds` DECIMAL(12,4) NULL,
+  `aht_seconds` DECIMAL(12,4) NULL,
+  `answer_rate_percent` DECIMAL(8,4) NULL,
+  `abandon_rate_percent` DECIMAL(8,4) NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_fs_ai_int_snap` (`snapshot_id`),
+  KEY `idx_fs_ai_int_gran` (`snapshot_id`, `interval_granularity`, `interval_sort_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `pms_db`.`frontsteps_ai_calculation_audits` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `job_id` BIGINT UNSIGNED NULL,
+  `snapshot_id` BIGINT UNSIGNED NULL,
+  `policy_rule_snapshot_id` BIGINT UNSIGNED NULL,
+  `report_type` VARCHAR(50) NOT NULL,
+  `reporting_period` VARCHAR(50) NOT NULL,
+  `scope_filter` VARCHAR(120) NOT NULL DEFAULT 'all',
+  `filter_fingerprint` VARCHAR(64) NOT NULL,
+  `source_data_fingerprint` VARCHAR(64) NOT NULL,
+  `policy_snapshot_fingerprint` VARCHAR(64) NULL,
+  `calculation_engine_version` VARCHAR(50) NOT NULL DEFAULT 'v2.0-phase4b',
+  `execution_readiness_state` VARCHAR(40) NOT NULL COMMENT 'RULE_VALIDATED, EXECUTION_READY, DATA_INCOMPLETE, BLOCKED, CALCULATED, VERIFIED',
+  `verification_status` VARCHAR(40) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING, VERIFIED, FAILED, BLOCKED',
+  `hermes_calls_count` INT NOT NULL DEFAULT 0,
+  `source_validation_json` JSON NOT NULL,
+  `verification_json` JSON NULL,
+  `blocking_reasons_json` JSON NULL,
+  `duration_ms` INT UNSIGNED NULL,
+  `trigger_origin` VARCHAR(60) NOT NULL DEFAULT 'BACKGROUND_WORKER',
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_fs_ai_audit_snap` (`snapshot_id`),
+  KEY `idx_fs_ai_audit_job` (`job_id`),
+  KEY `idx_fs_ai_audit_lookup` (`report_type`, `reporting_period`, `execution_readiness_state`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

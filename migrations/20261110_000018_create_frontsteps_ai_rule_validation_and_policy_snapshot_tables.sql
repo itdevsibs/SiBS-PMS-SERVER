@@ -1,0 +1,105 @@
+-- ==============================================================================
+-- FRONTSTEPS AI - PHASE 3B DATABASE MIGRATION
+-- Enterprise Policy Rule Validation, Conflict Resolution, and Rule Snapshot Activation
+-- ==============================================================================
+
+CREATE TABLE IF NOT EXISTS `pms_db`.`frontsteps_ai_rule_validations` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `candidate_rule_id` BIGINT UNSIGNED NOT NULL,
+  `policy_version_id` BIGINT UNSIGNED NOT NULL,
+  `document_code` VARCHAR(100) NOT NULL,
+  `rule_key` VARCHAR(100) NOT NULL,
+  `rule_type` VARCHAR(50) NOT NULL,
+  `validation_status` VARCHAR(50) NOT NULL DEFAULT 'VALIDATED' COMMENT 'VALIDATED, FLAGGED, BLOCKED, SUPERSEDED',
+  `is_mechanically_verified` TINYINT(1) NOT NULL DEFAULT 1,
+  `checks_passed_json` JSON NOT NULL,
+  `canonical_rule_code` VARCHAR(100) NULL,
+  `canonical_rule_json` JSON NOT NULL,
+  `source_citation` VARCHAR(255) NULL,
+  `verified_excerpt` TEXT NULL,
+  `unresolved_issue_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `blocking_issue_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `validation_run_id` BIGINT UNSIGNED NOT NULL,
+  `validated_at` DATETIME NOT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_fs_ai_val_cand` (`candidate_rule_id`),
+  KEY `idx_fs_ai_val_version` (`policy_version_id`),
+  KEY `idx_fs_ai_val_status` (`validation_status`),
+  KEY `idx_fs_ai_val_canonical` (`canonical_rule_code`),
+  KEY `idx_fs_ai_val_run` (`validation_run_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `pms_db`.`frontsteps_ai_rule_validation_issues` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `validation_id` BIGINT UNSIGNED NOT NULL,
+  `candidate_rule_id` BIGINT UNSIGNED NULL,
+  `original_issue_id` BIGINT UNSIGNED NULL,
+  `policy_version_id` BIGINT UNSIGNED NOT NULL,
+  `document_code` VARCHAR(100) NOT NULL,
+  `issue_category` VARCHAR(100) NOT NULL COMMENT 'SOURCE_METADATA_MISMATCH, MISSING_SOURCE_EVIDENCE, INVALID_FORMULA, MISSING_FORMULA_OPERAND, CONFLICTING_POLICY_RULE, AMBIGUOUS_CONDITION, MISSING_DATA_FIELD_MAPPING, EXTERNAL_POLICY_DEPENDENCY, DUPLICATE_RULE, UNSUPPORTED_OPERATION, INFORMATIONAL_WARNING',
+  `severity` VARCHAR(50) NOT NULL DEFAULT 'WARNING' COMMENT 'INFO, WARNING, BLOCKING',
+  `issue_details` TEXT NOT NULL,
+  `source_reference` VARCHAR(255) NULL,
+  `resolution_status` VARCHAR(50) NOT NULL DEFAULT 'UNRESOLVED' COMMENT 'RESOLVED_AUTOMATICALLY, RESOLVED_BY_CANONICALIZATION, RESOLVED_MANUALLY, UNRESOLVED, ACCEPTED_ADVISORY',
+  `resolution_details` TEXT NULL,
+  `resolved_at` DATETIME NULL,
+  `resolved_by` VARCHAR(100) NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_fs_ai_viss_validation` (`validation_id`),
+  KEY `idx_fs_ai_viss_cand` (`candidate_rule_id`),
+  KEY `idx_fs_ai_viss_orig` (`original_issue_id`),
+  KEY `idx_fs_ai_viss_category` (`issue_category`),
+  KEY `idx_fs_ai_viss_severity` (`severity`),
+  KEY `idx_fs_ai_viss_res` (`resolution_status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `pms_db`.`frontsteps_ai_policy_rule_snapshots` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `snapshot_code` VARCHAR(100) NOT NULL,
+  `status` VARCHAR(50) NOT NULL DEFAULT 'VALIDATED' COMMENT 'DRAFT, VALIDATING, VALIDATED, NEEDS_REVIEW, BLOCKED, ACTIVE, SUPERSEDED',
+  `version_number` INT UNSIGNED NOT NULL DEFAULT 1,
+  `snapshot_fingerprint` VARCHAR(64) NOT NULL,
+  `included_policy_version_ids` JSON NOT NULL,
+  `included_document_codes` JSON NOT NULL,
+  `total_candidate_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `validated_rule_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `canonical_rule_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `flagged_issue_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `blocking_issue_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `resolved_issue_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `scorecard_weights_sum` DECIMAL(5,2) NOT NULL DEFAULT 100.00,
+  `scope_description` VARCHAR(255) NOT NULL DEFAULT 'FrontSteps Resident Support Operational Scorecard & Incentive Governance',
+  `is_active` TINYINT(1) NOT NULL DEFAULT 0,
+  `activated_at` DATETIME NULL,
+  `activated_by` VARCHAR(100) NULL,
+  `activation_notes` TEXT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_fs_ai_snap_code` (`snapshot_code`),
+  KEY `idx_fs_ai_prsnap_status` (`status`),
+  KEY `idx_fs_ai_prsnap_active` (`is_active`),
+  KEY `idx_fs_ai_prsnap_fingerprint` (`snapshot_fingerprint`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `pms_db`.`frontsteps_ai_policy_snapshot_rules` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `snapshot_id` BIGINT UNSIGNED NOT NULL,
+  `canonical_rule_code` VARCHAR(100) NOT NULL,
+  `rule_type` VARCHAR(50) NOT NULL,
+  `metric_code` VARCHAR(100) NULL,
+  `scorecard_weight` DECIMAL(5,2) NULL,
+  `canonical_rule_json` JSON NOT NULL,
+  `source_policy_version_ids` JSON NOT NULL,
+  `supporting_document_codes` JSON NOT NULL,
+  `validation_status` VARCHAR(50) NOT NULL DEFAULT 'VALIDATED',
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_fs_ai_psrule_snap` (`snapshot_id`),
+  KEY `idx_fs_ai_psrule_code` (`canonical_rule_code`),
+  KEY `idx_fs_ai_psrule_type` (`rule_type`),
+  KEY `idx_fs_ai_psrule_metric` (`metric_code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
