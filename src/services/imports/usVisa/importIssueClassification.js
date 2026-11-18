@@ -19,6 +19,8 @@ export function normalizeIssueCategory(value) {
 export function categoryForImportIssue(issue = {}) {
   const type = String(issue.errorType || issue.error_type || '').toUpperCase();
   const severity = String(issue.severity || '').toUpperCase();
+  const code = String(issue.errorCode || issue.error_code || '').toUpperCase();
+  if (type === 'TASK_ORDER_MAPPING' && code.startsWith('EMAIL_')) return 'validation';
   if (MAPPING_ERROR_TYPES.includes(type)) return 'mapping';
   if (type === 'DUPLICATE_CHECK' || severity === 'DUPLICATE') return 'duplicate';
   return 'validation';

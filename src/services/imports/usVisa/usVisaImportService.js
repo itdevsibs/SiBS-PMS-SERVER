@@ -27,6 +27,7 @@ import { updateImportProgress } from "./importProgressTracker.js";
 import { getImportIssueSummaryByBatchId } from "../../../repositories/usVisa/imports/usVisaImportErrorRepository.js";
 import { normalizeBatchIssueSummary } from "./importIssueClassification.js";
 import { readVersionSnapshot } from "../../taskOrderManagement/taskOrderVersionService.js";
+import { saveEmailImportMetrics } from "../../../repositories/usVisa/email/usVisaEmailCaseRepository.js";
 import { assertPublishedImportTaskOrder } from "../../taskOrderManagement/taskOrderFilterResolver.js";
 
 const DEFAULT_ROW_CHUNK_SIZE = 1000;
@@ -252,7 +253,8 @@ function mapWorkbookIssueToImportError(issue, batchId) {
 }
 
 function hasCompletedWithErrors(counters, issueSummary) {
-  return counters.invalidRows > 0 || counters.duplicateRows > 0 || issueSummary.warningRows > 0;
+  return counters.invalidRows > 0 || counters.duplicateRows > 0 || issueSummary.warningRows > 0 ||
+    (counters.unmappedCountries || 0) > 0 || (counters.mappingConflicts || 0) > 0;
 }
 
 function getCellSourceValue(cell) {
@@ -408,7 +410,6 @@ export async function importUsVisaRawWorkbook(options = {}) {
     const isAgentOccupancy = processor.domain === "AGENT_OCCUPANCY";
     const isEmailRawData = processor.domain === "EMAIL_RAW_DATA";
     let occupancyTaskOrder = null;
-    let emailTaskOrder = null;
 
     if (isAgentOccupancy) {
       const occupancySourceSystem = String(
@@ -441,26 +442,6 @@ export async function importUsVisaRawWorkbook(options = {}) {
       }
     }
 
-    if (isEmailRawData) {
-      try {
-        emailTaskOrder = assertPublishedImportTaskOrder(
-          await readVersionSnapshot('current'), options.taskOrderId,
-        );
-      } catch (error) {
-        return {
-          batch: null,
-          rejected: true,
-          code: error.code || "INVALID_TASK_ORDER",
-          message: error.message,
-          profile,
-          profileCode,
-          fileHash,
-          worksheetNames: [],
-          workbookValidation: null,
-          counters,
-        };
-      }
-    }
 
     // Calls EOD and Chat imports no longer require a Task Order selection.
     // Their country is parsed independently; ownership is report-time metadata.
@@ -481,7 +462,9 @@ export async function importUsVisaRawWorkbook(options = {}) {
       profile.id,
     );
 
-    if (exactDuplicateBatch) {
+    // Email imports are idempotent by CRM Case ID. Allow a repeat upload so
+    // previously staged/unmapped records can be recovered after parser fixes.
+    if (exactDuplicateBatch && !isEmailRawData) {
       return {
         batch: null,
         duplicate: true,
@@ -559,7 +542,6 @@ export async function importUsVisaRawWorkbook(options = {}) {
     if (isEmailRawData) {
       const emailStructure = validateEmailTaskOrderWorkbookStructure(
         workbookValidation,
-        emailTaskOrder?.id,
       );
 
       if (!emailStructure.isValid) {
@@ -661,7 +643,6 @@ export async function importUsVisaRawWorkbook(options = {}) {
         reportDateTo,
         taskOrderId:
           occupancyTaskOrder?.id ||
-          emailTaskOrder?.id ||
           null,
       }),
     );
@@ -684,7 +665,6 @@ export async function importUsVisaRawWorkbook(options = {}) {
       chunkSize: getChunkSize(),
       taskOrderId:
         occupancyTaskOrder?.id ||
-        emailTaskOrder?.id ||
         batch.taskOrderId ||
         null,
       fileHash,
@@ -696,6 +676,9 @@ export async function importUsVisaRawWorkbook(options = {}) {
 
     if (agentPerformance) {
       agentPerformance.processorMetrics = processorMetrics || {};
+    }
+    if (isEmailRawData) {
+      await saveEmailImportMetrics(batch.id, null, processorMetrics?.emailMetrics || {});
     }
 
     reportImportProgress(progressToken, {
@@ -741,6 +724,7 @@ export async function importUsVisaRawWorkbook(options = {}) {
       worksheetNames: workbookValidation.worksheetNames,
       workbookValidation,
       counters,
+      emailMetrics: isEmailRawData ? processorMetrics?.emailMetrics || null : null,
     };
   } catch (error) {
     if (error?.code === "ER_BAD_FIELD_ERROR") {

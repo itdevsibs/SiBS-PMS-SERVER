@@ -1,7 +1,7 @@
 // Persists US VISA import batch lifecycle records in the PMS database.
 import crypto from "crypto";
 
-import { pmsDb, pmsTables, kronosTables } from "../../../config/db.js";
+import { pmsDb, pmsTables, kronosTables, dbTable, PMS_DB_NAME } from "../../../config/db.js";
 
 export const US_VISA_BATCH_STATUSES = {
   UPLOADED: "UPLOADED",
@@ -252,39 +252,122 @@ export async function findBatchByIdOrCode(identifier) {
   return mapBatchRow(rows[0]);
 }
 
-export async function deleteBatchById(batchId) {
-  const connection = await pmsDb.getConnection();
+// Only the current-case columns kept in Email version snapshots are restored.
+// This lets a bad upload be removed without erasing a different upload's case.
+const EMAIL_STATE_COLUMNS = [
+  "source_case_id", "source_row_checksum", "source_modified_on", "owner_raw",
+  "status", "modified_by_raw", "modified_by_sibs_id", "modified_by_mapping_status",
+  "modified_by_mapping_method", "case_age", "created_on", "resolution_date",
+  "escalated_on", "case_number", "description_json", "country_region",
+  "source_content_hash",
+];
 
+async function deleteEmailBatchRows(connection, batchId) {
+  const versions = dbTable(PMS_DB_NAME, "us_visa_email_case_versions");
+  const metrics = dbTable(PMS_DB_NAME, "us_visa_email_import_metrics");
+  const cases = pmsTables.usVisaRawEmailCases;
+
+  // CRM cases are shared between successive uploads. Restore surviving source
+  // versions before removing this batch, otherwise its updates would persist.
+  const touched = `
+    SELECT email_case_id FROM ${versions} WHERE batch_id = ?
+    UNION SELECT id FROM ${cases} WHERE batch_id = ?`;
+  const [latestSurvivors] = await connection.query(`
+    SELECT v.email_case_id, v.new_state_json
+    FROM ${versions} v
+    INNER JOIN (
+      SELECT MAX(id) AS id FROM ${versions}
+      WHERE batch_id <> ? AND email_case_id IN (${touched})
+      GROUP BY email_case_id
+    ) surviving ON surviving.id = v.id`, [batchId, batchId, batchId]);
+  const [firstSurvivors] = await connection.query(`
+    SELECT v.email_case_id, v.batch_id, v.raw_import_row_id,
+           b.import_profile_id, r.excel_row_number
+    FROM ${versions} v
+    INNER JOIN (
+      SELECT MIN(id) AS id FROM ${versions}
+      WHERE batch_id <> ? AND email_case_id IN (${touched})
+      GROUP BY email_case_id
+    ) surviving ON surviving.id = v.id
+    INNER JOIN ${pmsTables.usVisaImportBatches} b ON b.id = v.batch_id
+    LEFT JOIN ${pmsTables.usVisaRawImportRows} r ON r.id = v.raw_import_row_id`,
+    [batchId, batchId, batchId]);
+  const firstByCase = new Map(firstSurvivors.map((row) => [Number(row.email_case_id), row]));
+
+  for (const version of latestSurvivors) {
+    const state = typeof version.new_state_json === "string"
+      ? JSON.parse(version.new_state_json)
+      : version.new_state_json;
+    if (!state || typeof state !== "object") {
+      throw new Error("Unable to restore Email case from surviving import history.");
+    }
+    const fields = EMAIL_STATE_COLUMNS.filter((column) => Object.hasOwn(state, column));
+    const origin = firstByCase.get(Number(version.email_case_id));
+    if (!origin) throw new Error("Email case has no surviving import origin.");
+    const setters = fields.map((column) => `\`${column}\` = ?`);
+    const values = fields.map((column) => state[column]);
+    // Reassign ownership only when this batch was the case's first upload.
+    setters.push("raw_import_row_id = IF(batch_id = ?, ?, raw_import_row_id)");
+    values.push(batchId, origin.raw_import_row_id);
+    setters.push("import_profile_id = IF(batch_id = ?, ?, import_profile_id)");
+    values.push(batchId, origin.import_profile_id);
+    if (origin.excel_row_number != null) {
+      setters.push("source_row_number = IF(batch_id = ?, ?, source_row_number)");
+      values.push(batchId, origin.excel_row_number);
+    }
+    // MySQL evaluates single-table UPDATE assignments in order: change owner last.
+    setters.push("batch_id = IF(batch_id = ?, ?, batch_id)");
+    values.push(batchId, origin.batch_id);
+    await connection.query(
+      `UPDATE ${cases} SET ${setters.join(", ")} WHERE id = ?`,
+      [...values, version.email_case_id],
+    );
+  }
+
+  // Remove history from this upload, then cases that have no other source batch.
+  await connection.query(`DELETE FROM ${versions} WHERE batch_id = ?`, [batchId]);
+  // Cases still owned by this batch have no surviving import version.
+  await connection.query(
+    `DELETE FROM ${versions} WHERE email_case_id IN (SELECT id FROM ${cases} WHERE batch_id = ?)`,
+    [batchId],
+  );
+  await connection.query(`DELETE FROM ${cases} WHERE batch_id = ?`, [batchId]);
+  await connection.query(`DELETE FROM ${metrics} WHERE batch_id = ?`, [batchId]);
+}
+
+export async function deleteBatchById(batchId, { isEmail = false } = {}) {
+  const connection = await pmsDb.getConnection();
   try {
     await connection.beginTransaction();
-    try {
-      await connection.query(
-        `DELETE FROM ${pmsTables.usVisaQualityAudits} WHERE batch_id = ?`,
-        [batchId],
-      );
-    } catch (error) {
-      // Keep legacy batch deletion usable during rolling deployments where the
-      // QA migration may not have been applied yet.
-      if (error?.code !== "ER_NO_SUCH_TABLE") throw error;
+    if (isEmail) await deleteEmailBatchRows(connection, batchId);
+
+    // Remove all structured records owned by this upload, before the raw rows.
+    const structuredTables = [
+      pmsTables.usVisaQualityAudits,
+      pmsTables.usVisaRawDocumentedCalls,
+      pmsTables.usVisaRawSkillStatistics,
+      pmsTables.usVisaRawCalls,
+      pmsTables.usVisaRawChats,
+      pmsTables.usVisaRawAgentOccupancy,
+      pmsTables.usVisaRawAgentActivity,
+      pmsTables.usVisaRawAgentPerformanceBySkill,
+    ];
+    for (const table of structuredTables) {
+      try {
+        await connection.query(`DELETE FROM ${table} WHERE batch_id = ?`, [batchId]);
+      } catch (error) {
+        // Optional import tables may not exist in older installations.
+        if (error?.code !== "ER_NO_SUCH_TABLE") throw error;
+      }
     }
-    // Delete documented-call canonical records before the batch, independent of
-    // rolling FK deployments. Missing table tolerated only before migration.
-    try {
-      await connection.query(
-        `DELETE FROM ${pmsTables.usVisaRawDocumentedCalls} WHERE batch_id = ?`,
-        [batchId],
-      );
-    } catch (error) {
-      if (error?.code !== "ER_NO_SUCH_TABLE") throw error;
-    }
-    // Queue canonical rows must be removed explicitly: we do not rely on foreign keys.
     await connection.query(
-      `DELETE FROM ${pmsTables.usVisaRawSkillStatistics} WHERE batch_id = ?`,
-      [batchId],
+      `DELETE FROM ${pmsTables.usVisaImportErrors} WHERE batch_id = ?`, [batchId],
+    );
+    await connection.query(
+      `DELETE FROM ${pmsTables.usVisaRawImportRows} WHERE batch_id = ?`, [batchId],
     );
     const [result] = await connection.query(
-      `DELETE FROM ${pmsTables.usVisaImportBatches} WHERE id = ?`,
-      [batchId],
+      `DELETE FROM ${pmsTables.usVisaImportBatches} WHERE id = ?`, [batchId],
     );
     await connection.commit();
     return result.affectedRows > 0;
@@ -315,10 +398,11 @@ export async function getImportSummary(options = {}) {
       COALESCE(SUM(b.duplicate_rows),0) AS duplicate_rows,
       COALESCE(SUM(GREATEST(b.warning_rows - COALESCE(e.mapping_warning_events,0),COALESCE(e.genuine_warning_events,0),0)),0) AS warning_rows,
       COALESCE(SUM(b.info_rows),0) AS info_rows,
-      COALESCE(SUM(e.mapping_rows),0) AS mapping_rows,
+      COALESCE(SUM(CASE WHEN p.profile_code = 'US_VISA_EMAIL_RAW_DATA' THEN e.unmapped_rows ELSE e.mapping_rows END),0) AS mapping_rows,
       COALESCE(SUM(e.unmapped_rows),0) AS unmapped_rows,
       COALESCE(SUM(e.unassigned_task_order_rows),0) AS unassigned_task_order_rows
     FROM ${pmsTables.usVisaImportBatches} b
+    LEFT JOIN ${pmsTables.usVisaImportProfiles} p ON p.id = b.import_profile_id
     LEFT JOIN (
       SELECT batch_id,
         SUM(CASE WHEN error_type IN ('EMPLOYEE_MAPPING','TASK_ORDER_MAPPING') AND severity = 'WARNING' THEN 1 ELSE 0 END) AS mapping_warning_events,

@@ -32,6 +32,8 @@ function emptyAccumulator(bucket = {}) {
     scheduledDates: new Set(),
     scheduledEmployeeDays: new Set(),
     absentEmployeeDays: new Set(),
+    unknownEmployeeDays: new Set(),
+    plannedLeaveDays: new Set(),
   };
 }
 
@@ -49,33 +51,47 @@ function addScheduledAttendanceRow(accumulator, row = {}) {
   const workDate = String(row.workDate || row.work_date || "").slice(0, 10);
   if (!employeeUid || !workDate) return;
 
-  accumulator.scheduledDates.add(workDate);
   const employeeDayKey = `${employeeUid}:${workDate}`;
+  if (row.attendanceUnverifiable) {
+    accumulator.unknownEmployeeDays.add(employeeDayKey);
+    return; // Never turn an unresolved open login into an absence.
+  }
+  accumulator.scheduledDates.add(workDate);
   accumulator.scheduledEmployeeDays.add(employeeDayKey);
+  if (row.plannedLeave === true) accumulator.plannedLeaveDays.add(employeeDayKey);
 
   const hasAttendance =
     row.hasAttendance === true ||
     Number(row.hasAttendance ?? row.has_attendance) === 1;
 
-  if (!hasAttendance) accumulator.absentEmployeeDays.add(employeeDayKey);
+  if (!hasAttendance && row.plannedLeave !== true) accumulator.absentEmployeeDays.add(employeeDayKey);
 }
 
 function finalize(accumulator, { headcountAvailable = true } = {}) {
   const presentHeadcount = accumulator.presentEmployeeUids.size;
-  const scheduledDays = accumulator.scheduledDates.size;
-  const scheduledEmployeeDays = accumulator.scheduledEmployeeDays.size;
-  const absentEmployeeDays = accumulator.absentEmployeeDays.size;
 
-  // For periods longer than one day, # OF ABSENT is represented as the average
-  // absent headcount per valid scheduled day. This keeps a weekly/monthly rate
-  // comparable to the Actual HC denominator instead of summing repeated absences.
-  const absentHeadcount =
-    scheduledDays > 0 ? absentEmployeeDays / scheduledDays : null;
+  // Exclude unverified employee-days from BOTH sides of the ratio. This also
+  // prevents a duplicate, conflicting row for the same employee/date from
+  // being counted as verified. Planned leave remains in the denominator.
+  const verifiedScheduledDays = [...accumulator.scheduledEmployeeDays]
+    .filter((key) => !accumulator.unknownEmployeeDays.has(key));
+  const verifiedScheduledDayKeys = new Set(verifiedScheduledDays);
+  const scheduledEmployeeDays = verifiedScheduledDayKeys.size;
+  const absentEmployeeDays = [...accumulator.absentEmployeeDays]
+    .filter((key) => verifiedScheduledDayKeys.has(key)).length;
+  const plannedLeaveEmployeeDays = [...accumulator.plannedLeaveDays]
+    .filter((key) => verifiedScheduledDayKeys.has(key)).length;
+  const scheduledDays = new Set(verifiedScheduledDays.map((key) => key.slice(key.lastIndexOf(":") + 1))).size;
 
-  const absenteeismPct =
-    scheduledEmployeeDays > 0
-      ? round((absentEmployeeDays / scheduledEmployeeDays) * 100, 2)
-      : null;
+  // An absence is always one full employee-day, never an averaged or
+  // fractional headcount. Repeated absences by one employee count separately.
+  const absentHeadcount = absentEmployeeDays;
+
+  // One unverified employee-day must not hide all verified weekly data.
+  // With no verified scheduled days, do not invent a zero absenteeism rate.
+  const absenteeismPct = scheduledEmployeeDays > 0
+    ? round((absentEmployeeDays / scheduledEmployeeDays) * 100, 2)
+    : null;
 
   return {
     absenteeismPct,
@@ -84,9 +100,10 @@ function finalize(accumulator, { headcountAvailable = true } = {}) {
     actualHeadcount: null,
     presentHeadcount: headcountAvailable ? presentHeadcount : null,
     presentEmployeeDays: accumulator.presentEmployeeDays.size,
-    absentHeadcount:
-      absentHeadcount === null ? null : round(absentHeadcount, 2),
+    absentHeadcount,
     absentEmployeeDays,
+    plannedLeaveEmployeeDays,
+    unverifiedEmployeeDays: accumulator.unknownEmployeeDays.size,
     scheduledEmployeeDays,
     scheduledDays,
   };

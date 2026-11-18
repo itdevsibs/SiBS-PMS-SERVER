@@ -10,7 +10,10 @@ import {
   WORKBOOK_READER_ERROR_CODES,
   formatSourceValue,
 } from "../../services/imports/shared/workbookReaderService.js";
-import { pmsDb, pmsTables } from "../../config/db.js";
+import { pmsDb, pmsTables, PMS_DB_NAME, dbTable } from "../../config/db.js";
+import { getEmailImportMetricsByBatchIds } from "../../repositories/usVisa/email/usVisaEmailCaseRepository.js";
+import { normalizeEmailCountryFromOwner } from "../../services/kpi/usVisa/email/emailCountryService.js";
+import { getMaxUsVisaFileSizeBytes } from "../../middleware/usVisa/usVisaUploadMiddleware.js";
 import {
   completeImportProgress,
   failImportProgress,
@@ -52,8 +55,15 @@ function parseJsonValue(value) {
   return null;
 }
 
-function pickBatchResponse(batch = {}, issueEvents = {}) {
+function pickBatchResponse(batch = {}, issueEvents = {}, emailMetrics = null) {
   const issues = normalizeBatchIssueSummary(batch, issueEvents);
+  const isEmail = batch.importProfileCode === "US_VISA_EMAIL_RAW_DATA";
+  // Country attribution belongs to Email validation, not Employee Mapping.
+  if (isEmail) {
+    issues.mappingRows = Number(issueEvents.employeeMappingRows ?? issues.unmappedRows ?? 0);
+    issues.mappingIssueCount = issues.mappingRows;
+    issues.validationIssueCount += Number(issueEvents.emailCountryRows || 0);
+  }
   return {
     id: batch.id,
     batchCode: batch.batchCode,
@@ -79,7 +89,10 @@ function pickBatchResponse(batch = {}, issueEvents = {}) {
     mappingIssueCount: issues.mappingIssueCount,
     validationIssueCount: issues.validationIssueCount,
     duplicateIssueCount: issues.duplicateIssueCount,
-    displayStatus: issues.displayStatus,
+    displayStatus: (emailMetrics && (Number(emailMetrics.unmappedCountries || 0) > 0 ||
+      Number(emailMetrics.mappingConflicts || 0) > 0) &&
+      ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(String(batch.status || "").toUpperCase()))
+      ? "COMPLETED_WITH_WARNINGS" : issues.displayStatus,
     infoRows: batch.infoRows ?? 0,
     uploadedBy: batch.uploadedBy,
     uploaderName: batch.uploaderName || null,
@@ -88,12 +101,13 @@ function pickBatchResponse(batch = {}, issueEvents = {}) {
     createdAt: batch.createdAt,
     completedAt: batch.completedAt,
     formattedTime: batch.formattedTime,
+    ...(emailMetrics ? { emailMetrics } : {}),
   };
 }
 
-function pickBatchDetailResponse(batch = {}, issues = {}) {
+function pickBatchDetailResponse(batch = {}, issues = {}, emailMetrics = null) {
   return {
-    ...pickBatchResponse(batch, issues),
+    ...pickBatchResponse(batch, issues, emailMetrics),
     importProfileId: batch.importProfileId,
     reportDateFrom: batch.reportDateFrom,
     reportDateTo: batch.reportDateTo,
@@ -379,7 +393,7 @@ export async function uploadUsVisaImport(req, res) {
 
     return res.status(200).json({
       success: true,
-      batch: pickBatchResponse(result.batch, await getImportIssueSummaryByBatchId(result.batch.id)),
+      batch: pickBatchResponse(result.batch, await getImportIssueSummaryByBatchId(result.batch.id), result.emailMetrics),
     });
   } catch (error) {
     console.error("POST /api/us-visa/imports error:", {
@@ -450,10 +464,13 @@ export async function listUsVisaImportHistory(req, res) {
     });
     const batches = await listImportBatches(pagination);
     const issues = await getImportIssueSummariesByBatchIds(batches.map((batch) => batch.id));
+    const emailMetricsByBatch = await getEmailImportMetricsByBatchIds(
+      batches.filter((batch) => batch.importProfileCode === "US_VISA_EMAIL_RAW_DATA").map((batch) => batch.id),
+    );
 
     return res.json({
       success: true,
-      data: batches.map((batch) => pickBatchResponse(batch, issues.get(Number(batch.id)))),
+      data: batches.map((batch) => pickBatchResponse(batch, issues.get(Number(batch.id)), emailMetricsByBatch.get(Number(batch.id)))),
       pagination,
     });
   } catch (error) {
@@ -541,9 +558,12 @@ export async function getUsVisaImportBatchDetails(req, res) {
     }
 
     const issues = await getImportIssueSummaryByBatchId(batch.id);
+    const metrics = batch.importProfileCode === "US_VISA_EMAIL_RAW_DATA"
+      ? (await getEmailImportMetricsByBatchIds([batch.id])).get(Number(batch.id))
+      : null;
     return res.json({
       success: true,
-      batch: pickBatchDetailResponse(batch, issues),
+      batch: pickBatchDetailResponse(batch, issues, metrics),
     });
   } catch (error) {
     console.error("GET /api/us-visa/imports/:batchId error:", {
@@ -629,16 +649,27 @@ export async function getUsVisaImportRawData(req, res) {
       : isQualityAudit
         ? "employee_mapping_status"
         : "mapping_status";
-    const employeeUidCol = isEmailRawData
-      ? "modified_by_sibs_id"
-      : "sibs_id";
+    const employeeUidCol = isEmailRawData ? "modified_by_sibs_id" : "sibs_id";
+    // Historical Email updates retain their first raw row, so use the exact
+    // canonical version created by each import row. Legacy rows pre-dating
+    // history creation continue using the original current-case mapping.
+    const emailVersionJoin = isEmailRawData
+      ? ` LEFT JOIN ${dbTable(PMS_DB_NAME, "us_visa_email_case_versions")} ev ON ev.raw_import_row_id = r.id`
+      : "";
+    const mappingJoin = ` LEFT JOIN ${mappingTable} m ON m.raw_import_row_id = r.id${emailVersionJoin}`;
+    const mappingStatusSql = isEmailRawData
+      ? `COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(ev.new_state_json, '$.modified_by_mapping_status')), 'null'), m.modified_by_mapping_status)`
+      : `m.${mappingStatusCol}`;
+    const employeeUidSql = isEmailRawData
+      ? `COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(ev.new_state_json, '$.modified_by_sibs_id')), 'null'), m.modified_by_sibs_id)`
+      : `m.${employeeUidCol}`;
 
     // A duplicate/invalid raw row generally has no canonical mapping row.
     // A missing canonical row is NOT evidence that the agent is Non-SIBS.
     const isEligibleForEmployeeClassification =
       "r.validation_status NOT IN ('DUPLICATE', 'INVALID')";
-    const isSibsSql = `${isEligibleForEmployeeClassification} AND m.${mappingStatusCol} = 'MATCHED'`;
-    const isNonSibsSql = `${isEligibleForEmployeeClassification} AND m.${mappingStatusCol} IS NOT NULL AND m.${mappingStatusCol} <> 'MATCHED'`;
+    const isSibsSql = `${isEligibleForEmployeeClassification} AND ${mappingStatusSql} = 'MATCHED'`;
+    const isNonSibsSql = `${isEligibleForEmployeeClassification} AND ${mappingStatusSql} IS NOT NULL AND ${mappingStatusSql} <> 'MATCHED'`;
 
     // 2. Get available sheets for this batch
     const [sheetRows] = await pmsDb.query(
@@ -671,7 +702,7 @@ export async function getUsVisaImportRawData(req, res) {
              SUM(CASE WHEN r.validation_status = 'DUPLICATE' THEN 1 ELSE 0 END) AS duplicate_count,
              SUM(CASE WHEN r.validation_status = 'INVALID' THEN 1 ELSE 0 END) AS invalid_count
            FROM ${pmsTables.usVisaRawImportRows} r
-           LEFT JOIN ${mappingTable} m ON m.raw_import_row_id = r.id
+           ${mappingJoin}
            WHERE r.batch_id = ? AND r.sheet_name = ?`,
           [batch.id, selectedSheet],
         );
@@ -692,7 +723,7 @@ export async function getUsVisaImportRawData(req, res) {
     // 5. Count total matching rows
     let countSql = `SELECT COUNT(*) AS total FROM ${pmsTables.usVisaRawImportRows} r`;
     if (supportsSibsFilter && mappingTable) {
-      countSql += ` LEFT JOIN ${mappingTable} m ON m.raw_import_row_id = r.id`;
+      countSql += mappingJoin;
     }
     countSql += ` WHERE r.batch_id = ? AND r.sheet_name = ?`;
     const countParams = [batch.id, selectedSheet];
@@ -724,14 +755,17 @@ export async function getUsVisaImportRawData(req, res) {
         r.validation_status
     `;
     if (supportsSibsFilter && mappingTable) {
-      rowsSql += `, m.${mappingStatusCol} AS mapping_status, m.${employeeUidCol} AS sibs_id`;
+      rowsSql += `, ${mappingStatusSql} AS mapping_status, ${employeeUidSql} AS sibs_id`;
       if (isDocumentedCalls) rowsSql += `, m.mapping_method AS mapping_method`;
+      if (isEmailRawData) rowsSql += `, COALESCE(
+        NULLIF(JSON_UNQUOTE(JSON_EXTRACT(ev.new_state_json, '$.country_region')), 'null'),
+        m.country_region) AS email_country_region`;
     }
     rowsSql += `
       FROM ${pmsTables.usVisaRawImportRows} r
     `;
     if (supportsSibsFilter && mappingTable) {
-      rowsSql += ` LEFT JOIN ${mappingTable} m ON m.raw_import_row_id = r.id`;
+      rowsSql += mappingJoin;
     }
     rowsSql += ` WHERE r.batch_id = ? AND r.sheet_name = ?`;
     const rowsParams = [batch.id, selectedSheet];
@@ -784,6 +818,7 @@ export async function getUsVisaImportRawData(req, res) {
       headers = headers.filter(
         (h) => !String(h || "").trim().toLowerCase().startsWith("(do not modify)"),
       );
+      if (!headers.includes("country_region")) headers.push("country_region");
     }
 
     const rows = rawRows.map((r) => {
@@ -804,6 +839,11 @@ export async function getUsVisaImportRawData(req, res) {
           data = parsed || {};
         }
       } catch {}
+      if (isEmailRawData) {
+        const fromOwner = normalizeEmailCountryFromOwner(data.Owner);
+        data.country_region = r.email_country_region || (fromOwner?.countryCode
+          ? (fromOwner.countryCode === 'KR' ? 'South Korea' : fromOwner.countryName) : null);
+      }
       const validationStatus = String(r.validation_status || "").toUpperCase();
       const mappingStatus = r.mapping_status || null;
       const rowType = validationStatus === "DUPLICATE" ? "DUPLICATE"
@@ -879,8 +919,10 @@ export async function listUsVisaImportBatchErrors(req, res) {
     }
 
     const [errors, total] = await Promise.all([
-      listImportErrorsByBatchId(batch.id, { ...pagination, search, severity, category }),
-      countImportErrorsByBatchId(batch.id, { search, severity, category }),
+      listImportErrorsByBatchId(batch.id, { ...pagination, search, severity, category,
+        emailOnly: batch.importProfileCode === "US_VISA_EMAIL_RAW_DATA" }),
+      countImportErrorsByBatchId(batch.id, { search, severity, category,
+        emailOnly: batch.importProfileCode === "US_VISA_EMAIL_RAW_DATA" }),
     ]);
     const totalPages = Math.ceil(total / pagination.limit) || 1;
 
@@ -924,7 +966,17 @@ export async function deleteUsVisaImportBatch(req, res) {
       });
     }
 
-    await deleteBatchById(batch.id);
+    if (["UPLOADED", "VALIDATING", "IMPORTING"].includes(String(batch.status || "").toUpperCase())) {
+      return res.status(409).json({
+        success: false,
+        code: "IMPORT_BATCH_PROCESSING",
+        message: "An import that is still processing cannot be deleted.",
+      });
+    }
+
+    await deleteBatchById(batch.id, {
+      isEmail: /EMAIL_RAW_DATA/i.test(String(batch.importProfileCode || "")),
+    });
 
     if (/AGENT_OCCUPANCY/i.test(String(batch.importProfileCode || ""))) {
       clearOccupancyCache();
@@ -934,7 +986,7 @@ export async function deleteUsVisaImportBatch(req, res) {
 
     return res.json({
       success: true,
-      message: `Batch ${batch.batchCode} and all its imported rows were deleted successfully.`,
+      message: `Batch ${batch.batchCode} and all of its associated import data were deleted successfully.`,
     });
   } catch (error) {
     console.error("DELETE /api/us-visa/imports/:batchId error:", {
@@ -950,3 +1002,9 @@ export async function deleteUsVisaImportBatch(req, res) {
   }
 }
 
+
+// Effective upload limit for every US Visa WFM dropzone; aligned with Multer.
+export function getUsVisaImportConfig(_req, res) {
+  const maxFileSizeBytes = getMaxUsVisaFileSizeBytes();
+  return res.json({ success: true, maxFileSizeBytes, maxFileSizeMb: maxFileSizeBytes / (1024 * 1024) });
+}

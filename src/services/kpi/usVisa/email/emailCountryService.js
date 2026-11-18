@@ -86,6 +86,7 @@ export function extractEmailOwnerCountryName(ownerRaw) {
   let text = String(ownerRaw || "").trim().replace(/\s+/g, " ");
   if (!text) return null;
   text = text.replace(/^ACS\s+/i, "");
+  if (!/\s+Country Data Owner$/i.test(text)) return null;
   text = text.replace(/\s+Country Data Owner$/i, "");
   return text.trim() || null;
 }

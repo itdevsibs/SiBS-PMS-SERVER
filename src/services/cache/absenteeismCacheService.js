@@ -58,6 +58,7 @@ export async function getOrCreateAbsenteeismCacheEntry({
   key,
   loader,
   shouldCache = () => true,
+  forceRefresh = false,
 }) {
   if (!key || typeof loader !== "function") {
     throw new Error("An absenteeism cache key and loader are required.");
@@ -67,15 +68,16 @@ export async function getOrCreateAbsenteeismCacheEntry({
   deleteExpiredEntries(now);
 
   const cached = cache.get(key);
-  if (cached && cached.expiresAt > now) {
+  if (!forceRefresh && cached && cached.expiresAt > now) {
     return {
       value: cached.value,
       cache: createCacheInfo("HIT", cached, now),
     };
   }
 
-  if (inFlight.has(key)) {
-    const value = await inFlight.get(key);
+  const pendingKey = forceRefresh ? `FORCE:${key}` : key;
+  if (inFlight.has(pendingKey)) {
+    const value = await inFlight.get(pendingKey);
     const entry = cache.get(key) || null;
     return {
       value,
@@ -84,14 +86,17 @@ export async function getOrCreateAbsenteeismCacheEntry({
   }
 
   const ttlMs = getAbsenteeismCacheTtlMs();
+  const loadStartedAt = Date.now();
   const loadPromise = Promise.resolve()
     .then(loader)
     .then((value) => {
-      if (shouldCache(value)) {
+      if (shouldCache(value) && (!cache.has(key) ||
+          cache.get(key).loadStartedAt <= loadStartedAt)) {
         const createdAt = Date.now();
         cache.set(key, {
           value,
           createdAt,
+          loadStartedAt,
           expiresAt: createdAt + ttlMs,
         });
         enforceEntryLimit();
@@ -99,16 +104,16 @@ export async function getOrCreateAbsenteeismCacheEntry({
       return value;
     })
     .finally(() => {
-      inFlight.delete(key);
+      if (inFlight.get(pendingKey) === loadPromise) inFlight.delete(pendingKey);
     });
 
-  inFlight.set(key, loadPromise);
+  inFlight.set(pendingKey, loadPromise);
 
   const value = await loadPromise;
   const entry = cache.get(key) || null;
   return {
     value,
-    cache: createCacheInfo("MISS", entry),
+    cache: createCacheInfo(forceRefresh ? "REFRESH" : "MISS", entry),
   };
 }
 

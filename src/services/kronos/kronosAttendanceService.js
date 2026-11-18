@@ -1,5 +1,6 @@
 import {
   getKronosAttendanceSheetScheduleData,
+  clearKronosAttendanceSheetSourceCaches,
 } from "../../repositories/kronos/kronosAttendanceRepository.js";
 import {
   findEmployeeLedgersByGyEmpCodes,
@@ -103,15 +104,16 @@ function getAttendanceScheduleSeeds(rows = [], defaultKronosAccountId = null, ac
   return [...byUid.values()];
 }
 
-async function getCachedAttendanceSheetDay(accountId, workDate) {
+async function getCachedAttendanceSheetDay(accountId, workDate, { forceRefresh = false } = {}) {
   const key = `${accountId}|${workDate}`;
   const now = Date.now();
   const existing = attendanceSheetCache.get(key);
-  if (existing && (existing.expiresAt > now || existing.inFlight)) {
+  if (existing && (existing.inFlight || (!forceRefresh && existing.expiresAt > now))) {
     const cacheStatus = existing.inFlight ? "SHARED_REQUEST" : "HIT";
     return { dataset: await existing.promise, cacheStatus };
   }
 
+  if (forceRefresh) clearKronosAttendanceSheetSourceCaches({ workDate });
   const cacheEntry = { promise: null, expiresAt: 0, inFlight: true };
   // Store the pending promise before awaiting it to deduplicate concurrent UI requests.
   cacheEntry.promise = buildAttendanceSheetDay(accountId, workDate);
@@ -1086,6 +1088,7 @@ export async function getLiveAttendance({
   dateTo,
   page = 1,
   limit = 50,
+  forceRefresh = false,
 }) {
   const range = validateDateRange(dateFrom, dateTo);
   if (range.dateFrom !== range.dateTo) {
@@ -1095,7 +1098,7 @@ export async function getLiveAttendance({
     throw error;
   }
   const requestStart = process.hrtime.bigint();
-  const { dataset, cacheStatus } = await getCachedAttendanceSheetDay(accountId, range.dateFrom);
+  const { dataset, cacheStatus } = await getCachedAttendanceSheetDay(accountId, range.dateFrom, { forceRefresh });
   const code = normalizeEmployeeUid(gyEmpCode);
   const term = String(search || "").trim().replace(/^SIB-\s*/i, "").toLowerCase();
   const filteredRows = !code && !term ? dataset.rows : dataset.rows.filter((row) => {

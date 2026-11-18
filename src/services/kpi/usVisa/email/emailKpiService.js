@@ -14,6 +14,7 @@ import {
   emailCountryMatchesFilter,
   normalizeEmailCountryFilter,
   normalizeEmailCountryFromOwner,
+  normalizeEmailCountry,
 } from "./emailCountryService.js";
 import { getUsVisaTaskOrder } from "../../../../config/usVisaTaskOrders.js";
 
@@ -164,7 +165,7 @@ export function buildWfmEmailKpiDashboard({
     if (!caseId || seenCaseIds.has(caseId)) continue;
     seenCaseIds.add(caseId);
 
-    const countryInfo = normalizeEmailCountryFromOwner(row.ownerRaw);
+    const countryInfo = normalizeEmailCountry(row.countryRegion) || normalizeEmailCountryFromOwner(row.ownerRaw);
     if (!emailCountryMatchesFilter(countryInfo, countryFilter)) continue;
 
     const createdDate = getLocalCreatedDate(row);

@@ -21,6 +21,19 @@ const SCHEDULE_CACHE_MS = 60 * 1000;
 const directoryCache = new Map();
 const scheduleCache = new Map();
 
+export function clearKronosAttendanceSheetSourceCaches({ workDate } = {}) {
+  directoryCache.clear(); // Directory cache contains only basic account identity data.
+  if (!workDate) return;
+  // Target the selected date rather than dropping every account's schedule cache.
+  for (const key of scheduleCache.keys()) {
+    const parts = key.split("|");
+    if (parts.length === 3 && parts[1] <= workDate && parts[2] >= workDate) {
+      scheduleCache.delete(key);
+    }
+  }
+}
+
+
 function positiveId(value) {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;

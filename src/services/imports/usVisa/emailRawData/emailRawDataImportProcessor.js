@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { normalizeEmailCountryFromOwner } from "../../../kpi/usVisa/email/emailCountryService.js";
 // Processes centralized US Visa Email Raw Data workbooks.
 import {
   findEmailCasesBySourceCaseIds,
@@ -155,8 +157,24 @@ function applyModifiedByResolution(mappedRow, resolution) {
   };
 }
 
-export function prepareEmailRawDataRow({ sourceRow, taskOrderId, identityResolver }) {
-  const mapped = mapEmailRawDataRow(sourceRow, { taskOrderId });
+export function prepareEmailRawDataRow({ sourceRow, identityResolver }) {
+  const mapped = mapEmailRawDataRow(sourceRow);
+  const country = normalizeEmailCountryFromOwner(mapped.mappedRow.owner_raw);
+  // Country is source-derived only. Ledger ownership is resolved at report time.
+  const countryRegion = country?.countryCode
+    ? (country.countryCode === "KR" ? "South Korea" : country.countryName)
+    : null;
+  const sourcePayload = {
+    source_case_id: mapped.mappedRow.source_case_id,
+    source_modified_on: mapped.mappedRow.source_modified_on,
+    owner_raw: mapped.mappedRow.owner_raw, status: mapped.mappedRow.status,
+    modified_by_raw: mapped.mappedRow.modified_by_raw, case_age: mapped.mappedRow.case_age,
+    created_on: mapped.mappedRow.created_on, resolution_date: mapped.mappedRow.resolution_date,
+    escalated_on: mapped.mappedRow.escalated_on,
+    ...(mapped.mappedRow.has_case_number ? { case_number: mapped.mappedRow.case_number } : {}),
+    ...(mapped.mappedRow.has_description ? { description_json: mapped.mappedRow.description_json } : {}),
+  };
+  const contentHash = createHash("sha256").update(JSON.stringify(sourcePayload)).digest("hex");
   const identity = mapEmailModifiedByIdentity(mapped.mappedRow);
   const resolution = identity.agentName
     ? identityResolver.resolve(identity)
@@ -166,15 +184,19 @@ export function prepareEmailRawDataRow({ sourceRow, taskOrderId, identityResolve
       employee: null,
       candidates: [],
     };
-  const canonical = applyModifiedByResolution(mapped.mappedRow, resolution);
+  const canonical = applyModifiedByResolution({
+    ...mapped.mappedRow,
+    country_region: countryRegion,
+    source_content_hash: contentHash,
+  }, resolution);
   const validation = validateCanonicalEmailRawDataRow(canonical);
-
   return {
     excelRowNumber: sourceRow.excelRowNumber ?? sourceRow.rowNumber,
     mappedRow: canonical,
     rowJson: mapped.rowJson,
     conversionErrors: mapped.conversionErrors,
     validationErrors: validation.errors,
+    hasCountryIdentificationIssue: !countryRegion,
     isValid: mapped.conversionErrors.length === 0 && validation.errors.length === 0,
   };
 }
@@ -191,16 +213,15 @@ function buildCanonicalRow(row, batch, profile) {
 function updateCounters(counters, rows) {
   counters.totalRows += rows.length;
   for (const row of rows) {
-    if (
-      row.classification === EMAIL_SOURCE_RECORD_CLASSIFICATIONS.NEW ||
-      row.classification === EMAIL_SOURCE_RECORD_CLASSIFICATIONS.NEWER_VERSION
-    ) counters.validRows += 1;
-    else if (row.classification === EMAIL_SOURCE_RECORD_CLASSIFICATIONS.INVALID) counters.invalidRows += 1;
-    else if (row.classification === EMAIL_SOURCE_RECORD_CLASSIFICATIONS.DUPLICATE) counters.duplicateRows += 1;
-    else if (
-      row.classification === EMAIL_SOURCE_RECORD_CLASSIFICATIONS.STALE_VERSION ||
-      row.classification === EMAIL_SOURCE_RECORD_CLASSIFICATIONS.VERSION_CONFLICT
-    ) counters.warningRows += 1;
+    switch (row.classification) {
+      case EMAIL_SOURCE_RECORD_CLASSIFICATIONS.NEW: counters.validRows += 1; counters.newCases += 1; break;
+      case EMAIL_SOURCE_RECORD_CLASSIFICATIONS.NEWER_VERSION: counters.validRows += 1; counters.updatedCases += 1; break;
+      case EMAIL_SOURCE_RECORD_CLASSIFICATIONS.INVALID: counters.invalidRows += 1; break;
+      case EMAIL_SOURCE_RECORD_CLASSIFICATIONS.DUPLICATE: counters.duplicateRows += 1; counters.unchangedDuplicates += 1; break;
+      case EMAIL_SOURCE_RECORD_CLASSIFICATIONS.STALE_VERSION: counters.staleVersions += 1; counters.warningRows += 1; break;
+      case EMAIL_SOURCE_RECORD_CLASSIFICATIONS.VERSION_CONFLICT: counters.versionConflicts += 1; counters.warningRows += 1; break;
+    }
+    if (row.hasCountryIdentificationIssue) { counters.unmappedCountries += 1; counters.warningRows += 1; }
   }
 }
 
@@ -209,15 +230,13 @@ async function processChunk({
   sheetName,
   batch,
   profile,
-  taskOrderId,
   counters,
   seenByCaseId,
   identityResolver,
 }) {
   const preparedRows = rowChunk.map((sourceRow) => prepareEmailRawDataRow({
     sourceRow,
-    taskOrderId,
-    identityResolver,
+      identityResolver,
   }));
   const validCaseIds = [...new Set(
     preparedRows
@@ -231,6 +250,7 @@ async function processChunk({
     existingByCaseId: mapRowsBySourceCaseId(existingRows),
     seenByCaseId,
   });
+
 
   await insertRawImportRows(classifiedRows.map((row) => ({
     batchId: batch.id,
@@ -282,10 +302,14 @@ async function processChunk({
         throw error;
       }
       row.existingRowId = current.id;
-      await updateEmailCaseFromSourceVersion({
+      const result = await updateEmailCaseFromSourceVersion({
         id: current.id,
         ...buildCanonicalRow(row, batch, profile),
       });
+      row.classification = result.classification;
+      if (!result.updated && result.classification === EMAIL_SOURCE_RECORD_CLASSIFICATIONS.NEWER_VERSION) {
+        throw new Error("Email source version was not applied despite being newer.");
+      }
     }
   }
 
@@ -310,6 +334,20 @@ async function processChunk({
       rawByNumber.get(Number(row.excelRowNumber)),
       sheetName,
     );
+    // Employee matching is independent from Owner country/Task Order matching.
+    // Persist existing employee-mapping warnings even if the country is unresolved.
+    const employeeIssue = mappingIssue(row, context);
+    if (employeeIssue) {
+      errors.push(employeeIssue);
+      counters.warningRows += 1;
+    }
+    if (row.hasCountryIdentificationIssue) {
+      errors.push({ ...context, severity: "WARNING", errorType: "ROW_VALIDATION",
+        errorCode: "EMAIL_COUNTRY_UNIDENTIFIED", columnName: "Owner",
+        rawValue: row.mappedRow.owner_raw,
+        errorMessage: "CRM Owner does not identify a country. Case retained without country attribution.",
+        existingRowId: row.existingRowId || null });
+    }
     if (row.classification === EMAIL_SOURCE_RECORD_CLASSIFICATIONS.INVALID) {
       errors.push(...row.conversionErrors.map((item) => conversionError(item, context)));
       errors.push(...row.validationErrors.map((item) => validationError(item, context)));
@@ -327,11 +365,6 @@ async function processChunk({
       errors.push(versionConflictError(row, context));
       continue;
     }
-    const issue = mappingIssue(row, context);
-    if (issue) {
-      errors.push(issue);
-      counters.warningRows += 1;
-    }
   }
   if (errors.length) await insertImportErrors(errors);
   updateCounters(counters, classifiedRows);
@@ -344,7 +377,6 @@ export async function processEmailRawDataWorkbook({
   workbookValidation,
   counters,
   chunkSize,
-  taskOrderId,
   onProgress,
 }) {
   const sheet = workbookValidation?.sheets?.[0];
@@ -369,7 +401,7 @@ export async function processEmailRawDataWorkbook({
     { headerRowNumber, chunkSize: safeChunkSize },
     async (rowChunk) => {
       for (const sourceRow of rowChunk) {
-        const mapped = mapEmailRawDataRow(sourceRow, { taskOrderId });
+        const mapped = mapEmailRawDataRow(sourceRow);
         const identity = mapEmailModifiedByIdentity(mapped.mappedRow);
         if (identity.agentName) {
           identitiesByKey.set(createAgentIdentityCacheKey(identity), identity);
@@ -409,8 +441,7 @@ export async function processEmailRawDataWorkbook({
         sheetName,
         batch,
         profile,
-        taskOrderId,
-        counters,
+              counters,
         seenByCaseId,
         identityResolver,
       });
@@ -430,5 +461,12 @@ export async function processEmailRawDataWorkbook({
     processedChunks: processing.processedChunks || 0,
     identityRowsScanned: identityScan.processedRows || 0,
     ...identityResolver.stats,
+    emailMetrics: {
+      newCases: counters.newCases || 0, updatedCases: counters.updatedCases || 0,
+      unchangedDuplicates: counters.unchangedDuplicates || 0, staleVersions: counters.staleVersions || 0,
+      versionConflicts: counters.versionConflicts || 0, unmappedCountries: counters.unmappedCountries || 0,
+      mappingConflicts: 0,
+      invalidRows: counters.invalidRows || 0, taskOrderVersionId: null,
+    },
   };
 }

@@ -229,9 +229,9 @@ function directoryEmployee(row, expectedAccountId) {
   return { employeeUid, gyEmpId };
 }
 
-async function fetchAccountEmployeeDirectory(accountId) {
+async function fetchAccountEmployeeDirectory(accountId, { forceRefresh = false } = {}) {
   const cached = directoryCache.get(accountId);
-  if (cached && cached.expiresAt > Date.now()) {
+  if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
     return { ...cached.data, requestCount: 0 };
   }
 
@@ -308,7 +308,7 @@ async function fetchEmployeeSchedulePagesUncached(employeeUid, dateFrom, dateTo)
   );
 }
 
-async function fetchEmployeeSchedulePages(employeeUid, dateFrom, dateTo) {
+async function fetchEmployeeSchedulePages(employeeUid, dateFrom, dateTo, { forceRefresh = false } = {}) {
   const uid = normalizeTrackerEmployeeUid(employeeUid);
   const from = normalizeDate(dateFrom);
   const to = normalizeDate(dateTo);
@@ -317,7 +317,7 @@ async function fetchEmployeeSchedulePages(employeeUid, dateFrom, dateTo) {
   }
 
   const cached = findCoveringSchedule(scheduleCache, uid, from, to, { cache: true });
-  if (cached) {
+  if (!forceRefresh && cached) {
     return {
       rows: cached.data.rows.filter((row) => {
         const day = scheduleDate(row);
@@ -411,23 +411,33 @@ export function getCompletedScheduleWindow(schedule, now = nowInManila()) {
     overnight: logoutSeconds < loginSeconds };
 }
 
-// A full-shift absence requires no *actual appearance* during the completed
-// scheduled interval. An early arrival that stays into the shift, a late login,
-// a partial shift, and a post-midnight login for an overnight shift all count
-// as present. A login at/after the shift end does NOT clear the absence.
-export function attendedDuringScheduledShift(window, trackerIntervals = []) {
-  if (!window) return false;
-  return trackerIntervals.some((interval) => {
+// An employee has worked only when a verified positive-duration interval
+// overlaps a completed scheduled shift. A partial shift counts as worked;
+// an open login alone cannot establish positive working hours and is unresolved.
+export function classifyWorkingTimeInSchedule(window, trackerIntervals = []) {
+  if (!window) return { worked: false, unresolved: false };
+  let unresolved = false;
+  for (const interval of trackerIntervals) {
+    if (interval.loginEpochMs == null) continue;
     const start = Number(interval.loginEpochMs);
-    if (!Number.isFinite(start) || interval.loginEpochMs == null) return false;
+    if (!Number.isFinite(start) || start >= window.endMs) continue;
     const end = interval.logoutEpochMs == null ? null : Number(interval.logoutEpochMs);
-    if (start >= window.endMs) return false;
-    // A missing logout proves presence only when login itself falls in shift.
     if (end === null || !Number.isFinite(end) || end <= start) {
-      return start >= window.startMs;
+      // An open tracker interval proves login, not a verified positive work duration.
+      if (start >= window.startMs && start < window.endMs) unresolved = true;
+      continue;
     }
-    return end > window.startMs;
-  });
+    if (Math.min(end, window.endMs) > Math.max(start, window.startMs)) {
+      return { worked: true, unresolved: false };
+    }
+  }
+  return { worked: false, unresolved };
+}
+
+// Retain the original public helper for other consumers; this KPI now requires
+// positive verified working time instead of treating login alone as worked hours.
+export function attendedDuringScheduledShift(window, trackerIntervals = []) {
+  return classifyWorkingTimeInSchedule(window, trackerIntervals).worked;
 }
 
 function indexTrackerIntervals(attendanceRows) {
@@ -467,7 +477,7 @@ function emptyDataset({ requestedEmployeeCount = 0 } = {}) {
  * - Date-filtered /employee-schedules is queried directly by gy_emp_code per matched agent.
  */
 export async function getKronosAbsenteeismEmployeeDayRows({
-  employeeUids = [], dateFrom = null, dateTo = null, accountName = "US Visa",
+  employeeUids = [], dateFrom = null, dateTo = null, accountName = "US Visa", forceRefresh = false,
 } = {}) {
   const from = normalizeDate(dateFrom);
   const to = normalizeDate(dateTo);
@@ -484,6 +494,7 @@ export async function getKronosAbsenteeismEmployeeDayRows({
       employeeUids: employeeCodes,
       dateFrom: from,
       dateTo: to,
+      forceRefresh,
     });
   } catch (error) {
     error.stage ??= "ATTENDANCE_FETCH";
@@ -532,7 +543,7 @@ export async function getKronosAbsenteeismEmployeeDayRows({
   const unresolvedEmployeeCodes = employeeCodes.filter((uid) => !verifiedIds.has(uid));
   if (unresolvedEmployeeCodes.length) {
     try {
-      employeeDirectory = await fetchAccountEmployeeDirectory(kronosAccountId);
+      employeeDirectory = await fetchAccountEmployeeDirectory(kronosAccountId, { forceRefresh });
     } catch (error) {
       error.stage ??= "EMPLOYEE_DIRECTORY_FALLBACK_FETCH";
       throw error;
@@ -563,7 +574,7 @@ export async function getKronosAbsenteeismEmployeeDayRows({
     SCHEDULE_CONCURRENCY,
     async (uid) => {
       const gyEmpId = verifiedIds.get(uid);
-      const result = await fetchEmployeeSchedulePages(uid, from, to);
+      const result = await fetchEmployeeSchedulePages(uid, from, to, { forceRefresh });
       return { uid, gyEmpId, ...result };
     },
   );
@@ -611,6 +622,7 @@ export async function getKronosAbsenteeismEmployeeDayRows({
         employeeUids: matchedEmployeeCodes,
         dateFrom: extraDate,
         dateTo: extraDate,
+        forceRefresh,
       });
     } catch (error) {
       error.stage ??= "OVERNIGHT_BOUNDARY_ATTENDANCE_FETCH";
@@ -622,13 +634,22 @@ export async function getKronosAbsenteeismEmployeeDayRows({
     ...attendance.rows,
     ...(boundaryAttendance?.rows || []),
   ]);
-  const rows = completedSchedules.map((entry) => ({
-    employeeUid: entry.uid,
-    workDate: entry.workDate,
-    accountId: kronosAccountId,
-    hasAttendance: entry.windows.some((window) =>
-      attendedDuringScheduledShift(window, intervalIndex.get(entry.uid) || [])),
-  }));
+  const verifiedRecordedHours = new Set(attendance.rows
+    .filter((row) => row.hasVerifiedWorkingHours)
+    .map((row) => `${row.employeeUid}|${row.workDate}`));
+  const rows = completedSchedules.map((entry) => {
+    const evidence = entry.windows.map((window) =>
+      classifyWorkingTimeInSchedule(window, intervalIndex.get(entry.uid) || []));
+    const worked = evidence.some((result) => result.worked) ||
+      verifiedRecordedHours.has(`${entry.uid}|${entry.workDate}`);
+    return {
+      employeeUid: entry.uid,
+      workDate: entry.workDate,
+      accountId: kronosAccountId,
+      hasAttendance: worked,
+      attendanceUnverifiable: !worked && evidence.some((result) => result.unresolved),
+    };
+  });
 
   const sortRows = (left, right) => left.workDate.localeCompare(right.workDate)
     || left.employeeUid.localeCompare(right.employeeUid);

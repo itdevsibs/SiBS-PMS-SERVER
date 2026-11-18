@@ -4,6 +4,7 @@ import express from "express";
 import {
   deleteUsVisaImportBatch,
   getUsVisaImportBatchDetails,
+  getUsVisaImportConfig,
   getUsVisaImportCalendar,
   getUsVisaImportCalendarDay,
   getUsVisaImportProgress,
@@ -73,6 +74,8 @@ router.get(
   getPerformanceComparison,
 );
 
+router.get("/imports/config", ...requireWfm, getUsVisaImportConfig);
+
 router.get(
   "/imports",
   ...requireWfm,
@@ -98,6 +101,7 @@ router.get(
   "/imports/:batchId",
   ...requireWfm,
   getUsVisaImportBatchDetails,
+  getUsVisaImportConfig,
 );
 
 router.get(
