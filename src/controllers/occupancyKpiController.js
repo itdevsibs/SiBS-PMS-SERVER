@@ -80,7 +80,7 @@ export async function getWfmAbsenteeismKpi(req, res) {
     const dashboard = await getWfmAbsenteeismKpiDashboard(query);
     return res.json({ success: true, data: dashboard });
   } catch (error) {
-    if (error?.status === 403) return res.status(403).json({ success: false, code: error.code, message: error.message });
+    if (error?.status === 403 || error?.status === 400) return res.status(error.status).json({ success: false, code: error.code, message: error.message });
     return sendBadRequestOrServerError(res, error, {
       fallbackCode: "ABSENTEEISM_KPI_QUERY_FAILED",
       fallbackMessage: "Unable to load Absenteeism KPI data.",

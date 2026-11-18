@@ -107,6 +107,15 @@ function normalizeSqlDateTime(value) {
   return raw;
 }
 
+function positiveRecordedWorkHours(value) {
+  if (value == null || String(value).trim() === "") return false;
+  const raw = String(value).trim();
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric)) return numeric > 0;
+  const clock = raw.match(/^(\d{1,3}):(\d{2})(?::(\d{2}))?$/);
+  return Boolean(clock && Number(clock[1]) * 3600 + Number(clock[2]) * 60 + Number(clock[3] || 0) > 0);
+}
+
 function normalizeTrackerRow(row = {}) {
   const employeeUid = normalizeTrackerEmployeeUid(
     firstDefinedValue(row, [
@@ -140,6 +149,10 @@ function normalizeTrackerRow(row = {}) {
     logoutAt: normalizeSqlDateTime(logoutValue),
     loginEpochMs,
     logoutEpochMs,
+    hasRecordedWorkingHours: positiveRecordedWorkHours(firstDefinedValue(row, [
+      "gy_tracker_wh", "tracker.gy_tracker_wh", "gy_tracker_ath",
+      "tracker.gy_tracker_ath", "worked_hours", "total_hours", "work_hours",
+    ])),
     trackerStatus: firstDefinedValue(row, [
       "gy_tracker_status", "tracker.gy_tracker_status", "tracker_status",
     ]),
@@ -178,9 +191,11 @@ export function aggregateTrackerEmployeeDays(rows = [], allowedEmployeeUids = nu
       trackerStatuses: [],
       trackerReasons: [],
       trackerIntervals: [],
+      hasVerifiedWorkingHours: false,
     };
 
     current.trackerRowCount += 1;
+    if (row.hasRecordedWorkingHours) current.hasVerifiedWorkingHours = true;
     if (row.loginEpochMs !== null) {
       current.trackerIntervals.push({
         loginEpochMs: row.loginEpochMs,
@@ -490,7 +505,7 @@ async function fetchUtilizationTrackersByEmployees(employeeUids = []) {
  * Absenteeism continue using the bulk/date-filtered attendance optimized view.
  */
 export async function getKronosUtilizationTrackerEmployeeDayRows({
-  kronosAccountId, employeeUids = [], dateFrom, dateTo,
+  kronosAccountId, employeeUids = [], dateFrom, dateTo, forceRefresh = false,
 } = {}) {
   const accountId = Number(kronosAccountId);
   const from = normalizeDate(dateFrom);
@@ -577,7 +592,7 @@ function rememberAttendanceCache(key, data) {
  * employee codes without issuing N per-employee tracker-history requests.
  */
 export async function getKronosOptimizedAttendanceEmployeeDayRows({
-  kronosAccountId, employeeUids = [], dateFrom, dateTo,
+  kronosAccountId, employeeUids = [], dateFrom, dateTo, forceRefresh = false,
 } = {}) {
   const accountId = Number(kronosAccountId);
   const from = normalizeDate(dateFrom);
@@ -600,7 +615,7 @@ export async function getKronosOptimizedAttendanceEmployeeDayRows({
   }
 
   const key = `${accountId}|${from}|${to}`;
-  const cached = findCoveringAttendance(attendanceCache, accountId, from, to, { cache: true });
+  const cached = forceRefresh ? null : findCoveringAttendance(attendanceCache, accountId, from, to, { cache: true });
   let dataset = cached?.data || null;
   let sharedPending = false;
 

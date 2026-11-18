@@ -13,7 +13,7 @@ const tempUploadDirectory = path.resolve(
     path.join(process.cwd(), "uploads", "tmp", "us-visa-imports"),
 );
 
-function getMaxFileSizeBytes() {
+export function getMaxUsVisaFileSizeBytes() {
   const configuredValue = Number(
     process.env.US_VISA_IMPORT_MAX_FILE_SIZE_MB,
   );
@@ -74,7 +74,7 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   limits: {
-    fileSize: getMaxFileSizeBytes(),
+    fileSize: getMaxUsVisaFileSizeBytes(),
     files: 1,
   },
   fileFilter(_req, file, callback) {

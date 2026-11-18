@@ -1,5 +1,6 @@
 // Uses source-native Email case identity/checksum/version metadata.
-// No PMS-generated row/content hashes are created for Email Raw Data.
+// CRM checksum remains authoritative; a normalized content fingerprint detects
+// inconsistent same-version source extracts without replacing CRM identity.
 
 export const EMAIL_SOURCE_RECORD_CLASSIFICATIONS = Object.freeze({
   NEW: "NEW",
@@ -20,32 +21,22 @@ function normalizeText(value) {
 
 export function classifyEmailSourceRecord({ incoming = {}, existing = null } = {}) {
   if (!existing) return EMAIL_SOURCE_RECORD_CLASSIFICATIONS.NEW;
-
-  const incomingChecksum = normalizeText(
-    readValue(incoming, "sourceRowChecksum", "source_row_checksum"),
-  );
-  const existingChecksum = normalizeText(
-    readValue(existing, "sourceRowChecksum", "source_row_checksum"),
-  );
-
-  if (incomingChecksum && incomingChecksum === existingChecksum) {
+  const incomingModifiedOn = normalizeText(readValue(incoming, "sourceModifiedOn", "source_modified_on"));
+  const existingModifiedOn = normalizeText(readValue(existing, "sourceModifiedOn", "source_modified_on"));
+  if (!incomingModifiedOn || !existingModifiedOn) return EMAIL_SOURCE_RECORD_CLASSIFICATIONS.VERSION_CONFLICT;
+  if (incomingModifiedOn < existingModifiedOn) return EMAIL_SOURCE_RECORD_CLASSIFICATIONS.STALE_VERSION;
+  const incomingChecksum = normalizeText(readValue(incoming, "sourceRowChecksum", "source_row_checksum"));
+  const existingChecksum = normalizeText(readValue(existing, "sourceRowChecksum", "source_row_checksum"));
+  const incomingContent = normalizeText(readValue(incoming, "sourceContentHash", "source_content_hash"));
+  const existingContent = normalizeText(readValue(existing, "sourceContentHash", "source_content_hash"));
+  if (incomingModifiedOn > existingModifiedOn) return EMAIL_SOURCE_RECORD_CLASSIFICATIONS.NEWER_VERSION;
+  // If the CRM checksum and timestamp agree but normalized content differs,
+  // flag the inconsistency rather than treating it as an unchanged duplicate.
+  const sameChecksum = Boolean(incomingChecksum && incomingChecksum === existingChecksum);
+  if (sameChecksum && (!incomingContent || !existingContent || incomingContent === existingContent)) {
     return EMAIL_SOURCE_RECORD_CLASSIFICATIONS.DUPLICATE;
   }
-
-  const incomingModifiedOn = normalizeText(
-    readValue(incoming, "sourceModifiedOn", "source_modified_on"),
-  );
-  const existingModifiedOn = normalizeText(
-    readValue(existing, "sourceModifiedOn", "source_modified_on"),
-  );
-
-  if (!incomingModifiedOn || !existingModifiedOn || incomingModifiedOn === existingModifiedOn) {
-    return EMAIL_SOURCE_RECORD_CLASSIFICATIONS.VERSION_CONFLICT;
-  }
-
-  return incomingModifiedOn > existingModifiedOn
-    ? EMAIL_SOURCE_RECORD_CLASSIFICATIONS.NEWER_VERSION
-    : EMAIL_SOURCE_RECORD_CLASSIFICATIONS.STALE_VERSION;
+  return EMAIL_SOURCE_RECORD_CLASSIFICATIONS.VERSION_CONFLICT;
 }
 
 function normalizeSourceRecord(row = {}) {
@@ -60,6 +51,7 @@ function normalizeSourceRecord(row = {}) {
     sourceModifiedOn: normalizeText(
       readValue(row, "sourceModifiedOn", "source_modified_on"),
     ),
+    sourceContentHash: normalizeText(readValue(row, "sourceContentHash", "source_content_hash")),
   };
 }
 

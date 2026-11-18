@@ -76,6 +76,7 @@ function buildQueryParams(req) {
     dateTo: req.query.dateTo || req.query.date_to || null,
     page: req.query.page,
     limit: req.query.limit,
+    forceRefresh: req.query.forceRefresh === "true" || req.query.forceRefresh === "1",
   };
 }
 

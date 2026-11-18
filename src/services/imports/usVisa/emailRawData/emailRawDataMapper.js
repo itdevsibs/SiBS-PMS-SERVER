@@ -159,12 +159,6 @@ function getValue(result) {
   return result?.ok ? result.value : null;
 }
 
-function removeDescriptionFromRawJson(rowJson, headerIndex) {
-  const raw = { ...(rowJson || {}) };
-  const descriptionKey = headerIndex.get(normalizeHeader("Description"));
-  if (descriptionKey) delete raw[descriptionKey];
-  return raw;
-}
 
 export function mapEmailModifiedByIdentity(row = {}) {
   const modifiedBy = normalizeName(row.modified_by_raw);
@@ -177,10 +171,9 @@ export function mapEmailModifiedByIdentity(row = {}) {
   };
 }
 
-export function mapEmailRawDataRow(sourceRow = {}, options = {}) {
+export function mapEmailRawDataRow(sourceRow = {}) {
   const sourceJson = sourceRow.rowJson || {};
   const headerIndex = createHeaderIndex(sourceJson);
-  const taskOrderId = String(options.taskOrderId || "").trim().toUpperCase();
   const conversionErrors = [];
 
   const sourceCaseIdResult = toStringValue(
@@ -220,14 +213,13 @@ export function mapEmailRawDataRow(sourceRow = {}, options = {}) {
   }
 
   const descriptionText = getValue(descriptionResult);
-  const usesDescription = EMAIL_DESCRIPTION_TASK_ORDERS.has(taskOrderId);
+  const usesDescription = Boolean(headerIndex.has(normalizeHeader("Description")));
   const modifiedByRaw = normalizeName(getValue(modifiedByResult));
 
   return {
     mappedRow: {
       source_row_number: sourceRow.excelRowNumber ?? sourceRow.rowNumber ?? null,
       data_grain: "EMAIL_CASE",
-      task_order_id: taskOrderId || null,
       source_case_id: String(getValue(sourceCaseIdResult) || "").trim().toLowerCase() || null,
       source_row_checksum: String(getValue(sourceRowChecksumResult) || "").trim() || null,
       source_modified_on: getValue(sourceModifiedOnResult),
@@ -241,16 +233,18 @@ export function mapEmailRawDataRow(sourceRow = {}, options = {}) {
       created_on: getValue(createdOnResult),
       resolution_date: getValue(resolutionDateResult),
       escalated_on: getValue(escalatedOnResult),
-      case_number: EMAIL_CASE_NUMBER_TASK_ORDERS.has(taskOrderId)
+      case_number: headerIndex.has(normalizeHeader("Case Number"))
         ? getValue(caseNumberResult)
         : null,
+      has_case_number: headerIndex.has(normalizeHeader("Case Number")),
+      has_description: usesDescription,
       description_json: usesDescription && descriptionText
         ? { description: descriptionText }
         : null,
     },
-    rowJson: usesDescription
-      ? removeDescriptionFromRawJson(sourceJson, headerIndex)
-      : { ...sourceJson },
+    // Preserve the full source payload, including Description, for unmatched
+    // cases and audit review; the normalized value is stored separately too.
+    rowJson: { ...sourceJson },
     conversionErrors,
   };
 }

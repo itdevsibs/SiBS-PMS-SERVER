@@ -1,13 +1,14 @@
 import {
-  getEmailKpiDateBounds,
+  getEmailKpiCountryDateBoundsRows,
   getEmailKpiRows,
   listEmailKpiOwnerValues,
 } from "../../../../repositories/usVisa/email/usVisaEmailKpiRepository.js";
+import { loadEmailReportingSchedule, resolveEmailReportRows } from './emailTaskOrderReportingResolver.js';
+import { normalizeEmailTaskOrderIdentifier } from './emailTaskOrderAssignment.js';
 import {
   getUsVisaCountryHolidayCoverage,
   listUsVisaCountryHolidays,
 } from "../../../../repositories/usVisa/email/usVisaCountryHolidayRepository.js";
-import { normalizeUsVisaTaskOrderId } from "../../../../config/usVisaTaskOrders.js";
 import {
   normalizeCallKpiPeriod,
   resolveCallKpiDateRange,
@@ -19,10 +20,6 @@ import {
   getEmailKpiHolidayDateRange,
   listEmailKpiCountryCodes,
 } from "./emailKpiService.js";
-
-const SUPPORTED_EMAIL_TASK_ORDERS = new Set(["TO4", "TO10", "TO12", "TO14", "TO16"]);
-const KNOWN_NON_EMAIL_TASK_ORDERS = new Set(["TO18", "TO22", "OTHER"]);
-const NO_EMAIL_TASK_ORDER = "__NONE__";
 
 function normalizeDate(value) {
   const text = String(value || "").trim();
@@ -40,35 +37,13 @@ function validateReferenceDate(value) {
 }
 
 function normalizeEmailTaskOrders(value) {
-  if (!value) return null;
-  const rawList = Array.isArray(value)
-    ? value
-    : String(value)
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean);
-  const result = [];
-  let sawKnownNonEmailTaskOrder = false;
-  for (const raw of rawList) {
-    const taskOrder = normalizeUsVisaTaskOrderId(raw);
-    if (!taskOrder) continue;
-    if (KNOWN_NON_EMAIL_TASK_ORDERS.has(taskOrder)) {
-      sawKnownNonEmailTaskOrder = true;
-      continue;
-    }
-    if (!SUPPORTED_EMAIL_TASK_ORDERS.has(taskOrder)) {
-      if (rawList.length === 1) {
-        const error = new Error(`Task Order ${taskOrder} is not available for Email KPI reporting.`);
-        error.code = "INVALID_TASK_ORDER";
-        throw error;
-      }
-      continue;
-    }
-    if (!result.includes(taskOrder)) result.push(taskOrder);
-  }
-  if (!result.length && sawKnownNonEmailTaskOrder) return NO_EMAIL_TASK_ORDER;
-  if (!result.length) return null;
-  return result.length === 1 ? result[0] : result;
+  const rawList = Array.isArray(value) ? value : String(value || '').split(',');
+  const taskOrders = [...new Set(rawList
+    .map((item) => String(item || '').trim())
+    .filter((item) => item && item.toUpperCase() !== 'ALL' && item !== '__NONE__')
+    .map(normalizeEmailTaskOrderIdentifier)
+    .filter(Boolean))];
+  return taskOrders.length > 1 ? taskOrders : taskOrders[0] || null;
 }
 
 function throwInvalidDateRange() {
@@ -139,7 +114,14 @@ export async function getWfmEmailKpiDashboard(query = {}) {
     throwInvalidDateRange();
   }
 
-  const bounds = await getEmailKpiDateBounds({ taskOrder });
+  const schedule = await loadEmailReportingSchedule(query.taskOrderVersionId || 'current');
+  const boundsByCountry = await getEmailKpiCountryDateBoundsRows();
+  const scopedBoundRows = resolveEmailReportRows(boundsByCountry, schedule, taskOrder).rows;
+  const sortedDates = scopedBoundRows.map((row) => row.createdDate).filter(Boolean).sort();
+  const bounds = {
+    minDate: sortedDates[0] || null,
+    maxDate: sortedDates[sortedDates.length - 1] || null,
+  };
   let dateFrom = requestedDateFrom;
   let dateTo = requestedDateTo;
   let referenceDate = null;
@@ -171,10 +153,15 @@ export async function getWfmEmailKpiDashboard(query = {}) {
 
   if (dateFrom && dateTo && dateFrom > dateTo) throwInvalidDateRange();
 
-  const [rows, ownerValues] = await Promise.all([
-    getEmailKpiRows({ dateFrom, dateTo, taskOrder }),
-    listEmailKpiOwnerValues({ taskOrder }),
+  const [sourceRows, sourceOwners] = await Promise.all([
+    getEmailKpiRows({ dateFrom, dateTo }),
+    listEmailKpiOwnerValues(),
   ]);
+  const resolvedRows = resolveEmailReportRows(sourceRows, schedule, taskOrder);
+  const rows = resolvedRows.rows;
+  const ownerValues = [...new Set(resolveEmailReportRows(
+    sourceOwners, schedule, taskOrder,
+  ).rows.map((row) => row.ownerRaw).filter(Boolean))];
   const holidayResult = await loadHolidayRows(rows, dateFrom, dateTo);
 
   const dashboard = buildWfmEmailKpiDashboard({
@@ -197,5 +184,11 @@ export async function getWfmEmailKpiDashboard(query = {}) {
       rangeMode,
     },
     availableDateRange: bounds,
+    taskOrderResolution: {
+      source: 'PUBLISHED_LEDGER',
+      versionIds: schedule.versions,
+      unmappedRows: resolvedRows.diagnostics.unmapped,
+      ambiguousRows: resolvedRows.diagnostics.ambiguous,
+    },
   };
 }
