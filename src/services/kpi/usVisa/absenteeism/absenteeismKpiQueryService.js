@@ -1,3 +1,4 @@
+import { applyProgressiveWeekWindow } from "../progressiveWeekWindow.js";
 import { getKronosAbsenteeismEmployeeDayRows } from "../../../../repositories/kronos/kronosAbsenteeismRepository.js";
 import { getKronosUsVisaLeaveRows } from "../../../../repositories/kronos/kronosLeaveManagementRepository.js";
 import { applyApprovedLeaveToAbsenteeismRows } from "./absenteeismLeaveRules.js";
@@ -26,7 +27,7 @@ function buildAbsenteeismCacheKey({
   taskOrder,
 }) {
   return `ABSENTEEISM_DASHBOARD:${JSON.stringify({
-    version: 19,
+    version: 21,
     source: "KRONOS_API",
     account: "US_VISA",
     period: period || null,
@@ -37,7 +38,7 @@ function buildAbsenteeismCacheKey({
   })}`;
 }
 
-async function loadAbsenteeismDashboard(resolved, { forceRefresh = false } = {}) {
+async function loadAbsenteeismDashboard(resolved, { forceRefresh = false, progressiveWeek = null, fullRange = resolved } = {}) {
   const { period, dateFrom, dateTo, referenceDate, taskOrder } = resolved;
 
   // Population comes from the US Visa roster. Presence then comes exclusively
@@ -58,7 +59,7 @@ async function loadAbsenteeismDashboard(resolved, { forceRefresh = false } = {})
         headcountStatus: "AVAILABLE",
         source: "KRONOS_API",
         storageMode: "LIVE_ONLY",
-        fetchMode: "OPTIMIZED_ATTENDANCE_DIRECTORY_PLUS_DATE_FILTERED_SCHEDULES",
+        fetchMode: "DIRECTORY_FIRST_CONCURRENT_ATTENDANCE_AND_EMPLOYEE_SCHEDULES",
         headcountBasis: "EMPLOYMENT_DATE_OPENING_WEEK_SNAPSHOT_OR_CUSTOM_DAILY",
         presenceBasis: "VERIFIED_POSITIVE_WORKING_HOURS_OR_COMPLETED_TRACKER_INTERVAL",
         formula: "ABSENT_EMPLOYEE_DAYS / SCHEDULED_EMPLOYEE_DAYS * 100",
@@ -72,6 +73,7 @@ async function loadAbsenteeismDashboard(resolved, { forceRefresh = false } = {})
       dateTo,
       referenceDate,
       taskOrder,
+      bucketCount: progressiveWeek ? 1 : 6,
     });
   }
 
@@ -84,8 +86,14 @@ async function loadAbsenteeismDashboard(resolved, { forceRefresh = false } = {})
         dateFrom,
         dateTo,
         forceRefresh,
+        // Reuse one wide schedule collection for all six slices; otherwise
+        // each week would issue another employee-wide schedule cascade.
+        scheduleDateFrom: fullRange.dateFrom,
+        scheduleDateTo: fullRange.dateTo,
       }),
-      getKronosUsVisaLeaveRows({ dateFrom, dateTo, forceRefresh }),
+      getKronosUsVisaLeaveRows({
+        dateFrom: fullRange.dateFrom, dateTo: fullRange.dateTo, forceRefresh,
+      }),
     ]);
     const classified = applyApprovedLeaveToAbsenteeismRows(
       attendanceDataset.rows, leaveDataset.rows,
@@ -128,6 +136,14 @@ async function loadAbsenteeismDashboard(resolved, { forceRefresh = false } = {})
         unverifiedWorkingTimeRows: classified.rows.filter((row) => row.attendanceUnverifiable).length,
         targetRosterEmployeeCount: targetEmployeeUids.length,
         matchedKronosEmployeeCount: attendanceDataset.matchedEmployeeCount,
+        directoryUnmatchedRosterEmployeeCount: attendanceDataset.unmatchedRosterEmployeeCount || 0,
+        directoryCoverageStatus: attendanceDataset.unmatchedRosterEmployeeCount > 0 ? "PARTIAL" : "COMPLETE",
+        ...(attendanceDataset.unmatchedRosterEmployeeCount > 0 ? {
+          directoryCoverageMessage: "Some PMS roster employees could not be verified in the current Kronos Department 1 / Account 20 directory. Historical KPI coverage may be incomplete.",
+        } : {}),
+        directoryAccount20MatchedRows: attendanceDataset.directoryAccount20MatchedRows || 0,
+        directoryPaginationMode: attendanceDataset.directoryPaginationMode || null,
+        sourceFetchTimingMs: attendanceDataset.fetchTimingMs || null,
         accountCount: attendanceDataset.accountCount,
         presentEmployeeDays: attendanceDataset.presentRows.length,
         scheduledEmployeeDays: classified.rows.filter((row) => !row.attendanceUnverifiable).length,
@@ -147,6 +163,7 @@ async function loadAbsenteeismDashboard(resolved, { forceRefresh = false } = {})
       dateTo,
       referenceDate,
       taskOrder,
+      bucketCount: progressiveWeek ? 1 : 6,
     });
   } catch (error) {
     console.error("Absenteeism/Headcount live Kronos API fetch failed:", {
@@ -170,7 +187,7 @@ async function loadAbsenteeismDashboard(resolved, { forceRefresh = false } = {})
         headcountStatus: "UNAVAILABLE",
         source: "KRONOS_API",
         storageMode: "LIVE_ONLY",
-        fetchMode: "OPTIMIZED_ATTENDANCE_DIRECTORY_PLUS_DATE_FILTERED_SCHEDULES",
+        fetchMode: "DIRECTORY_FIRST_CONCURRENT_ATTENDANCE_AND_EMPLOYEE_SCHEDULES",
         headcountBasis: "EMPLOYMENT_DATE_OPENING_WEEK_SNAPSHOT_OR_CUSTOM_DAILY",
         presenceBasis: "VERIFIED_POSITIVE_WORKING_HOURS_OR_COMPLETED_TRACKER_INTERVAL",
         formula: "ABSENT_EMPLOYEE_DAYS / SCHEDULED_EMPLOYEE_DAYS * 100",
@@ -185,6 +202,7 @@ async function loadAbsenteeismDashboard(resolved, { forceRefresh = false } = {})
       dateTo,
       referenceDate,
       taskOrder,
+      bucketCount: progressiveWeek ? 1 : 6,
     });
   }
 }
@@ -209,7 +227,9 @@ function attachAbsenteeismCacheMetadata(dashboard, cache) {
 
 export async function getWfmAbsenteeismKpiDashboard(query = {}) {
   const forceRefresh = query.forceRefresh === true || query.forceRefresh === "true" || query.forceRefresh === "1";
-  const resolved = await resolveOccupancyDateRange(query);
+  const fullRange = await resolveOccupancyDateRange(query);
+  const weekSelection = applyProgressiveWeekWindow(fullRange, query);
+  const resolved = weekSelection.resolved;
   const sources = normalizeSelectedSources(query.sourceSystem || query.source || "");
   if (sources.length) {
     // Resolve source ownership from the selected immutable Task Order version.
@@ -225,8 +245,12 @@ export async function getWfmAbsenteeismKpiDashboard(query = {}) {
     loader: async () => {
       // Keep scheduled HC independent of attendance/absence KPI availability.
       const [absenteeism, staffing] = await Promise.all([
-        loadAbsenteeismDashboard(resolved, { forceRefresh }),
-        getStaffingHeadcountForDashboard(resolved),
+        loadAbsenteeismDashboard(resolved, {
+          forceRefresh, progressiveWeek: weekSelection.progressiveWeek, fullRange,
+        }),
+        getStaffingHeadcountForDashboard(resolved, {
+          scheduleDateFrom: fullRange.dateFrom, scheduleDateTo: fullRange.dateTo,
+        }),
       ]);
       return attachStaffingToAbsenteeismDashboard(absenteeism, staffing);
     },
@@ -234,5 +258,8 @@ export async function getWfmAbsenteeismKpiDashboard(query = {}) {
     forceRefresh,
   });
 
-  return attachAbsenteeismCacheMetadata(result.value, result.cache);
+  return {
+    ...attachAbsenteeismCacheMetadata(result.value, result.cache),
+    ...(weekSelection.progressiveWeek ? { progressiveWeek: weekSelection.progressiveWeek } : {}),
+  };
 }

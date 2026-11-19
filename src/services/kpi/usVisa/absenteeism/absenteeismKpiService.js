@@ -118,6 +118,7 @@ export function buildWfmAbsenteeismKpiDashboard({
   dateTo = null,
   referenceDate = null,
   taskOrder = null,
+  bucketCount = 6,
 } = {}) {
   const normalizedPeriod = normalizeCallKpiPeriod(period);
   const summary = emptyAccumulator();
@@ -130,6 +131,7 @@ export function buildWfmAbsenteeismKpiDashboard({
     dateTo,
     referenceDate,
     createAccumulator: emptyAccumulator,
+    bucketCount,
   });
 
   // Attendance presence contributes to attendance/absenteeism only, not Actual HC.

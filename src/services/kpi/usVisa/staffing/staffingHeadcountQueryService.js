@@ -4,7 +4,9 @@ import { listPublishedStaffingRequirements } from '../../../../repositories/usVi
 import { buildStaffingHeadcountSeries } from './staffingHeadcountAggregation.js';
 
 /** HC uses dated employee-ledger employment; Kronos schedules still support Attrition %. */
-export async function getStaffingHeadcountForDashboard({ period, dateFrom, dateTo, taskOrder }) {
+export async function getStaffingHeadcountForDashboard({ period, dateFrom, dateTo, taskOrder }, {
+  scheduleDateFrom = dateFrom, scheduleDateTo = dateTo,
+} = {}) {
   const [roster, requirementRows, attritionEvents] = await Promise.all([
     findUsVisaHeadcountRosterAssignments({ taskOrder, dateFrom, dateTo }),
     listPublishedStaffingRequirements({ dateFrom, dateTo }),
@@ -16,9 +18,10 @@ export async function getStaffingHeadcountForDashboard({ period, dateFrom, dateT
   let scheduleError = null;
   try {
     const result = await getKronosScheduledEmployeeDayRows({
-      employeeUids: [...new Set(rosterAssignments.map(r => r.employeeUid))], dateFrom, dateTo,
+      employeeUids: [...new Set(rosterAssignments.map(r => r.employeeUid))],
+      dateFrom: scheduleDateFrom, dateTo: scheduleDateTo,
     });
-    scheduledRows = result.rows;
+    scheduledRows = result.rows.filter(row => row.workDate >= dateFrom && row.workDate <= dateTo);
   } catch (error) {
     console.error('WFM scheduled headcount source unavailable:', { code: error?.code, message: error?.message });
     scheduleAvailable = false;
