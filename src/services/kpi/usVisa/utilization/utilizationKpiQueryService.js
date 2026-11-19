@@ -1,3 +1,4 @@
+import { applyProgressiveWeekWindow } from "../progressiveWeekWindow.js";
 import {
   getAgentOccupancyDailyKpiRows,
   getAgentOccupancyKpiDateBounds,
@@ -160,7 +161,7 @@ async function resolveUtilizationDateRange(query = {}) {
   return { period, dateFrom, dateTo, referenceDate, taskOrder };
 }
 
-async function loadWfmUtilizationKpiDashboard(resolved) {
+async function loadWfmUtilizationKpiDashboard(resolved, { progressiveWeek = null } = {}) {
   const { period, dateFrom, dateTo, referenceDate, taskOrder } = resolved;
   const startedAt = Date.now();
 
@@ -195,6 +196,7 @@ async function loadWfmUtilizationKpiDashboard(resolved) {
       dateTo,
       referenceDate,
       taskOrder,
+      bucketCount: progressiveWeek ? 1 : 6,
     });
   }
 
@@ -235,6 +237,7 @@ async function loadWfmUtilizationKpiDashboard(resolved) {
         dateTo,
         referenceDate,
         taskOrder,
+        bucketCount: progressiveWeek ? 1 : 6,
       });
     }
 
@@ -329,6 +332,7 @@ async function loadWfmUtilizationKpiDashboard(resolved) {
       dateTo,
       referenceDate,
       taskOrder,
+      bucketCount: progressiveWeek ? 1 : 6,
     });
   } catch (error) {
     console.error("Attendance-based utilization fetch failed:", {
@@ -367,6 +371,7 @@ async function loadWfmUtilizationKpiDashboard(resolved) {
       dateTo,
       referenceDate,
       taskOrder,
+      bucketCount: progressiveWeek ? 1 : 6,
     });
   }
 }
@@ -418,15 +423,20 @@ function attachUtilizationCacheMetadata(dashboard, cache) {
 }
 
 export async function getWfmUtilizationKpiDashboard(query = {}) {
-  const resolved = await resolveUtilizationDateRange(query);
+  const fullRange = await resolveUtilizationDateRange(query);
+  const weekSelection = applyProgressiveWeekWindow(fullRange, query);
+  const resolved = weekSelection.resolved;
   const cacheKey = buildUtilizationCacheKey(resolved);
 
   const result = await getOrCreateUtilizationCacheEntry({
     key: cacheKey,
-    loader: () => loadWfmUtilizationKpiDashboard(resolved),
+    loader: () => loadWfmUtilizationKpiDashboard(resolved, { progressiveWeek: weekSelection.progressiveWeek }),
     shouldCache: shouldCacheUtilizationDashboard,
   });
 
-  return attachUtilizationCacheMetadata(result.value, result.cache);
+  return {
+    ...attachUtilizationCacheMetadata(result.value, result.cache),
+    ...(weekSelection.progressiveWeek ? { progressiveWeek: weekSelection.progressiveWeek } : {}),
+  };
 }
 

@@ -578,6 +578,39 @@ function findCoveringAttendance(map, accountId, from, to, { cache = false } = {}
   return best;
 }
 
+// After progressive weekly loads, reconstruct a full-range raw attendance
+// collection from verified cached weekly partitions. This avoids a second
+// 42-day Kronos fetch solely to calculate the canonical six-week summary.
+export function findPartitionedAttendanceCache(accountId, from, to, cacheEntries = attendanceCache) {
+  const now = Date.now();
+  const entries = [];
+  for (const [key, entry] of cacheEntries) {
+    if (entry.expiresAt <= now) { cacheEntries.delete(key); continue; }
+    const [id, start, end] = key.split("|");
+    if (Number(id) !== accountId || start > to || end < from) continue;
+    entries.push({ start, end, data: entry.data });
+  }
+  let cursor = from;
+  const parts = [];
+  while (cursor <= to) {
+    const selected = entries
+      .filter((entry) => entry.start <= cursor && entry.end >= cursor)
+      .sort((left, right) => right.end.localeCompare(left.end))[0];
+    if (!selected) return null; // Never return an incomplete KPI window.
+    parts.push({ ...selected, from: cursor });
+    cursor = new Date(Date.parse(`${selected.end}T00:00:00Z`) + 86400000)
+      .toISOString().slice(0, 10);
+  }
+  const rows = parts.flatMap(({ data, from: lower, end }) =>
+    data.rows.filter((row) => {
+      const day = normalizeDate(firstDefinedValue(row, [
+        "gy_tracker_date", "tracker.gy_tracker_date", "gy_tracker_login",
+      ]));
+      return day && day >= lower && day <= end && day <= to;
+    }));
+  return { rows, sourceRows: rows.length, requestCount: 0 };
+}
+
 function rememberAttendanceCache(key, data) {
   attendanceCache.set(key, { data, expiresAt: Date.now() + ATTENDANCE_CACHE_MS });
   while (attendanceCache.size > ATTENDANCE_CACHE_MAX_ENTRIES) {
@@ -617,6 +650,10 @@ export async function getKronosOptimizedAttendanceEmployeeDayRows({
   const key = `${accountId}|${from}|${to}`;
   const cached = forceRefresh ? null : findCoveringAttendance(attendanceCache, accountId, from, to, { cache: true });
   let dataset = cached?.data || null;
+  if (!dataset && !forceRefresh) {
+    dataset = findPartitionedAttendanceCache(accountId, from, to);
+    if (dataset) rememberAttendanceCache(key, dataset);
+  }
   let sharedPending = false;
 
   if (!dataset) {

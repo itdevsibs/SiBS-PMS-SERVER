@@ -169,7 +169,7 @@ export function addCallKpiPeriod(date, period, amount = 1) {
 
 export function seedCallKpiReferencePeriodBuckets(
   bucketMap,
-  { period, dateFrom, dateTo, referenceDate, createAccumulator = emptyAccumulator },
+  { period, dateFrom, dateTo, referenceDate, createAccumulator = emptyAccumulator, bucketCount = 6 },
 ) {
   if (period === "custom") {
     if (!dateFrom || !dateTo) return;
@@ -197,7 +197,7 @@ export function seedCallKpiReferencePeriodBuckets(
 
   let cursor = start;
 
-  for (let index = 0; index < 6; index += 1) {
+  for (let index = 0; index < bucketCount; index += 1) {
     const bucket = getCallKpiPeriodBucket(cursor, period);
     bucketMap.set(bucket.key, createAccumulator(bucket));
     cursor = addCallKpiPeriod(cursor, period);

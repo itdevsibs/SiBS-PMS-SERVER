@@ -1,20 +1,25 @@
 import { getKronosApiResponse } from "../../services/kronos/kronosApiClient.js";
 import {
+  assertDirectoryAttendanceIdentity,
+  fetchDirectoryScopedAbsenteeismSources,
+} from "./absenteeismDirectoryFetchPlan.js";
+import {
   getKronosOptimizedAttendanceEmployeeDayRows,
   normalizeTrackerEmployeeUid,
 } from "./kronosTrackerRepository.js";
+import { normalizeKronosAccountName } from "../../services/kronos/kronosAccountDirectoryService.js";
 import {
-  fetchLiveKronosAccounts,
-  normalizeKronosAccountName,
-} from "../../services/kronos/kronosAccountDirectoryService.js";
+  fetchCallCenterDepartmentDirectory,
+  selectUsVisaDirectoryEmployees,
+} from "./absenteeismDepartmentDirectory.js";
 
 const EMPLOYEE_DIRECTORY_ENDPOINT = "/api/v1/employee-directory";
 const OPTIMIZED_SCHEDULE_ENDPOINT = "/api/v1/employee-schedules";
-const DIRECTORY_PAGE_LIMIT = 100;
-const DIRECTORY_MAX_PAGES = 200;
 const SCHEDULE_PAGE_LIMIT = 100;
 const MAX_SCHEDULE_PAGES = 200;
 const SCHEDULE_CONCURRENCY = 6;
+// Consistent with the existing Account 20 leave-management source.
+const KRONOS_US_VISA_ACCOUNT_ID = 20;
 const DIRECTORY_CACHE_MS = 30 * 60 * 1000;
 const SCHEDULE_CACHE_MS = 30 * 60 * 1000;
 const DIRECTORY_CACHE_MAX_ENTRIES = 30;
@@ -110,26 +115,6 @@ async function mapWithConcurrency(items, concurrency, worker) {
   return results;
 }
 
-async function resolveKronosAccountId(accountName) {
-  const normalized = normalizeKronosAccountName(accountName);
-  if (!normalized) unavailable("Kronos account name is required.", "KRONOS_ACCOUNT_REQUIRED");
-  let directory;
-  try {
-    directory = await fetchLiveKronosAccounts({ retryTransient: true });
-  } catch (error) {
-    error.stage ??= "ACCOUNT_DIRECTORY";
-    throw error;
-  }
-  const matches = directory.filter((row) => row.normalizedName === normalized);
-  if (matches.length !== 1) {
-    unavailable(
-      `Kronos account ${accountName} did not resolve uniquely (${matches.length} matches).`,
-      "KRONOS_ACCOUNT_MAPPING_UNAVAILABLE",
-    );
-  }
-  return matches[0].kronosAccountId;
-}
-
 function pageInfo(payload, requestedPage) {
   const pagination = payload?.pagination || {};
   return {
@@ -211,24 +196,6 @@ function rememberDirectoryCache(accountId, data) {
   }
 }
 
-function directoryEmployee(row, expectedAccountId) {
-  const accountId = positiveInteger(firstDefinedValue(row, [
-    "gy_acc_id", "employee.gy_acc_id", "account_id", "account.gy_acc_id",
-  ]));
-  if (accountId && accountId !== expectedAccountId) return null;
-
-  const employeeUid = normalizeTrackerEmployeeUid(firstDefinedValue(row, [
-    "gy_emp_code", "employee.gy_emp_code", "employee_code", "emp_code",
-    "employee.employee_code", "employee.emp_code", "sibs_id", "employee.sibs_id",
-    "employeeUid", "employee_uid",
-  ]));
-  const gyEmpId = positiveInteger(firstDefinedValue(row, [
-    "gy_emp_id", "employee.gy_emp_id", "employee_id",
-  ]));
-  if (!employeeUid || !gyEmpId) return null;
-  return { employeeUid, gyEmpId };
-}
-
 async function fetchAccountEmployeeDirectory(accountId, { forceRefresh = false } = {}) {
   const cached = directoryCache.get(accountId);
   if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
@@ -236,34 +203,19 @@ async function fetchAccountEmployeeDirectory(accountId, { forceRefresh = false }
   }
 
   let pending = directoryInFlight.get(accountId);
-  let sharedPending = true;
+  const sharedPending = Boolean(pending);
   if (!pending) {
-    sharedPending = false;
     pending = (async () => {
-      const result = await fetchPageCollection(
-        EMPLOYEE_DIRECTORY_ENDPOINT,
-        { account_ids: accountId },
-        {
-          context: "EMPLOYEE_DIRECTORY_FETCH",
-          maxPages: DIRECTORY_MAX_PAGES,
-          pageLimit: DIRECTORY_PAGE_LIMIT,
-        },
-      );
-      const byUid = new Map();
-      for (const row of result.rows) {
-        const employee = directoryEmployee(row, accountId);
-        if (!employee) continue;
-        const previous = byUid.get(employee.employeeUid);
-        if (previous && previous.gyEmpId !== employee.gyEmpId) {
-          unavailable(`Conflicting Kronos IDs for employee ${employee.employeeUid}.`,
-            "KRONOS_EMPLOYEE_ID_CONFLICT");
-        }
-        byUid.set(employee.employeeUid, employee);
-      }
+      const result = await fetchCallCenterDepartmentDirectory({ requestPage: getKronosApiResponse });
+      // Kronos does not support account_id/account_ids on employee-directory.
+      // Department 1 is filtered server-side, then Account 20 here in PMS.
+      const matched = selectUsVisaDirectoryEmployees(result.rows, { accountId, departmentId: 1 });
       const data = {
-        byUid,
+        byUid: matched.byUid,
         sourceRows: result.rows.length,
+        accountMatchedRows: matched.accountMatchedRows,
         requestCount: result.requestCount,
+        paginationMode: result.paginationMode,
       };
       rememberDirectoryCache(accountId, data);
       return data;
@@ -472,12 +424,13 @@ function emptyDataset({ requestedEmployeeCount = 0 } = {}) {
  * Shared KPI data adapter. The formulas remain in absenteeismKpiService.js.
  * - Kronos account/date attendance comes from /employee-attendance.
  * - PMS ledger supplies the target/Task Order employee codes.
- * - employee-attendance.employee_id / employee-directory still verify account membership.
- * - Kronos /employee-directory?account_ids=... remains a fallback for unresolved roster employees.
- * - Date-filtered /employee-schedules is queried directly by gy_emp_code per matched agent.
+ * - The Account 20 employee directory verifies roster membership first.
+ * - Attendance and employee-code schedule fetching then run concurrently.
+ * - The shared KPI request pool caps physical calls to Kronos.
  */
 export async function getKronosAbsenteeismEmployeeDayRows({
   employeeUids = [], dateFrom = null, dateTo = null, accountName = "US Visa", forceRefresh = false,
+  scheduleDateFrom = dateFrom, scheduleDateTo = dateTo,
 } = {}) {
   const from = normalizeDate(dateFrom);
   const to = normalizeDate(dateTo);
@@ -486,37 +439,36 @@ export async function getKronosAbsenteeismEmployeeDayRows({
     return emptyDataset({ requestedEmployeeCount: employeeCodes.length });
   }
 
-  const kronosAccountId = await resolveKronosAccountId(accountName);
-  let attendance;
-  try {
-    attendance = await getKronosOptimizedAttendanceEmployeeDayRows({
-      kronosAccountId,
-      employeeUids: employeeCodes,
-      dateFrom: from,
-      dateTo: to,
-      forceRefresh,
-    });
-  } catch (error) {
-    error.stage ??= "ATTENDANCE_FETCH";
-    throw error;
+  // US Visa is Account 20; the directory API itself filters by Department 1 only.
+  // The PMS employment-date ledger is still the authoritative reporting roster.
+  if (normalizeKronosAccountName(accountName) !== normalizeKronosAccountName("US Visa")) {
+    unavailable("Absenteeism is scoped to the US Visa account only.", "KRONOS_ACCOUNT_REQUIRED");
   }
+  const kronosAccountId = KRONOS_US_VISA_ACCOUNT_ID;
+  const {
+    directory: employeeDirectory,
+    attendance,
+    scheduleResults,
+    matchedEmployeeCodes,
+    unmatchedRosterEmployeeCount,
+    fetchTimingMs,
+  } = await fetchDirectoryScopedAbsenteeismSources({
+    employeeCodes,
+    kronosAccountId,
+    dateFrom: from,
+    dateTo: to,
+    scheduleDateFrom,
+    scheduleDateTo,
+    forceRefresh,
+    fetchDirectory: fetchAccountEmployeeDirectory,
+    fetchAttendance: getKronosOptimizedAttendanceEmployeeDayRows,
+    fetchSchedule: fetchEmployeeSchedulePages,
+    scheduleConcurrency: SCHEDULE_CONCURRENCY,
+  });
 
-  const targetSet = new Set(employeeCodes);
-  const verifiedIds = new Map();
   const presenceKeys = new Set();
   const presentRows = [];
   for (const record of attendance.rows) {
-    if (!targetSet.has(record.employeeUid)) continue;
-    if (record.gyEmpId) {
-      const priorId = verifiedIds.get(record.employeeUid);
-      if (priorId && priorId !== record.gyEmpId) {
-        unavailable(
-          `Conflicting Kronos internal IDs for employee ${record.employeeUid}.`,
-          "KRONOS_EMPLOYEE_ID_CONFLICT",
-        );
-      }
-      verifiedIds.set(record.employeeUid, record.gyEmpId);
-    }
     if (!record.isPresent) continue;
     const key = `${record.employeeUid}|${record.workDate}`;
     if (presenceKeys.has(key)) continue;
@@ -532,59 +484,12 @@ export async function getKronosAbsenteeismEmployeeDayRows({
     });
   }
 
-  // Attendance IDs are still useful for verifying account membership. Employees
-  // that never produced an attendance row (or whose attendance row omitted the ID)
-  // use the bulk directory fallback. Schedule retrieval itself now uses gy_emp_code.
-  let employeeDirectory = {
-    byUid: new Map(),
-    sourceRows: 0,
-    requestCount: 0,
-  };
-  const unresolvedEmployeeCodes = employeeCodes.filter((uid) => !verifiedIds.has(uid));
-  if (unresolvedEmployeeCodes.length) {
-    try {
-      employeeDirectory = await fetchAccountEmployeeDirectory(kronosAccountId, { forceRefresh });
-    } catch (error) {
-      error.stage ??= "EMPLOYEE_DIRECTORY_FALLBACK_FETCH";
-      throw error;
-    }
-
-    // Preserve the existing conflict protection whenever the fallback directory
-    // is consulted, while filling only IDs that attendance could not resolve.
-    for (const uid of employeeCodes) {
-      const directoryEntry = employeeDirectory.byUid.get(uid);
-      if (!directoryEntry?.gyEmpId) continue;
-      const priorId = verifiedIds.get(uid);
-      if (priorId && priorId !== directoryEntry.gyEmpId) {
-        unavailable(
-          `Conflicting Kronos internal IDs for employee ${uid}.`,
-          "KRONOS_EMPLOYEE_ID_CONFLICT",
-        );
-      }
-      if (!priorId) verifiedIds.set(uid, directoryEntry.gyEmpId);
-    }
-  }
-
-  // Only employees verified under the selected Kronos account are schedule
-  // candidates. This prevents stale ledger rows or another Kronos account from
-  // being classified as US Visa absenteeism.
-  const matchedEmployeeCodes = employeeCodes.filter((uid) => verifiedIds.has(uid));
-  const scheduleResults = await mapWithConcurrency(
-    matchedEmployeeCodes,
-    SCHEDULE_CONCURRENCY,
-    async (uid) => {
-      const gyEmpId = verifiedIds.get(uid);
-      const result = await fetchEmployeeSchedulePages(uid, from, to, { forceRefresh });
-      return { uid, gyEmpId, ...result };
-    },
-  );
-
   const current = nowInManila();
   const groupedSchedules = new Map();
   for (const entry of scheduleResults) {
     for (const schedule of entry.rows) {
       const scheduleId = positiveInteger(schedule.gy_emp_id);
-      if (scheduleId && scheduleId !== entry.gyEmpId) {
+      if (scheduleId && entry.gyEmpId && scheduleId !== entry.gyEmpId) {
         unavailable(
           `Kronos schedule employee ID mismatch for ${entry.uid}.`,
           "KRONOS_SCHEDULE_EMPLOYEE_MISMATCH",
@@ -628,6 +533,7 @@ export async function getKronosAbsenteeismEmployeeDayRows({
       error.stage ??= "OVERNIGHT_BOUNDARY_ATTENDANCE_FETCH";
       throw error;
     }
+    assertDirectoryAttendanceIdentity(boundaryAttendance.rows, employeeDirectory.byUid);
   }
 
   const intervalIndex = indexTrackerIntervals([
@@ -661,6 +567,8 @@ export async function getKronosAbsenteeismEmployeeDayRows({
     presentRows,
     requestedEmployeeCount: employeeCodes.length,
     matchedEmployeeCount: matchedEmployeeCodes.length,
+    unmatchedRosterEmployeeCount,
+    fetchTimingMs,
     accountCount: 1,
     remoteRequestCount:
       attendance.requestCount +
@@ -668,6 +576,8 @@ export async function getKronosAbsenteeismEmployeeDayRows({
       (boundaryAttendance?.requestCount || 0) +
       scheduleResults.reduce((sum, entry) => sum + entry.requestCount, 0),
     accountEmployeeSourceRows: employeeDirectory.sourceRows,
+    directoryAccount20MatchedRows: employeeDirectory.accountMatchedRows,
+    directoryPaginationMode: employeeDirectory.paginationMode,
     trackerSourceRows: attendance.sourceRows + (boundaryAttendance?.sourceRows || 0),
     trackerAccountMatchedRows:
       attendance.accountMatchedRows + (boundaryAttendance?.accountMatchedRows || 0),
@@ -680,7 +590,7 @@ export async function getKronosAbsenteeismEmployeeDayRows({
       schedules: OPTIMIZED_SCHEDULE_ENDPOINT,
       employeeResource: null,
     },
-    fetchMode: "OPTIMIZED_ATTENDANCE_DIRECTORY_PLUS_EMPLOYEE_CODE_SCHEDULES",
+    fetchMode: "DIRECTORY_FIRST_CONCURRENT_ATTENDANCE_AND_EMPLOYEE_SCHEDULES",
     storageMode: "LIVE_ONLY",
     presenceBasis: "KRONOS_TRACKER_LOGIN",
     accountFilter: accountName,

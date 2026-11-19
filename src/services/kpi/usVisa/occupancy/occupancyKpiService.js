@@ -223,6 +223,7 @@ export function buildWfmUtilizationKpiDashboard({
   dateTo = null,
   referenceDate = null,
   taskOrder = null,
+  bucketCount = 6,
 } = {}) {
   const normalizedPeriod = normalizeCallKpiPeriod(period);
   const summary = emptyUtilizationAccumulator();
@@ -233,6 +234,7 @@ export function buildWfmUtilizationKpiDashboard({
     dateFrom,
     referenceDate,
     createAccumulator: emptyUtilizationAccumulator,
+    bucketCount,
   });
 
   for (const row of rows) {
