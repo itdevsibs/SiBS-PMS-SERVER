@@ -116,6 +116,10 @@ export async function getQualityAuditKpiRows({
         q.country_code,
         q.lob,
         q.audit_type,
+        q.phase,
+        q.call_case_id,
+        q.audit_week,
+        q.source_audit_week,
         q.sibs_id AS employee_uid,
         q.agent_name_raw
       FROM ${pmsTables.usVisaQualityAudits} q
@@ -135,6 +139,9 @@ export async function getQualityAuditKpiRows({
     countryCode: row.country_code,
     lob: row.lob,
     auditType: row.audit_type,
+    phase: row.phase,
+    callCaseId: row.call_case_id,
+    auditWeek: row.audit_week || row.source_audit_week || null,
     employeeUid: row.employee_uid,
     agentNameRaw: row.agent_name_raw,
   }));
@@ -155,4 +162,56 @@ export async function listQualityAuditCountries({ taskOrder = null } = {}) {
     values,
   );
   return rows.map((row) => ({ countryRaw: row.country_raw, countryCode: row.country_code }));
+}
+
+export async function getQualityAuditRawRowById(auditId) {
+  const id = Number(auditId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+
+  const [rows] = await pmsDb.query(
+    `
+      SELECT
+        q.id,
+        q.raw_import_row_id,
+        q.agent_name_raw,
+        q.sibs_id AS employee_uid,
+        q.call_case_id,
+        q.audit_date,
+        q.total_audit_score,
+        rr.row_json
+      FROM ${pmsTables.usVisaQualityAudits} q
+      LEFT JOIN ${pmsTables.usVisaRawImportRows} rr
+        ON rr.id = q.raw_import_row_id
+      WHERE q.id = ?
+      LIMIT 1
+    `,
+    [id],
+  );
+
+  const row = rows[0];
+  if (!row) return null;
+
+  let parsedRowJson = null;
+  if (row.row_json != null) {
+    if (typeof row.row_json === "string") {
+      try {
+        parsedRowJson = JSON.parse(row.row_json);
+      } catch {
+        parsedRowJson = null;
+      }
+    } else if (typeof row.row_json === "object") {
+      parsedRowJson = row.row_json;
+    }
+  }
+
+  return {
+    id: row.id,
+    rawImportRowId: row.raw_import_row_id,
+    agentName: row.agent_name_raw,
+    sibsId: row.employee_uid,
+    callCaseId: row.call_case_id,
+    auditDate: row.audit_date,
+    totalAuditScore: row.total_audit_score != null ? Number(row.total_audit_score) : null,
+    rowJson: parsedRowJson,
+  };
 }

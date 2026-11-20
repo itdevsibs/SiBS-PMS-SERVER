@@ -17,6 +17,7 @@ import {
 import {
   buildEmailKpiAvailableCountries,
   buildWfmEmailKpiDashboard,
+  buildWfmEmailReportRows,
   getEmailKpiHolidayDateRange,
   listEmailKpiCountryCodes,
 } from "./emailKpiService.js";
@@ -190,5 +191,32 @@ export async function getWfmEmailKpiDashboard(query = {}) {
       unmappedRows: resolvedRows.diagnostics.unmapped,
       ambiguousRows: resolvedRows.diagnostics.ambiguous,
     },
+  };
+}
+
+export async function getWfmEmailReport(query = {}) {
+  const dateFrom = normalizeDate(query.dateFrom || query.date);
+  const dateTo = normalizeDate(query.dateTo || query.date || dateFrom);
+  if (dateFrom && dateTo && dateFrom > dateTo) throwInvalidDateRange();
+
+  const taskOrder = normalizeEmailTaskOrders(query.taskOrder);
+  const country = String(query.country || "").trim() || null;
+  const schedule = await loadEmailReportingSchedule(query.taskOrderVersionId || "current");
+
+  const sourceRows = await getEmailKpiRows({ dateFrom, dateTo });
+  const resolvedRows = resolveEmailReportRows(sourceRows, schedule, taskOrder);
+  const rows = resolvedRows.rows;
+  const holidayResult = await loadHolidayRows(rows, dateFrom, dateTo);
+
+  const reportRows = buildWfmEmailReportRows({
+    rows,
+    holidays: holidayResult.holidays,
+    country,
+  });
+
+  return {
+    rows: reportRows,
+    dateFrom,
+    dateTo,
   };
 }

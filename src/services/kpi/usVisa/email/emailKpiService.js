@@ -284,3 +284,83 @@ export function buildEmailKpiAvailableCountries(ownerValues = []) {
   }
   return [...byKey.values()].sort((left, right) => left.label.localeCompare(right.label));
 }
+
+export function buildWfmEmailReportRows({
+  rows = [],
+  holidays = [],
+  country = null,
+  targets = WFM_EMAIL_KPI_TARGETS,
+} = {}) {
+  const countryFilter = normalizeEmailCountryFilter(country);
+  const holidayMap = buildHolidayMap(holidays);
+  const seenCaseIds = new Set();
+  const groupMap = new Map();
+
+  for (const row of rows) {
+    const caseId = String(row.sourceCaseId || "").trim().toLowerCase();
+    if (!caseId || seenCaseIds.has(caseId)) continue;
+    seenCaseIds.add(caseId);
+
+    const countryInfo = normalizeEmailCountry(row.countryRegion) || normalizeEmailCountryFromOwner(row.ownerRaw);
+    if (!emailCountryMatchesFilter(countryInfo, countryFilter)) continue;
+
+    const createdDate = getLocalCreatedDate(row);
+    if (!createdDate) continue;
+
+    const countryName = countryInfo?.countryName || String(row.countryRegion || "Unassigned").trim() || "Unassigned";
+    const ownerName = String(row.ownerRaw || "—").trim() || "—";
+    const groupKey = `${countryName.toLowerCase()}::${ownerName.toLowerCase()}`;
+
+    const acc = groupMap.get(groupKey) || {
+      country: countryName,
+      owner: ownerName,
+      emailVolume: 0,
+      handled: 0,
+      handledWithinSla: 0,
+    };
+
+    acc.emailVolume += 1;
+
+    if (isHandledEmail(row)) {
+      acc.handled += 1;
+      const slaConfig = getTaskOrderSlaConfig(
+        row.taskOrderId,
+        targets.slaBusinessDays,
+      );
+      const holidayDates = countryInfo?.countryCode
+        ? holidayMap.get(countryInfo.countryCode) || new Set()
+        : new Set();
+      const businessMinutes = calculateEmailBusinessMinutes({
+        start: row.createdOn,
+        end: row.resolutionDate,
+        holidayDates,
+      });
+      const slaTargetMinutes = getEmailSlaTargetMinutes(slaConfig.businessDays);
+      if (businessMinutes !== null && businessMinutes <= slaTargetMinutes) {
+        acc.handledWithinSla += 1;
+      }
+    }
+
+    groupMap.set(groupKey, acc);
+  }
+
+  return [...groupMap.values()]
+    .map((acc) => {
+      const unresolved = Math.max(0, acc.emailVolume - acc.handled);
+      const outsideSla = Math.max(0, acc.handled - acc.handledWithinSla);
+      const errPct = acc.emailVolume > 0 ? (acc.handled / acc.emailVolume) * 100 : 0;
+      const serviceLevelPct = acc.handled > 0 ? (acc.handledWithinSla / acc.handled) * 100 : 0;
+      return {
+        country: acc.country,
+        owner: acc.owner,
+        emailVolume: round(acc.emailVolume, 0),
+        resolved: round(acc.handled, 0),
+        unresolved: round(unresolved, 0),
+        resolvedWithinSla: round(acc.handledWithinSla, 0),
+        resolvedOutsideSla: round(outsideSla, 0),
+        errPct: round(errPct),
+        serviceLevelPct: round(serviceLevelPct),
+      };
+    })
+    .sort((a, b) => a.country.localeCompare(b.country) || a.owner.localeCompare(b.owner));
+}
