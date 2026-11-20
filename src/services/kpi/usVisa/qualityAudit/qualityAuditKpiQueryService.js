@@ -114,3 +114,46 @@ export async function getWfmQualityAuditKpiDashboard(query = {}) {
     availableDateRange: bounds,
   };
 }
+
+export async function getWfmQualityAuditReport(query = {}) {
+  const dateFrom = normalizeDate(query.dateFrom || query.date);
+  const dateTo = normalizeDate(query.dateTo || query.date || dateFrom);
+  if (dateFrom && dateTo && dateFrom > dateTo) throwInvalidDateRange();
+
+  const taskOrder = String(query.taskOrder || "").trim() || null;
+  const country = String(query.country || "").trim() || null;
+  const lob = String(query.lob || "").trim() || null;
+  const auditType = String(query.auditType || "").trim() || null;
+
+  const rows = await getQualityAuditKpiRows({
+    dateFrom,
+    dateTo,
+    taskOrder,
+    country,
+    lob,
+    auditType,
+  });
+
+  const reportRows = rows.map((row) => ({
+    id: row.id,
+    agentName: String(row.agentNameRaw || "—").trim() || "—",
+    sibsId: String(row.employeeUid || "—").trim() || "—",
+    phase: String(row.phase || "—").trim() || "—",
+    lob: String(row.lob || "—").trim() || "—",
+    callCaseId: String(row.callCaseId || "—").trim() || "—",
+    totalAuditScore: Number.isFinite(Number(row.totalAuditScore))
+      ? Math.round(Number(row.totalAuditScore) * 100) / 100
+      : 0,
+    auditWeek: String(row.auditWeek || "—").trim() || "—",
+    auditDate: row.auditDate ? String(row.auditDate).slice(0, 10) : "—",
+    country: String(row.countryRaw || row.countryCode || "Unassigned").trim() || "Unassigned",
+    auditType: String(row.auditType || "—").trim() || "—",
+    taskOrderId: String(row.taskOrderId || "—").trim() || "—",
+  }));
+
+  return {
+    rows: reportRows,
+    dateFrom,
+    dateTo,
+  };
+}

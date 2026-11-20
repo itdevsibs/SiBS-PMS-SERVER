@@ -7,9 +7,13 @@ import {
   getWfmCallsKpi,
   getWfmSkills,
 } from "../controllers/callKpiController.js";
-import { getWfmEmailsKpi } from "../controllers/emailKpiController.js";
+import { getWfmEmailsKpi, getWfmEmailsReport } from "../controllers/emailKpiController.js";
 import { getChatReport } from "../controllers/chatKpiController.js";
-import { getWfmQualityAuditKpi } from "../controllers/qualityAuditKpiController.js";
+import {
+  getWfmQualityAuditKpi,
+  getWfmQualityAuditReportHandler,
+  getWfmQualityAuditRowDetail,
+} from "../controllers/qualityAuditKpiController.js";
 import {
   getWfmAbsenteeismKpi,
   getWfmOccupancyKpi,
@@ -62,6 +66,12 @@ router.get(
 );
 
 router.get(
+  "/kpis/emails-report",
+  ...requirePerformanceViewer,
+  getWfmEmailsReport,
+);
+
+router.get(
   "/kpis/emails",
   ...requirePerformanceViewer,
   getWfmEmailsKpi,
@@ -71,6 +81,18 @@ router.get(
   "/kpis/chat-report",
   ...requirePerformanceViewer,
   getChatReport,
+);
+
+router.get(
+  "/kpis/quality-audit-report",
+  ...requirePerformanceViewer,
+  getWfmQualityAuditReportHandler,
+);
+
+router.get(
+  "/kpis/quality-audit-report/:id",
+  ...requirePerformanceViewer,
+  getWfmQualityAuditRowDetail,
 );
 
 router.get(
