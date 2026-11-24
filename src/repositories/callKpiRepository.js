@@ -1,4 +1,6 @@
+import { callRate, formatCallRate } from "../services/kpi/usVisa/calls/callRate.js";
 import { pmsDb, pmsTables } from "../config/db.js";
+import { buildSkillCategoryFilter } from "../services/kpi/usVisa/skillCategorySql.js";
 import { expandSkillStatisticsCountryAliases } from "../services/kpi/usVisa/calls/skillStatisticsTaskOrderScope.js";
 
 const KPI_BATCH_STATUSES = ["COMPLETED", "COMPLETED_WITH_ERRORS"];
@@ -114,24 +116,13 @@ function appendSkillFilter({ conditions, values, skill, reportType }) {
       clauses.push(`(LOWER(TRIM(c.country_region)) = 'philippines'
         OR ((c.country_region IS NULL OR TRIM(c.country_region) = '')
           AND LOWER(TRIM(c.skill_name_raw)) REGEXP '(^|[^a-z])philippines([^a-z]|$)'))`);
-    } else if (key === "englishall" || key === "english" || key === "allenglish") {
-      clauses.push("(LOWER(c.skill_name_raw) LIKE ? AND LOWER(c.skill_name_raw) NOT REGEXP 'non[[:space:]_-]*english')");
-      values.push("%english%");
-    } else if (key === "englishniv") {
-      clauses.push("(LOWER(c.skill_name_raw) LIKE ? AND LOWER(c.skill_name_raw) NOT REGEXP 'non[[:space:]_-]*english' AND UPPER(c.skill_name_raw) LIKE ?)");
-      values.push("%english%", "%NIV%");
-    } else if (key === "englishiv") {
-      clauses.push("(LOWER(c.skill_name_raw) LIKE ? AND LOWER(c.skill_name_raw) NOT REGEXP 'non[[:space:]_-]*english' AND UPPER(c.skill_name_raw) REGEXP '(^|[^A-Z])IV($|[^A-Z])' AND UPPER(c.skill_name_raw) NOT LIKE ?)");
-      values.push("%english%", "%NIV%");
-    } else if (key === "englishacs") {
-      clauses.push("(LOWER(c.skill_name_raw) LIKE ? AND LOWER(c.skill_name_raw) NOT REGEXP 'non[[:space:]_-]*english' AND UPPER(c.skill_name_raw) LIKE ?)");
-      values.push("%english%", "%ACS%");
-    } else if (key === "nonenglish") {
-      clauses.push("LOWER(c.skill_name_raw) NOT LIKE ?");
-      values.push("%english%");
-    } else if (key === "nonenglishiv") {
-      clauses.push("(LOWER(c.skill_name_raw) NOT LIKE ? AND UPPER(c.skill_name_raw) REGEXP '(^|[^A-Z])IV($|[^A-Z])' AND UPPER(c.skill_name_raw) NOT LIKE ?)");
-      values.push("%english%", "%NIV%");
+      continue;
+    }
+
+    const categoryFilter = buildSkillCategoryFilter("c.skill_name_raw", item);
+    if (categoryFilter) {
+      clauses.push(categoryFilter.sql);
+      values.push(...categoryFilter.values);
     } else {
       clauses.push("LOWER(c.skill_name_raw) LIKE ?");
       values.push(`%${item.toLowerCase()}%`);
@@ -276,7 +267,8 @@ export async function getDailyCallKpiRows({
         DATE_FORMAT(c.production_date, '%Y-%m-%d') AS production_date,
         SUM(CASE WHEN c.is_answered = 1 OR c.is_abandoned = 1 THEN 1 ELSE 0 END) AS calls_offered,
         SUM(CASE WHEN c.is_answered = 1 THEN 1 ELSE 0 END) AS calls_handled,
-        SUM(CASE WHEN c.is_answered = 1 AND c.is_within_sla = 1 THEN 1 ELSE 0 END) AS handled_within_slt,
+        CASE WHEN SUM(CASE WHEN c.is_answered = 1 AND c.is_within_sla IS NULL THEN 1 ELSE 0 END) > 0 THEN NULL
+          ELSE SUM(CASE WHEN c.is_answered = 1 AND c.is_within_sla = 1 THEN 1 ELSE 0 END) END AS handled_within_slt,
         SUM(CASE WHEN c.is_answered = 1 THEN COALESCE(c.queue_seconds, 0) ELSE 0 END) AS queue_seconds,
         0 AS handle_seconds_numerator,
         0 AS handle_seconds_denominator
@@ -292,7 +284,7 @@ export async function getDailyCallKpiRows({
     productionDate: row.production_date,
     callsOffered: Number(row.calls_offered || 0),
     callsHandled: Number(row.calls_handled || 0),
-    handledWithinSlt: Number(row.handled_within_slt || 0),
+    handledWithinSlt: row.handled_within_slt == null ? null : Number(row.handled_within_slt),
     queueSeconds: Number(row.queue_seconds || 0),
     // AHT is intentionally not derived from Call Report EOD. It will be
     // supplied by the Documented Calls phase so the existing KPI is not
@@ -412,7 +404,8 @@ export async function getCallsReportData({
         SUM(CASE WHEN c.is_answered = 1 THEN 1 ELSE 0 END) AS calls_answered,
         SUM(CASE WHEN c.is_abandoned = 1 THEN 1 ELSE 0 END) AS calls_abandoned,
         SUM(CASE WHEN c.is_abandoned = 1 AND COALESCE(c.queue_seconds, 0) > 60 THEN 1 ELSE 0 END) AS calls_abandoned_after_sl,
-        SUM(CASE WHEN c.is_answered = 1 AND c.is_within_sla = 1 THEN 1 ELSE 0 END) AS calls_answered_within_sl
+        CASE WHEN SUM(CASE WHEN c.is_answered = 1 AND c.is_within_sla IS NULL THEN 1 ELSE 0 END) > 0 THEN NULL
+          ELSE SUM(CASE WHEN c.is_answered = 1 AND c.is_within_sla = 1 THEN 1 ELSE 0 END) END AS calls_answered_within_sl
       ${getCanonicalJoinSql()}
       WHERE ${conditions.join("\n        AND ")}
       GROUP BY c.skill_name_raw, c.country_region
@@ -443,17 +436,14 @@ export async function getCallsReportData({
     item.callsAnswered += Number(row.calls_answered || 0);
     item.callsAbandoned += Number(row.calls_abandoned || 0);
     item.callsAbandonedAfterSl += Number(row.calls_abandoned_after_sl || 0);
-    item.callsAnsweredWithinSl += Number(row.calls_answered_within_sl || 0);
+    item.callsAnsweredWithinSl = item.callsAnsweredWithinSl === null || row.calls_answered_within_sl == null
+      ? null : item.callsAnsweredWithinSl + Number(row.calls_answered_within_sl);
   }
 
   return [...grouped.values()]
     .map((item) => {
-      const abandonedRate = item.callsReceived > 0
-        ? (item.callsAbandoned / item.callsReceived) * 100
-        : 0;
-      const serviceLevel = item.callsAnswered > 0
-        ? (item.callsAnsweredWithinSl / item.callsAnswered) * 100
-        : 0;
+      const abandonedRate = callRate(item.callsAbandoned, item.callsReceived);
+      const serviceLevel = callRate(item.callsAnsweredWithinSl, item.callsAnswered);
 
       return {
         country: item.country,
@@ -467,9 +457,9 @@ export async function getCallsReportData({
         // Documented Calls will become the AHT source in the next phase.
         ahtSeconds: 0,
         aht: "--",
-        abandonedRate: `${abandonedRate.toFixed(2)}%`,
+        abandonedRate: formatCallRate(abandonedRate),
         abandonedRateNum: abandonedRate,
-        sl: `${serviceLevel.toFixed(2)}%`,
+        sl: formatCallRate(serviceLevel),
         slNum: serviceLevel,
       };
     })

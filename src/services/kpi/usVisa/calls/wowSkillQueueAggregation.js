@@ -6,11 +6,11 @@ import {
   parseCallKpiDateOnly,
 } from './callKpiService.js';
 
-const present = (value) => value !== null && value !== undefined && Number.isFinite(Number(value));
+import { callRate, completeCallSum } from "./callRate.js";
 const round = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
 const sum = (rows, property) => rows.reduce((acc, row) => acc + Number(row[property] || 0), 0);
-const completeSum = (rows, property) => rows.length > 0 && rows.every((row) => present(row[property]))
-  ? rows.reduce((acc, row) => acc + Number(row[property]), 0) : null;
+const completeSum = completeCallSum;
+const roundRate = value => value === null ? null : round(value);
 
 function missingBucketKeys(missingSkillGroups = [], period) {
   const result = new Set();
@@ -64,8 +64,8 @@ export function buildWoWSkillQueueDashboard({
       callsHandled: handled,
       callsAbandoned: abandoned,
       handledWithinSla: within,
-      answerRatePct: offered > 0 ? round(handled / offered * 100) : null,
-      serviceLevelPct: within !== null && handled > 0 ? round(within / handled * 100) : null,
+      answerRatePct: roundRate(callRate(handled, offered)),
+      serviceLevelPct: roundRate(callRate(within, handled)),
       totalQueueSeconds: queueSeconds,
       asaSeconds: queueSeconds !== null && denominator > 0 ? round(queueSeconds / denominator) : null,
       ahtSeconds: 0, ahtCalls: 0, // Overridden ONLY by Documented Calls.

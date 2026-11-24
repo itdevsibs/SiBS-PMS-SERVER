@@ -1,5 +1,6 @@
 // Aggregates Agent Level call KPI inputs from canonical US Visa interactions.
 import { pmsDb, pmsTables } from "../../../config/db.js";
+import { buildSkillCategoryFilter } from "../../../services/kpi/usVisa/skillCategorySql.js";
 import {
   buildAgentHandleAvailableSql,
   buildAgentHandleSecondsSql,
@@ -81,30 +82,10 @@ function appendSkillFilter({ conditions, values, skill, skillNames }) {
   const clauseValues = [];
 
   for (const item of targetSkills) {
-    const key = String(item).toLowerCase().replace(/[\s_-]+/g, "");
-    if (key === "englishall" || key === "english" || key === "allenglish") {
-      clauses.push("(a.skill_name_raw LIKE ?)");
-      clauseValues.push("%English%");
-      continue;
-    } else if (key === "englishniv") {
-      clauses.push("(a.skill_name_raw LIKE ? AND a.skill_name_raw LIKE ?)");
-      clauseValues.push("%English%", "%NIV%");
-      continue;
-    } else if (key === "englishiv") {
-      clauses.push("(a.skill_name_raw LIKE ? AND (a.skill_name_raw REGEXP '(^|[^A-Za-z])IV($|[^A-Za-z])') AND a.skill_name_raw NOT LIKE ?)");
-      clauseValues.push("%English%", "%NIV%");
-      continue;
-    } else if (key === "englishacs") {
-      clauses.push("(a.skill_name_raw LIKE ? AND a.skill_name_raw LIKE ?)");
-      clauseValues.push("%English%", "%ACS%");
-      continue;
-    } else if (key === "nonenglish") {
-      clauses.push("(a.skill_name_raw NOT LIKE ?)");
-      clauseValues.push("%English%");
-      continue;
-    } else if (key === "nonenglishiv") {
-      clauses.push("(a.skill_name_raw NOT LIKE ? AND (a.skill_name_raw REGEXP '(^|[^A-Za-z])IV($|[^A-Za-z])') AND a.skill_name_raw NOT LIKE ?)");
-      clauseValues.push("%English%", "%NIV%");
+    const categoryFilter = buildSkillCategoryFilter("a.skill_name_raw", item);
+    if (categoryFilter) {
+      clauses.push(categoryFilter.sql);
+      clauseValues.push(...categoryFilter.values);
       continue;
     }
 

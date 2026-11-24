@@ -1,6 +1,7 @@
 // Standalone Calls Report ONLY: Skill Statistics is the exclusive source.
 // No Calls EOD counts, no Documented Calls AHT, and no v5 schema dependency.
 // Original workbook metrics live once in us_visa_raw_import_rows.row_json.
+import { callRate, formatCallRate } from "../../../services/kpi/usVisa/calls/callRate.js";
 import { pmsDb, pmsTables } from "../../../config/db.js";
 import { buildBaseFilters, parseSkillCountryAndLanguage } from "../../callKpiRepository.js";
 import { attachWeightedAhtToSelectedGrains, skillStatsGroupKey,
@@ -188,9 +189,6 @@ function nullableSum(rows, key) {
     : null;
 }
 
-function toPercent(numerator, denominator) {
-  return denominator > 0 ? `${((numerator / denominator) * 100).toFixed(2)}%` : "0.00%";
-}
 
 export function summarizeSkillStatisticsCallsReport(selected = []) {
   const byDisplaySkill = new Map();
@@ -215,10 +213,8 @@ export function summarizeSkillStatisticsCallsReport(selected = []) {
     const ahtHandleSecondsNumerator = validAht ? rows.reduce((sum,r) => sum + Number(r.ahtHandleSecondsNumerator || 0),0) : null;
     const ahtSeconds = ahtHandledCalls > 0 ? ahtHandleSecondsNumerator / ahtHandledCalls : null;
     const callsAnsweredWithinSl = nullableSum(rows, "handledWithinSlt");
-    const abandonedRateNum = callsAbandoned === null ? null :
-      callsReceived > 0 ? callsAbandoned / callsReceived * 100 : 0;
-    const slNum = callsAnsweredWithinSl === null ? null :
-      callsAnswered > 0 ? callsAnsweredWithinSl / callsAnswered * 100 : 0;
+    const abandonedRateNum = callRate(callsAbandoned, callsReceived);
+    const slNum = callRate(callsAnsweredWithinSl, callsAnswered);
     return {
       country, language, skill,
       callsReceived, callsAnswered, callsAbandoned,
@@ -227,9 +223,9 @@ export function summarizeSkillStatisticsCallsReport(selected = []) {
       ahtHandledCalls, ahtHandleSecondsNumerator,
       ahtSource: ahtSeconds === null ? "MISSING_SKILL_STATISTICS_AHT" : "SKILL_STATISTICS", 
       abandonedAfterSltSource: callsAbandonedAfterSl === null ? "UNAVAILABLE_SKILL_STATISTICS" : "SKILL_STATISTICS_HERODASH",
-      abandonedRate: abandonedRateNum === null ? "--" : toPercent(callsAbandoned, callsReceived),
+      abandonedRate: formatCallRate(abandonedRateNum),
       abandonedRateNum,
-      sl: slNum === null ? "--" : toPercent(callsAnsweredWithinSl, callsAnswered),
+      sl: formatCallRate(slNum),
       slNum,
       metricSource: "SKILL_STATISTICS",
     };

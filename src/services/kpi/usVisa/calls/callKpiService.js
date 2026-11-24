@@ -1,3 +1,4 @@
+import { callCount, callRate } from "./callRate.js";
 import { calculateAverageHandleSeconds } from "./ahtCalculationService.js";
 
 const GRAIN_PREFERENCE = [
@@ -145,6 +146,8 @@ function emptyAccumulator(bucket = {}) {
     callsOffered: 0,
     callsHandled: 0,
     handledWithinSla: 0,
+    withinSltAvailable: true,
+    rowCount: 0,
     totalQueueSeconds: 0,
     handleSecondsNumerator: 0,
     handleSecondsDenominator: 0,
@@ -207,7 +210,10 @@ export function seedCallKpiReferencePeriodBuckets(
 function addRow(target, row = {}) {
   target.callsOffered += toFiniteNumber(row.callsOffered);
   target.callsHandled += toFiniteNumber(row.callsHandled);
-  target.handledWithinSla += toFiniteNumber(row.handledWithinSlt ?? row.handledWithinSla);
+  target.rowCount += 1;
+  const within = callCount(row.handledWithinSlt ?? row.handledWithinSla);
+  if (within === null) target.withinSltAvailable = false;
+  else target.handledWithinSla += within;
   target.totalQueueSeconds += toFiniteNumber(row.queueSeconds ?? row.totalQueueSeconds);
   target.handleSecondsNumerator += toFiniteNumber(row.handleSecondsNumerator);
   target.handleSecondsDenominator += toFiniteNumber(row.handleSecondsDenominator);
@@ -215,12 +221,9 @@ function addRow(target, row = {}) {
 }
 
 function finalizeAccumulator(accumulator) {
-  const answerRatePct = accumulator.callsOffered > 0
-    ? (accumulator.callsHandled / accumulator.callsOffered) * 100
-    : 0;
-  const serviceLevelPct = accumulator.callsHandled > 0
-    ? (accumulator.handledWithinSla / accumulator.callsHandled) * 100
-    : 0;
+  const within = accumulator.rowCount && accumulator.withinSltAvailable ? accumulator.handledWithinSla : null;
+  const answerRatePct = callRate(accumulator.callsHandled, accumulator.callsOffered);
+  const serviceLevelPct = callRate(within, accumulator.callsHandled);
   const ahtSeconds = calculateAverageHandleSeconds({
     totalHandleSeconds: accumulator.handleSecondsNumerator,
     handledCalls: accumulator.handleSecondsDenominator,
@@ -237,9 +240,9 @@ function finalizeAccumulator(accumulator) {
   return {
     callsOffered: round(accumulator.callsOffered, 0),
     callsHandled: round(accumulator.callsHandled, 0),
-    handledWithinSla: round(accumulator.handledWithinSla, 0),
-    answerRatePct: round(answerRatePct),
-    serviceLevelPct: round(serviceLevelPct),
+    handledWithinSla: within === null ? null : round(within, 0),
+    answerRatePct: answerRatePct === null ? null : round(answerRatePct),
+    serviceLevelPct: serviceLevelPct === null ? null : round(serviceLevelPct),
     ahtSeconds: round(ahtSeconds),
     ahtCalls: round(accumulator.handleSecondsDenominator, 0),
     ahtCoveragePct: accumulator.callsHandled > 0

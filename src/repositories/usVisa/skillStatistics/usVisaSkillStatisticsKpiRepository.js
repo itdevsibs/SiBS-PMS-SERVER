@@ -1,4 +1,5 @@
 // Governed queue reporting. Individual Calls EOD records never contribute to these totals.
+import { callRate, formatCallRate } from "../../../services/kpi/usVisa/calls/callRate.js";
 import { pmsDb, pmsTables } from "../../../config/db.js";
 import { buildBaseFilters, parseSkillCountryAndLanguage } from "../../callKpiRepository.js";
 
@@ -167,9 +168,6 @@ export async function getDailySkillStatisticsKpiRows(options = {}) {
   };
 }
 
-function toPercent(numerator, denominator) {
-  return denominator > 0 ? `${((numerator / denominator) * 100).toFixed(2)}%` : "0.00%";
-}
 
 export function summarizeSkillStatisticsCallsReport(selected = []) {
   const byDisplaySkill = new Map();
@@ -186,18 +184,16 @@ export function summarizeSkillStatisticsCallsReport(selected = []) {
     const callsAbandoned = nullableSum(rows, "callsAbandoned");
     const callsAbandonedAfterSl = nullableSum(rows, "abandonedAfterSlt");
     const callsAnsweredWithinSl = nullableSum(rows, "handledWithinSlt");
-    const abandonedRateNum = callsAbandoned === null ? null :
-      callsReceived > 0 ? callsAbandoned / callsReceived * 100 : 0;
-    const slNum = callsAnsweredWithinSl === null ? null :
-      callsAnswered > 0 ? callsAnsweredWithinSl / callsAnswered * 100 : 0;
+    const abandonedRateNum = callRate(callsAbandoned, callsReceived);
+    const slNum = callRate(callsAnsweredWithinSl, callsAnswered);
     return {
       country, language, skill,
       callsReceived, callsAnswered, callsAbandoned,
       callsAbandonedAfterSl, callsAnsweredWithinSl,
       ahtSeconds: null, aht: "--", ahtSource: "NOT_AVAILABLE_BY_SKILL",
-      abandonedRate: abandonedRateNum === null ? "--" : toPercent(callsAbandoned, callsReceived),
+      abandonedRate: formatCallRate(abandonedRateNum),
       abandonedRateNum,
-      sl: slNum === null ? "--" : toPercent(callsAnsweredWithinSl, callsAnswered),
+      sl: formatCallRate(slNum),
       slNum,
       metricSource: "SKILL_STATISTICS",
     };

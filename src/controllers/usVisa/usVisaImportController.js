@@ -35,7 +35,10 @@ import {
   listImportErrorsByBatchId,
   getImportIssueSummaryByBatchId,
   getImportIssueSummariesByBatchIds,
+  listGroupedEmployeeMappingsByBatchId,
+  listEmployeeMappingSourceRowsByBatchId,
 } from "../../repositories/usVisa/imports/usVisaImportErrorRepository.js";
+import { decodeEmployeeMappingGroupKey } from "../../services/imports/usVisa/employeeMappingGroupKey.js";
 import { normalizeBatchIssueSummary, normalizeIssueCategory } from "../../services/imports/usVisa/importIssueClassification.js";
 import { clearUtilizationCache } from "../../services/cache/utilizationCacheService.js";
 import { clearAbsenteeismCache } from "../../services/cache/absenteeismCacheService.js";
@@ -507,11 +510,14 @@ export async function getUsVisaImportCalendarDay(req, res) {
   try {
     const filters = parseCalendarRequest(req.query, { requireDay: true });
     const result = await getCalendarDay(filters);
-    const ids = result.batches.map((batch) => batch.id);
-    const issues = await getImportIssueSummariesByBatchIds(ids);
-    // Reuse existing batch conversion for historical warning and mapping status.
-    const batches = result.batches.map((row) =>
-      pickBatchResponse(mapBatchRow(row), issues.get(Number(row.id))));
+    const mappedBatches = result.batches.map(mapBatchRow);
+    const issues = await getImportIssueSummariesByBatchIds(mappedBatches.map((batch) => batch.id));
+    const emailMetricsByBatch = await getEmailImportMetricsByBatchIds(
+      mappedBatches.filter((batch) => batch.importProfileCode === "US_VISA_EMAIL_RAW_DATA").map((batch) => batch.id),
+    );
+    // Match history and batch details, including email-specific validation warnings.
+    const batches = mappedBatches.map((batch) =>
+      pickBatchResponse(batch, issues.get(Number(batch.id)), emailMetricsByBatch.get(Number(batch.id))));
     return res.json({
       success: true, date: filters.day, dateMode: filters.dateMode, data: batches,
       pagination: { page: filters.page, limit: filters.limit, total: result.total,
@@ -916,6 +922,7 @@ export async function listUsVisaImportBatchErrors(req, res) {
     });
     const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
     const severity = typeof req.query.severity === "string" ? req.query.severity.trim() : "";
+    const mappingKind = req.query.mappingKind === "task-order" ? "task-order" : "all";
     let category;
     try { category = normalizeIssueCategory(req.query.category); } catch {
       return res.status(400).json({ success: false, code: "INVALID_ISSUE_CATEGORY", message: "Invalid issue category." });
@@ -923,9 +930,9 @@ export async function listUsVisaImportBatchErrors(req, res) {
 
     const [errors, total] = await Promise.all([
       listImportErrorsByBatchId(batch.id, { ...pagination, search, severity, category,
-        emailOnly: batch.importProfileCode === "US_VISA_EMAIL_RAW_DATA" }),
+        emailOnly: batch.importProfileCode === "US_VISA_EMAIL_RAW_DATA", mappingKind }),
       countImportErrorsByBatchId(batch.id, { search, severity, category,
-        emailOnly: batch.importProfileCode === "US_VISA_EMAIL_RAW_DATA" }),
+        emailOnly: batch.importProfileCode === "US_VISA_EMAIL_RAW_DATA", mappingKind }),
     ]);
     const totalPages = Math.ceil(total / pagination.limit) || 1;
 
@@ -953,6 +960,50 @@ export async function listUsVisaImportBatchErrors(req, res) {
       code: "IMPORT_ERRORS_ERROR",
       message: "Unable to fetch import errors.",
     });
+  }
+}
+
+// Batch-wide, employee-identity-based Employee Mapping summary. This is
+// intentionally separate from issue-event pagination and Task Order mapping.
+export async function listUsVisaBatchEmployeeMappings(req, res) {
+  try {
+    const batch = await getBatchById(req.params.batchId);
+    if (!batch) return res.status(404).json({ success: false, code: "IMPORT_BATCH_NOT_FOUND", message: "Import batch was not found." });
+    const { page, limit, offset } = getPagination(req.query, { limit: 25, maxLimit: 100 });
+    const search = typeof req.query.search === "string" ? req.query.search.trim().slice(0, 150) : "";
+    const grouped = await listGroupedEmployeeMappingsByBatchId(batch.id, { limit, offset, search });
+    return res.json({ success: true, data: grouped.data,
+      summary: { uniqueEmployees: grouped.total, affectedRows: grouped.affectedRows, ambiguousEmployees: grouped.ambiguousEmployees },
+      pagination: { page, limit, offset, search, total: grouped.total, totalPages: Math.ceil(grouped.total / limit) || 1 } });
+  } catch (error) {
+    console.error("GET /api/us-visa/imports/:batchId/employee-mapping error:", { message: error.message, code: error.code });
+    return res.status(500).json({ success: false, code: "EMPLOYEE_MAPPING_GROUPS_ERROR", message: "Unable to fetch employee mapping groups." });
+  }
+}
+
+export async function listUsVisaBatchEmployeeMappingRows(req, res) {
+  const identity = decodeEmployeeMappingGroupKey(req.params.groupKey);
+  if (!identity) return res.status(400).json({ success: false, code: "INVALID_EMPLOYEE_MAPPING_GROUP", message: "Invalid employee mapping group." });
+  try {
+    const batch = await getBatchById(req.params.batchId);
+    if (!batch) return res.status(404).json({ success: false, code: "IMPORT_BATCH_NOT_FOUND", message: "Import batch was not found." });
+    const { page, limit, offset } = getPagination(req.query, { limit: 25, maxLimit: 100 });
+    const search = typeof req.query.search === "string" ? req.query.search.trim().slice(0, 150) : "";
+    const rows = await listEmployeeMappingSourceRowsByBatchId(batch.id, identity, { limit, offset, search });
+    // An empty search result is valid; keep the existing missing-group
+    // response only when the employee group itself no longer exists.
+    if (!rows.total) {
+      const exists = search
+        ? (await listEmployeeMappingSourceRowsByBatchId(batch.id, identity, { limit: 1, offset: 0 })).total > 0
+        : false;
+      if (!exists) return res.status(404).json({ success: false, code: "EMPLOYEE_MAPPING_GROUP_NOT_FOUND", message: "Employee mapping group was not found in this batch." });
+    }
+    return res.json({ success: true,
+      data: rows.data.map((row) => ({ ...row, issues: row.issues.map(pickErrorResponse) })),
+      pagination: { page, limit, offset, search, total: rows.total, totalPages: Math.ceil(rows.total / limit) || 1 } });
+  } catch (error) {
+    console.error("GET /api/us-visa/imports/:batchId/employee-mapping/:groupKey/rows error:", { message: error.message, code: error.code });
+    return res.status(500).json({ success: false, code: "EMPLOYEE_MAPPING_ROWS_ERROR", message: "Unable to fetch affected employee mapping rows." });
   }
 }
 
