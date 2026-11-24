@@ -11,6 +11,8 @@ import {
   getUsVisaImportRawData,
   getUsVisaImportSummary,
   listUsVisaImportBatchErrors,
+  listUsVisaBatchEmployeeMappings,
+  listUsVisaBatchEmployeeMappingRows,
   listUsVisaImportHistory,
   uploadUsVisaImport,
 } from "../../controllers/usVisa/usVisaImportController.js";
@@ -108,6 +110,20 @@ router.get(
   "/imports/:batchId/errors",
   ...requireWfm,
   listUsVisaImportBatchErrors,
+  listUsVisaBatchEmployeeMappings,
+  listUsVisaBatchEmployeeMappingRows,
+);
+
+router.get(
+  "/imports/:batchId/employee-mapping",
+  ...requireWfm,
+  listUsVisaBatchEmployeeMappings,
+);
+
+router.get(
+  "/imports/:batchId/employee-mapping/:groupKey/rows",
+  ...requireWfm,
+  listUsVisaBatchEmployeeMappingRows,
 );
 
 router.get(

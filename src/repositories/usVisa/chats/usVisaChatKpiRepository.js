@@ -1,5 +1,6 @@
 // Queries canonical Chat Report (EOD) rows for WFM/WoW KPI reporting.
 import { pmsDb, pmsTables } from "../../../config/db.js";
+import { buildSkillCategoryFilter } from "../../../services/kpi/usVisa/skillCategorySql.js";
 import { expandSkillStatisticsCountryAliases } from "../../../services/kpi/usVisa/calls/skillStatisticsTaskOrderOwnership.js";
 import { getCountryOwnedReportScope } from "../../../services/kpi/usVisa/calls/countryOwnedReportScope.js";
 
@@ -54,26 +55,10 @@ function appendSkillFilter(conditions, values, skill) {
 
   const clauses = [];
   for (const item of skills) {
-    const key = item.toLowerCase().replace(/[\s_-]+/g, "");
-
-    if (key === "englishall" || key === "english" || key === "allenglish") {
-      clauses.push("LOWER(c.skill_name_raw) LIKE ?");
-      values.push("%english%");
-    } else if (key === "englishniv") {
-      clauses.push("(LOWER(c.skill_name_raw) LIKE ? AND UPPER(c.skill_name_raw) LIKE ?)");
-      values.push("%english%", "%NIV%");
-    } else if (key === "englishiv") {
-      clauses.push("(LOWER(c.skill_name_raw) LIKE ? AND UPPER(c.skill_name_raw) REGEXP '(^|[^A-Z])IV($|[^A-Z])' AND UPPER(c.skill_name_raw) NOT LIKE ?)");
-      values.push("%english%", "%NIV%");
-    } else if (key === "englishacs") {
-      clauses.push("(LOWER(c.skill_name_raw) LIKE ? AND UPPER(c.skill_name_raw) LIKE ?)");
-      values.push("%english%", "%ACS%");
-    } else if (key === "nonenglish") {
-      clauses.push("LOWER(c.skill_name_raw) NOT LIKE ?");
-      values.push("%english%");
-    } else if (key === "nonenglishiv") {
-      clauses.push("(LOWER(c.skill_name_raw) NOT LIKE ? AND UPPER(c.skill_name_raw) REGEXP '(^|[^A-Z])IV($|[^A-Z])' AND UPPER(c.skill_name_raw) NOT LIKE ?)");
-      values.push("%english%", "%NIV%");
+    const categoryFilter = buildSkillCategoryFilter("c.skill_name_raw", item);
+    if (categoryFilter) {
+      clauses.push(categoryFilter.sql);
+      values.push(...categoryFilter.values);
     } else {
       clauses.push("LOWER(c.skill_name_raw) LIKE ?");
       values.push(`%${item.toLowerCase()}%`);
