@@ -142,8 +142,12 @@ router.get("/ledger", async (req, res, next) => {
     const account = String(req.query.account || "").trim();
     const taskOrder = String(req.query.taskOrder || "").trim();
     const organizationalRole = String(req.query.organizationalRole || "").trim().toUpperCase();
+    const employmentStatus = String(req.query.employmentStatus || "").trim();
     if (organizationalRole && !["AGENT", "TEAM_LEADER", "MANAGER", "SENIOR_MANAGER", "NEEDS_REVIEW", "UNCLASSIFIED"].includes(organizationalRole)) {
       return res.status(400).json({ success: false, message: "Invalid organizational role filter." });
+    }
+    if (employmentStatus && !["Active", "Inactive", "Needs Verification"].includes(employmentStatus)) {
+      return res.status(400).json({ success: false, message: "Invalid employment status filter." });
     }
     const page = Math.max(Number(req.query.page) || 1, 1);
     const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 10000);
@@ -181,6 +185,16 @@ router.get("/ledger", async (req, res, next) => {
       }
     }
 
+    if (employmentStatus) {
+      if (employmentStatus === "Active") {
+        whereClauses.push("l.kronos_user_status = 0");
+      } else if (employmentStatus === "Inactive") {
+        whereClauses.push("l.kronos_user_status = 1");
+      } else if (employmentStatus === "Needs Verification") {
+        whereClauses.push("(l.kronos_user_status IS NULL OR l.kronos_user_status NOT IN (0, 1))");
+      }
+    }
+
     if (rawSearch) {
       const searchPattern = `%${rawSearch}%`;
       whereClauses.push(`(
@@ -206,7 +220,12 @@ router.get("/ledger", async (req, res, next) => {
     }
 
     let countQuery = `
-      SELECT COUNT(*) AS total 
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN l.kronos_user_status = 0 THEN 1 ELSE 0 END) AS active,
+        SUM(CASE WHEN l.kronos_user_status = 1 THEN 1 ELSE 0 END) AS inactive,
+        SUM(CASE WHEN l.kronos_user_status IS NULL OR l.kronos_user_status NOT IN (0, 1) THEN 1 ELSE 0 END) AS needsVerification,
+        SUM(CASE WHEN l.kronos_user_status IN (0, 1) THEN 1 ELSE 0 END) AS kronosVerified
       FROM ${pmsTables.usVisaEmployeeLedger} l
     `;
     if (whereClauses.length > 0) {
@@ -214,11 +233,19 @@ router.get("/ledger", async (req, res, next) => {
     }
     const [countRows] = await pmsDb.query(countQuery, queryParams);
     const totalRecords = Number(countRows[0]?.total || 0);
+    const summary = {
+      total: totalRecords,
+      active: Number(countRows[0]?.active || 0),
+      inactive: Number(countRows[0]?.inactive || 0),
+      needsVerification: Number(countRows[0]?.needsVerification || 0),
+      kronosVerified: Number(countRows[0]?.kronosVerified || 0),
+    };
 
     if (totalRecords === 0) {
       return res.json({
         success: true,
         total: 0,
+        summary,
         page,
         limit,
         totalPages: 0,
@@ -319,6 +346,7 @@ router.get("/ledger", async (req, res, next) => {
     return res.json({
       success: true,
       total: totalRecords,
+      summary,
       page,
       limit,
       totalPages: Math.ceil(totalRecords / limit),
