@@ -65,13 +65,25 @@ function buildCurrentOrDateClause(productionDate) {
   };
 }
 
-function scopeSelectSql() {
+// Verified hierarchy IDs from the latest Kronos sync describe the *current*
+// reporting line. They are not time-effective history. Never retroactively use
+// them for a date-scoped historical upload/report; keep the curated legacy
+// names for that scenario until dated hierarchy snapshots exist.
+function scopeSelectSql({ useVerifiedHierarchy = true } = {}) {
+  const verifiedTeamLeader = useVerifiedHierarchy
+    ? "NULLIF(TRIM(l.team_leader_sibs_id), '')"
+    : "NULL";
+  const verifiedManager = useVerifiedHierarchy
+    ? "NULLIF(TRIM(l.manager_sibs_id), '')"
+    : "NULL";
   return `
     SELECT
       l.id,
       l.sibs_id AS employee_uid,
       l.task_order AS task_order_raw,
-      (
+      COALESCE(
+        ${verifiedTeamLeader},
+        (
         SELECT tl.sibs_id
         FROM ${pmsTables.usVisaEmployeeLedger} tl
         WHERE NULLIF(TRIM(l.team_leader), '') IS NOT NULL
@@ -83,8 +95,11 @@ function scopeSelectSql() {
           CASE WHEN UPPER(TRIM(COALESCE(tl.status, ''))) = 'INACTIVE' THEN 1 ELSE 0 END,
           tl.id ASC
         LIMIT 1
+        )
       ) AS team_leader_uid,
-      (
+      COALESCE(
+        ${verifiedManager},
+        (
         SELECT om.sibs_id
         FROM ${pmsTables.usVisaEmployeeLedger} om
         WHERE NULLIF(TRIM(l.manager), '') IS NOT NULL
@@ -96,6 +111,7 @@ function scopeSelectSql() {
           CASE WHEN UPPER(TRIM(COALESCE(om.status, ''))) = 'INACTIVE' THEN 1 ELSE 0 END,
           om.id ASC
         LIMIT 1
+        )
       ) AS operations_manager_uid,
       COALESCE(l.us_visa_join_date, '1900-01-01') AS effective_from,
       l.us_visa_departure_date AS effective_to,
@@ -113,7 +129,7 @@ async function findLedgerScopeAssignments(
   const effectiveClause = buildCurrentOrDateClause(productionDate);
   const [rows] = await pmsDb.query(
     `
-      ${scopeSelectSql()}
+      ${scopeSelectSql({ useVerifiedHierarchy: !productionDate })}
       WHERE ${whereSql}
         AND ${effectiveClause.sql}
       ORDER BY l.us_visa_join_date DESC, l.id DESC
@@ -150,7 +166,7 @@ export async function findScopeAssignmentsByTeamLeaderUid(
     `
       SELECT scope_rows.*
       FROM (
-        ${scopeSelectSql()}
+        ${scopeSelectSql({ useVerifiedHierarchy: !productionDate })}
       ) scope_rows
       JOIN ${pmsTables.usVisaEmployeeLedger} l
         ON TRIM(l.sibs_id) = TRIM(scope_rows.employee_uid)
@@ -176,7 +192,7 @@ export async function findScopeAssignmentsByOperationsManagerUid(
     `
       SELECT scope_rows.*
       FROM (
-        ${scopeSelectSql()}
+        ${scopeSelectSql({ useVerifiedHierarchy: !productionDate })}
       ) scope_rows
       JOIN ${pmsTables.usVisaEmployeeLedger} l
         ON TRIM(l.sibs_id) = TRIM(scope_rows.employee_uid)
@@ -209,7 +225,7 @@ export async function findScopeAssignmentsByEmployeeUids(employeeUids = []) {
   const placeholders = normalizedUids.map(() => "?").join(", ");
   const [rows] = await pmsDb.query(
     `
-      ${scopeSelectSql()}
+      ${scopeSelectSql({ useVerifiedHierarchy: false })}
       WHERE TRIM(l.sibs_id) IN (${placeholders})
       ORDER BY l.sibs_id ASC, l.us_visa_join_date DESC, l.id DESC
     `,

@@ -1,3 +1,4 @@
+import { invalidateWfmImportedKpiCache } from "../../services/cache/wfmImportedKpiCacheService.js";
 import {
   listUsVisaKpiTargets, listUsVisaKpiTargetHistory, publishUsVisaKpiTarget,
 } from '../../services/kpi/usVisa/targets/usVisaKpiTargetService.js';
@@ -23,6 +24,7 @@ export async function saveUsVisaKpiTarget(req, res) {
   try {
     const actor = req.user?.username || req.user?.sibs_id || req.user?.employeeId;
     const result = await publishUsVisaKpiTarget({ ...req.body, actor });
+    invalidateWfmImportedKpiCache(["calls"]);
     return res.status(201).json({ success: true, data: result });
   } catch (error) { return handleError(res, error); }
 }

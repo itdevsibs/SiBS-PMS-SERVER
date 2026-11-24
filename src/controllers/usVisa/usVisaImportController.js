@@ -1,3 +1,4 @@
+import { invalidateWfmImportedKpiCache } from "../../services/cache/wfmImportedKpiCacheService.js";
 // Thin HTTP controller for US VISA raw import uploads.
 import fs from "fs/promises";
 
@@ -378,6 +379,8 @@ export async function uploadUsVisaImport(req, res) {
         batch: pickBatchResponse(result.batch),
       });
     }
+
+    invalidateWfmImportedKpiCache();
 
     completeImportProgress(progressToken, {
       message: "Import completed successfully.",
@@ -977,6 +980,7 @@ export async function deleteUsVisaImportBatch(req, res) {
     await deleteBatchById(batch.id, {
       isEmail: /EMAIL_RAW_DATA/i.test(String(batch.importProfileCode || "")),
     });
+    invalidateWfmImportedKpiCache();
 
     if (/AGENT_OCCUPANCY/i.test(String(batch.importProfileCode || ""))) {
       clearOccupancyCache();

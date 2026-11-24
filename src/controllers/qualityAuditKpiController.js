@@ -1,3 +1,4 @@
+import { readCachedWfmImportedKpi } from "../services/cache/wfmImportedKpiCacheService.js";
 import {
   getWfmQualityAuditKpiDashboard,
   getWfmQualityAuditReport,
@@ -12,7 +13,11 @@ const BAD_REQUEST_CODES = new Set([
 
 export async function getWfmQualityAuditKpi(req, res) {
   try {
-    const dashboard = await getWfmQualityAuditKpiDashboard(req.query);
+    const { data: dashboard, status: cacheStatus } = await readCachedWfmImportedKpi(
+      "qualityAudit", req.query, () => getWfmQualityAuditKpiDashboard(req.query),
+    );
+    res.setHeader("X-PMS-KPI-Cache", cacheStatus);
+    res.setHeader("Cache-Control", "private, no-store");
     return res.json({ success: true, data: dashboard });
   } catch (error) {
     if (BAD_REQUEST_CODES.has(error?.code)) {
