@@ -1,13 +1,14 @@
 import { pmsDb, pmsTables } from "../../../config/db.js";
 import { buildDocumentedAhtFilters } from "../../../services/kpi/usVisa/calls/documentedAhtFilterService.js";
+import { createDocumentedCallContentHash } from "../../../services/imports/usVisa/documentedCalls/documentedCallHashService.js";
 const cols = ["batch_id","raw_import_row_id","import_profile_id","source_sheet","source_row_number",
-  "crm_call_log_id","system_call_id","source_name","production_date","source_date_basis",
+  "crm_call_log_id","system_call_id","production_date","source_date_basis",
   "created_on","modified_on","created_by_raw","sibs_id","mapping_status","mapping_method",
   "owner_raw","country_region",
   "category","subcategory","call_duration_seconds","aht_eligible","row_content_hash"];
 
 const from = (row) => [row.batchId,row.rawImportRowId,row.importProfileId,row.sourceSheet,row.sourceRowNumber,
-  row.crm_call_log_id,row.system_call_id,row.source_name,row.production_date,row.source_date_basis,
+  row.crm_call_log_id,row.system_call_id,row.production_date,row.source_date_basis,
   row.created_on,row.modified_on,row.created_by_raw,row.sibs_id ?? null,
   row.mapping_status || "UNMATCHED",row.mapping_method ?? null,
   row.owner_raw,row.country_region,
@@ -18,13 +19,18 @@ export async function findDocumentedCallsByIdentityHashes(hashes = []) {
   if (!distinct.length) return [];
   // Only a canonical row backed by its original staged raw-import row counts as imported.
   const [rows] = await pmsDb.query(`SELECT d.id,d.batch_id,d.raw_import_row_id,
-    rr.row_identity_hash,d.row_content_hash
+    d.crm_call_log_id,d.system_call_id,d.created_on,d.modified_on,
+    d.created_by_raw,d.owner_raw,d.country_region,d.category,d.subcategory,
+    d.call_duration_seconds,rr.row_identity_hash
     FROM ${pmsTables.usVisaRawDocumentedCalls} d
     INNER JOIN ${pmsTables.usVisaRawImportRows} rr ON rr.id=d.raw_import_row_id
     WHERE rr.row_identity_hash IN (${distinct.map(() => "?").join(",")})
     ORDER BY d.id ASC`,distinct);
   return rows.map((r) => ({ id:r.id, batchId:r.batch_id, rawImportRowId:r.raw_import_row_id,
-    rowHash:r.row_identity_hash, contentHash:r.row_content_hash }));
+    rowHash:r.row_identity_hash,
+    // Recalculate from persisted source fields for old and new records alike.
+    // This avoids false conflicts from legacy Name-derived hashes and dates.
+    contentHash:createDocumentedCallContentHash(r) }));
 }
 export async function insertDocumentedCallsWithDuplicateProtection(rows = []) {
   if (!rows.length) return { affectedCount:0 };

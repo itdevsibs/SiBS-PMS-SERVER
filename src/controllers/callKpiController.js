@@ -1,3 +1,4 @@
+import { invalidateWfmImportedKpiCache, readCachedWfmImportedKpi } from "../services/cache/wfmImportedKpiCacheService.js";
 import { getCountryOwnedReportScope } from "../services/kpi/usVisa/calls/countryOwnedReportScope.js";
 import { getSkillStatisticsTaskOrderCountryScope } from "../services/kpi/usVisa/calls/skillStatisticsTaskOrderScope.js";
 import { readVersionSnapshot, getPublishedVersion } from "../services/taskOrderManagement/taskOrderVersionService.js";
@@ -124,7 +125,11 @@ export async function getWfmCallsKpi(req, res) {
     if (req.query.taskOrder || req.query.country || req.query.sourceSystem) {
       validateTaskOrderReportScope(await readVersionSnapshot(req.query.taskOrderVersionId || 'current'),req.query);
     }
-    const dashboard = await getWfmCallKpiDashboard(req.query);
+    const { data: dashboard, status: cacheStatus } = await readCachedWfmImportedKpi(
+      "calls", req.query, () => getWfmCallKpiDashboard(req.query),
+    );
+    res.setHeader("X-PMS-KPI-Cache", cacheStatus);
+    res.setHeader("Cache-Control", "private, no-store");
 
     return res.json({
       success: true,
@@ -236,6 +241,7 @@ export async function deleteWfmImportedFile(req, res) {
     }
 
     await deleteBatchById(batch.id);
+    invalidateWfmImportedKpiCache();
 
     return res.json({
       success: true,

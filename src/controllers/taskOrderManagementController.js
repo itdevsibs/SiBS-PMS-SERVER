@@ -1,3 +1,4 @@
+import { invalidateWfmImportedKpiCache } from "../services/cache/wfmImportedKpiCacheService.js";
 // Writes to the existing ledger with serialized, atomic transactions and append-only history.
 import { randomUUID } from 'node:crypto';
 import { assertLiveLedgerMatchesPublishedHead, publishVersionInTransaction, listPublishedVersions, readVersionSnapshot, compareVersionSnapshots } from '../services/taskOrderManagement/taskOrderVersionService.js';
@@ -68,6 +69,7 @@ async function withWriteTransaction(req, res, handler) {
       businessEffectiveDate:req.taskOrderBusinessDate,
     });
     await conn.commit(); inTransaction = false;
+    invalidateWfmImportedKpiCache();
     return success(res, {...data, publishedVersion: publication});
   } catch (error) {
     if (inTransaction) { try { await conn.rollback(); } catch (rollbackError) { console.error('Ledger rollback failed', rollbackError); } }

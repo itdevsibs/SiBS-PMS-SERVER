@@ -8,6 +8,8 @@ import {
 } from "../config/db.js";
 import authMiddleware from "../middleware/authMiddleware.js";
 import { requireRole } from "../middleware/roleMiddleware.js";
+import { calculateLedgerTenurity, getLedgerTenurityDateWarning, getLedgerEmploymentStatus, LEDGER_STATUS_SORT_SQL, todayInManila } from "../services/masterdata/employeeLedgerEmploymentStatus.js";
+import { previewUsVisaKronosLedgerSync, applyUsVisaKronosLedgerSync } from "../services/masterdata/usVisaKronosLedgerSyncService.js";
 
 const router = Router();
 
@@ -16,6 +18,29 @@ router.use(
   authMiddleware,
   requireRole([6, 7, 9, 10, 11]),
 );
+
+
+/**
+ * Explicit Kronos sync for Super Admin, WFM and Master Data users.
+ * Permissioned separately from ordinary ledger reads.
+ * No live Kronos fetch is made when the ledger page is opened.
+ */
+router.post("/ledger/kronos-sync/preview", requireRole([7, 9, 11]), async (req, res, next) => {
+  try {
+    const result = await previewUsVisaKronosLedgerSync({ actor: req.user?.username || req.user?.id });
+    return res.json(result);
+  } catch (error) { next(error); }
+});
+
+router.post("/ledger/kronos-sync/apply", requireRole([7, 9, 11]), async (req, res, next) => {
+  try {
+    const result = await applyUsVisaKronosLedgerSync({
+      actor: req.user?.username || req.user?.id,
+      previewToken: req.body?.previewToken,
+    });
+    return res.json(result);
+  } catch (error) { next(error); }
+});
 
 function normalizeSibsId(value) {
   return String(value || "")
@@ -116,6 +141,10 @@ router.get("/ledger", async (req, res, next) => {
     const rawSearch = String(req.query.search || "").trim();
     const account = String(req.query.account || "").trim();
     const taskOrder = String(req.query.taskOrder || "").trim();
+    const organizationalRole = String(req.query.organizationalRole || "").trim().toUpperCase();
+    if (organizationalRole && !["AGENT", "TEAM_LEADER", "MANAGER", "SENIOR_MANAGER", "NEEDS_REVIEW", "UNCLASSIFIED"].includes(organizationalRole)) {
+      return res.status(400).json({ success: false, message: "Invalid organizational role filter." });
+    }
     const page = Math.max(Number(req.query.page) || 1, 1);
     const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 10000);
     const offset = (page - 1) * limit;
@@ -141,12 +170,22 @@ router.get("/ledger", async (req, res, next) => {
       queryParams.push(taskOrder);
     }
 
+    if (organizationalRole) {
+      if (organizationalRole === "NEEDS_REVIEW") {
+        whereClauses.push("l.role_review_status = 'NEEDS_REVIEW'");
+      } else if (organizationalRole === "UNCLASSIFIED") {
+        whereClauses.push("(l.organizational_role IS NULL OR (l.organizational_role = 'UNRESOLVED' AND COALESCE(l.role_review_status, '') <> 'NEEDS_REVIEW'))");
+      } else {
+        whereClauses.push("l.organizational_role = ?");
+        queryParams.push(organizationalRole);
+      }
+    }
+
     if (rawSearch) {
       const searchPattern = `%${rawSearch}%`;
       whereClauses.push(`(
         l.sibs_id LIKE ? OR 
         l.kronos_name LIKE ? OR 
-        k.gy_emp_fullname LIKE ? OR 
         l.call_novo_email LIKE ? OR 
         l.agent_name LIKE ? OR 
         l.fusecom_name LIKE ? OR 
@@ -161,7 +200,7 @@ router.get("/ledger", async (req, res, next) => {
         l.manager LIKE ? OR 
         l.senior_manager LIKE ?
       )`);
-      for (let i = 0; i < 16; i++) {
+      for (let i = 0; i < 15; i++) {
         queryParams.push(searchPattern);
       }
     }
@@ -169,10 +208,6 @@ router.get("/ledger", async (req, res, next) => {
     let countQuery = `
       SELECT COUNT(*) AS total 
       FROM ${pmsTables.usVisaEmployeeLedger} l
-      LEFT JOIN ${kronosTables.employee} k ON (
-        TRIM(k.gy_emp_code) = TRIM(l.sibs_id)
-        OR LOWER(TRIM(k.gy_emp_fullname)) = LOWER(TRIM(l.agent_name))
-      )
     `;
     if (whereClauses.length > 0) {
       countQuery += ` WHERE ${whereClauses.join(" AND ")}`;
@@ -195,10 +230,7 @@ router.get("/ledger", async (req, res, next) => {
       SELECT 
         l.id,
         l.sibs_id AS sibsId,
-        COALESCE(
-          NULLIF(TRIM(l.kronos_name), ''),
-          NULLIF(TRIM(k.gy_emp_fullname), '')
-        ) AS kronosName,
+        NULLIF(TRIM(l.kronos_name), '') AS kronosName,
         l.call_novo_email AS callNovoEmail,
         l.agent_name AS agentName,
         l.fusecom_name AS fusecomName,
@@ -222,28 +254,67 @@ router.get("/ledger", async (req, res, next) => {
         END AS taskOrderDescription,
         DATE_FORMAT(l.us_visa_departure_date, '%Y-%m-%d') AS usVisaDepartureDate,
         DATE_FORMAT(l.us_visa_join_date, '%Y-%m-%d') AS usVisaJoinDate,
-        l.team_leader AS teamLeader,
-        l.manager,
-        l.senior_manager AS seniorManager,
-        CASE
-          WHEN l.us_visa_join_date IS NOT NULL AND l.us_visa_join_date > '1990-01-01' THEN
-            CAST(DATEDIFF(COALESCE(l.us_visa_departure_date, CURRENT_DATE()), l.us_visa_join_date) AS CHAR)
-          ELSE NULL
-        END AS tenurity,
-        l.modality
+        COALESCE(NULLIF(TRIM(l.team_leader), ''),
+          CASE WHEN l.team_leader_sibs_id IS NOT NULL
+            AND l.us_visa_departure_date IS NULL
+            AND l.hierarchy_sync_status IN ('VERIFIED', 'PARTIAL')
+            AND LOWER(TRIM(COALESCE(l.status, ''))) NOT IN
+              ('inactive', 'resigned', 'attrited', 'terminated', 'separated') THEN
+            COALESCE(NULLIF(TRIM(tl.kronos_name), ''), NULLIF(TRIM(tl.agent_name), '')) END
+        ) AS teamLeader,
+        COALESCE(NULLIF(TRIM(l.manager), ''),
+          CASE WHEN l.manager_sibs_id IS NOT NULL
+            AND l.us_visa_departure_date IS NULL
+            AND l.hierarchy_sync_status IN ('VERIFIED', 'PARTIAL')
+            AND LOWER(TRIM(COALESCE(l.status, ''))) NOT IN
+              ('inactive', 'resigned', 'attrited', 'terminated', 'separated') THEN
+            COALESCE(NULLIF(TRIM(mgr.kronos_name), ''), NULLIF(TRIM(mgr.agent_name), '')) END
+        ) AS manager,
+        COALESCE(NULLIF(TRIM(l.senior_manager), ''),
+          CASE WHEN l.senior_manager_sibs_id IS NOT NULL
+            AND l.us_visa_departure_date IS NULL
+            AND l.hierarchy_sync_status IN ('VERIFIED', 'PARTIAL')
+            AND LOWER(TRIM(COALESCE(l.status, ''))) NOT IN
+              ('inactive', 'resigned', 'attrited', 'terminated', 'separated') THEN
+            COALESCE(NULLIF(TRIM(som.kronos_name), ''), NULLIF(TRIM(som.agent_name), '')) END
+        ) AS seniorManager,
+        l.modality,
+        l.kronos_employee_id AS kronosEmployeeId,
+        l.kronos_account_id AS kronosAccountId,
+        l.kronos_account_name AS kronosAccountName,
+        l.supervisor_sibs_id AS supervisorSibsId,
+        l.team_leader_sibs_id AS teamLeaderSibsId,
+        l.manager_sibs_id AS managerSibsId,
+        l.senior_manager_sibs_id AS seniorManagerSibsId,
+        l.organizational_role AS organizationalRole,
+        l.role_source AS roleSource,
+        l.role_review_status AS roleReviewStatus,
+        l.kronos_emp_type AS kronosEmpType,
+        l.kronos_user_status AS kronosUserStatus,
+        l.hierarchy_sync_status AS hierarchySyncStatus,
+        l.kronos_membership_status AS kronosMembershipStatus,
+        DATE_FORMAT(DATE_ADD(l.kronos_last_synced_at, INTERVAL 8 HOUR), '%Y-%m-%d %H:%i:%s') AS kronosLastSyncedAt
       FROM ${pmsTables.usVisaEmployeeLedger} l
-      LEFT JOIN ${kronosTables.employee} k ON (
-        TRIM(k.gy_emp_code) = TRIM(l.sibs_id)
-        OR LOWER(TRIM(k.gy_emp_fullname)) = LOWER(TRIM(l.agent_name))
-      )
+      LEFT JOIN ${pmsTables.usVisaEmployeeLedger} tl
+        ON tl.sibs_id = l.team_leader_sibs_id
+      LEFT JOIN ${pmsTables.usVisaEmployeeLedger} mgr
+        ON mgr.sibs_id = l.manager_sibs_id
+      LEFT JOIN ${pmsTables.usVisaEmployeeLedger} som
+        ON som.sibs_id = l.senior_manager_sibs_id
     `;
     if (whereClauses.length > 0) {
       dataQuery += ` WHERE ${whereClauses.join(" AND ")}`;
     }
-    dataQuery += ` ORDER BY l.id ASC LIMIT ? OFFSET ?`;
+    // Default status-first ordering applies to the FULL filtered dataset,
+    // before pagination. Never use insertion order as an employment proxy.
+    dataQuery += ` ORDER BY ${LEDGER_STATUS_SORT_SQL} ASC,
+      LOWER(COALESCE(NULLIF(TRIM(l.kronos_name), ''), NULLIF(TRIM(l.agent_name), ''), l.sibs_id)) ASC,
+      l.sibs_id ASC, l.id ASC LIMIT ? OFFSET ?`;
     const dataParams = [...queryParams, limit, offset];
 
     const [rows] = await pmsDb.query(dataQuery, dataParams);
+    // Derive all row tenures against the same Manila calendar day.
+    const currentManilaDate = todayInManila();
 
     return res.json({
       success: true,
@@ -251,13 +322,30 @@ router.get("/ledger", async (req, res, next) => {
       page,
       limit,
       totalPages: Math.ceil(totalRecords / limit),
-      data: rows,
+      data: rows.map((row) => ({
+        ...row,
+        tenurity: calculateLedgerTenurity(row.usVisaJoinDate, row.usVisaDepartureDate, currentManilaDate),
+        tenurityDateWarning: getLedgerTenurityDateWarning(row.usVisaJoinDate, row.usVisaDepartureDate),
+        // Kronos-only classification (gy_user_status: 0 active, 1 inactive).
+        // Historical status and employment dates remain separate ledger fields.
+        employmentStatus: getLedgerEmploymentStatus(row),
+      })),
     });
 
   } catch (error) {
     console.error("Failed to fetch us_visa_employee_ledger:", error);
     next(error);
   }
+});
+
+/** Roles are managed by Kronos synchronization; manual edits are disabled.
+ * Keep a hard rejection for older clients that still call this endpoint.
+ */
+router.put("/ledger/:sibsId/organizational-role", (req, res) => {
+  return res.status(403).json({
+    success: false,
+    message: "Organizational roles are read-only and cannot be edited manually.",
+  });
 });
 
 /**
@@ -271,6 +359,19 @@ router.put("/ledger/:sibsId", async (req, res, next) => {
       return res.status(400).json({
         success: false,
         message: "SIBS ID is required.",
+      });
+    }
+
+    // Do not permit role changes through the generic ledger edit endpoint either.
+    // Organizational roles are derived by the approved Kronos sync workflow.
+    const immutableRoleFields = [
+      "organizationalRole", "organizational_role",
+      "roleSource", "role_source", "roleReviewStatus", "role_review_status",
+    ];
+    if (immutableRoleFields.some((field) => Object.prototype.hasOwnProperty.call(req.body || {}, field))) {
+      return res.status(403).json({
+        success: false,
+        message: "Organizational roles are read-only and cannot be edited manually.",
       });
     }
 
@@ -292,7 +393,6 @@ router.put("/ledger/:sibsId", async (req, res, next) => {
       teamLeader,
       manager,
       seniorManager,
-      tenurity,
       modality,
     } = req.body || {};
 
@@ -320,7 +420,6 @@ router.put("/ledger/:sibsId", async (req, res, next) => {
         { val: teamLeader, col: "team_leader" },
         { val: manager, col: "manager" },
         { val: seniorManager, col: "senior_manager" },
-        { val: tenurity, col: "tenurity" },
         { val: modality, col: "modality" },
       ];
 
@@ -509,7 +608,7 @@ router.post("/ledger/import-us-visa", async (req, res, next) => {
         const teamLeader = item.teamLeader ?? item.team_leader ?? null;
         const manager = item.manager ?? null;
         const seniorManager = item.seniorManager ?? item.senior_manager ?? null;
-        const tenurity = item.tenurity ?? null;
+        // Legacy Excel "Tenurity" cells are ignored; the API derives days from dates.
         const modality = item.modality ?? null;
 
         await connection.query(
@@ -519,8 +618,8 @@ router.post("/ledger/import-us-visa", async (req, res, next) => {
               fusenet_name, herodash_name, msd_name, site, status, phase,
               task_order, task_order_description, us_visa_departure_date,
               us_visa_join_date, team_leader, manager, senior_manager,
-              tenurity, modality
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              modality
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
               kronos_name = VALUES(kronos_name),
               call_novo_email = VALUES(call_novo_email),
@@ -539,7 +638,6 @@ router.post("/ledger/import-us-visa", async (req, res, next) => {
               team_leader = VALUES(team_leader),
               manager = VALUES(manager),
               senior_manager = VALUES(senior_manager),
-              tenurity = VALUES(tenurity),
               modality = VALUES(modality),
               updated_at = CURRENT_TIMESTAMP
           `,
@@ -562,7 +660,6 @@ router.post("/ledger/import-us-visa", async (req, res, next) => {
             teamLeader,
             manager,
             seniorManager,
-            tenurity,
             modality,
           ],
         );

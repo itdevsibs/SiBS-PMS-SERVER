@@ -1,19 +1,7 @@
-// Microsoft Dynamics WFM Call Logs: original 11-column export.
-// The Name prefix is YYYY-DD-MM (NOT YYYY-MM-DD); call-log date takes precedence
-// over Created On, which can represent the subsequent CRM documentation date.
+// Microsoft Dynamics WFM Call Logs: final 10-column export (no Name column).
+// The CRM record creation timestamp is the reporting-date basis; Modified On
+// is a fallback only when Created On cannot be parsed.
 function text(value) { return value == null ? null : String(value).trim() || null; }
-
-function validDate(year, month, day) {
-  const d = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
-  return Number.isFinite(d.getTime()) && d.getUTCFullYear() === Number(year)
-    && d.getUTCMonth() + 1 === Number(month) && d.getUTCDate() === Number(day)
-    ? `${year}-${month}-${day}` : null;
-}
-
-export function dateFromDocumentedCallName(name) {
-  const match = String(name || "").match(/^(\d{4})-(\d{2})-(\d{2})(?:-|$)/);
-  return match ? validDate(match[1], match[3], match[2]) : null;
-}
 
 export function fromExcelSerial(value) {
   if (value instanceof Date) {
@@ -100,26 +88,24 @@ export function documentedCallCreatorMappingWarning(mappedRow = {}) {
 
 export function mapDocumentedCallRow(source = {}) {
   const crmId = text(source["(Do Not Modify) Call Log"]);
-  const callName = text(source.Name);
   const createdOn = fromExcelSerial(source["Created On"]);
   const modifiedOn = fromExcelSerial(source["(Do Not Modify) Modified On"]);
-  const fromName = dateFromDocumentedCallName(callName);
-  const productionDate = fromName || modifiedOn?.slice(0, 10) || null;
+  const productionDate = createdOn?.slice(0, 10) || modifiedOn?.slice(0, 10) || null;
   const durationSeconds = durationInSeconds(source["Call Duration"]);
   const ownerRaw = text(source.Owner);
   const country = extractDocumentedCallOwnerCountry(ownerRaw);
   const warnings = [];
   const errors = [];
   if (!crmId) errors.push({ fieldName: "(Do Not Modify) Call Log", errorCode: "MISSING_CALL_LOG_GUID", rawValue: crmId, message: "CRM Call Log GUID is required for safe deduplication." });
-  if (!productionDate) errors.push({ fieldName: "Name", errorCode: "MISSING_DOCUMENTED_CALL_DATE", rawValue: callName, message: "Name must have YYYY-DD-MM date prefix, or Modified On must contain a valid date." });
+  if (!productionDate) errors.push({ fieldName: "Created On", errorCode: "MISSING_DOCUMENTED_CALL_DATE", rawValue: text(source["Created On"]), message: "Created On must be a valid timestamp, or Modified On must contain a valid fallback date." });
   if (durationSeconds === null) warnings.push({ fieldName: "Call Duration", errorCode: "DOCUMENTED_CALL_DURATION_MISSING", rawValue: text(source["Call Duration"]), message: "Call log retained, but excluded from AHT because Call Duration is blank or invalid." });
   if (!country) warnings.push({ fieldName: "Owner", errorCode: "DOCUMENTED_CALL_COUNTRY_UNMAPPED", rawValue: ownerRaw, message: "Owner does not identify a Country Data Owner; row retained without a country." });
   return {
     errors, warnings,
     mappedRow: {
       crm_call_log_id: crmId, system_call_id: text(source["System Call ID"]),
-      source_name: callName, production_date: productionDate,
-      source_date_basis: fromName ? "NAME_YYYY_DD_MM" : "MODIFIED_ON_FALLBACK",
+      production_date: productionDate,
+      source_date_basis: createdOn ? "CREATED_ON" : "MODIFIED_ON_FALLBACK",
       created_on: createdOn, modified_on: modifiedOn,
       created_by_raw: text(source["Created By"]), owner_raw: ownerRaw,
       sibs_id: null, mapping_status: "UNMATCHED", mapping_method: null,

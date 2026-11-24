@@ -770,15 +770,18 @@ export const WORKBOOK_PROFILE_DEFINITIONS = {
     requiredSheets: [{
       sheetName: "WFM Call Logs",
       sheetNameCandidates: ["WFM Call Logs", "Call Logs", "Sheet1"],
+      // Choose the actual data-bearing sheet by its full header set, not by
+      // visibility or a tab name alone. Dynamics files can add hidden metadata.
+      preferMatchingHeaderSheet: true,
       dataGrain: "DOCUMENTED_CALL",
       headerRowNumber: 1,
       headerRowCandidates: [1],
       requiredHeaders: [
-        "(Do Not Modify) Call Log", "Created On", "System Call ID",
-        "Created By", "Name", "Call Duration", "Owner",
-        "Category", "Subcategory",
+        "(Do Not Modify) Call Log", "(Do Not Modify) Row Checksum",
+        "(Do Not Modify) Modified On", "Created On", "System Call ID",
+        "Created By", "Call Duration", "Owner", "Category", "Subcategory",
       ],
-      ignoredHeaders: ["(Do Not Modify) Row Checksum", "(Do Not Modify) Modified On"],
+      ignoredHeaders: [],
       allowUnknownHeaders: true,
     }],
   },
@@ -894,6 +897,23 @@ function findBestHeaderRowNumber(
 }
 
 function getSheetNameForRule(workbook, rule) {
+  if (rule.preferMatchingHeaderSheet) {
+    // The final Microsoft Dynamics export has a visible call-log data tab and
+    // may contain a very-hidden metadata tab. Only a sheet with every required
+    // header and real rows can be selected; never accept partial header matches.
+    const validSheets = workbook.worksheets.filter((worksheet) => {
+      const headerRow = findBestHeaderRowNumber(workbook, worksheet.name, rule);
+      return getHeaderMatchCount(workbook, worksheet.name, headerRow, rule) === rule.requiredHeaders.length
+        && worksheetHasDataRows(workbook, worksheet.name, headerRow);
+    });
+    if (validSheets.length) {
+      const preferred = [rule.sheetName, ...(rule.sheetNameCandidates || [])]
+        .filter(Boolean).map(normalizeHeader);
+      return validSheets.find((worksheet) => preferred.includes(normalizeHeader(worksheet.name)))?.name
+        || validSheets[0].name;
+    }
+    // Continue to ordinary selection to show meaningful missing-column errors.
+  }
   if (rule.sheetName) {
     const direct = workbook.getWorksheet(rule.sheetName);
     if (direct) return direct.name;
