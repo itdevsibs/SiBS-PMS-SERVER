@@ -1,6 +1,6 @@
 import { resolveUsVisaKpiTargets } from '../targets/usVisaKpiTargetService.js';
 import { PINNED_VERSION_COMPARISON_WINDOW } from '../../../taskOrderManagement/taskOrderVersionReportFilters.js';
-import { normalizeTaskOrderComparisonSources, unavailableDocumentedAhtReason, UNVERIFIABLE_DOCUMENTED_AHT } from '../../../taskOrderManagement/taskOrderComparisonSources.js';
+import { normalizeTaskOrderComparisonSources, UNVERIFIABLE_DOCUMENTED_AHT } from '../../../taskOrderManagement/taskOrderComparisonSources.js';
 // WoW Calls KPIs use Skill Statistics for queue metrics and documented calls
 // for AHT. Individual Calls EOD rows are deliberately not queried here.
 import {
@@ -24,6 +24,8 @@ import { buildWoWSkillQueueDashboard } from './wowSkillQueueAggregation.js';
 import { getUsVisaTaskOrderCountries, normalizeUsVisaTaskOrder } from './taskOrderFilter.js';
 import { getSkillStatisticsTaskOrderCountryScope, getAllMappedTaskOrderCountries } from './skillStatisticsTaskOrderScope.js';
 import { getPublishedVersion } from '../../../taskOrderManagement/taskOrderVersionService.js';
+import { readVersionedCountryRows } from './versionedCountryRows.js';
+import { buildDocumentedAhtScope } from './documentedAhtFilterService.js';
 
 const SOURCES = new Set(['US_VISA','US VISA','FUSECOM','FUSENET','HERODASH']);
 // Legacy 30-minute canonical rows are no longer selectable in WoW.
@@ -51,32 +53,40 @@ function outOfBounds(reference, bounds) {
   return reference < bounds.minDate || reference > maxAllowed;
 }
 
+// Shared by WoW and its AHT drill-down. Pin the version before resolving ownership.
+export async function resolveDocumentedAhtReportingFilter({sourceSystem, taskOrder, country, versionId, taskOrderCountries, versionRows}) {
+  const rows = versionRows ?? await readVersionedCountryRows(versionId);
+  return {sourceSystem, taskOrder, country,
+    taskOrderCountries: taskOrderCountries ?? getUsVisaTaskOrderCountries(sourceSystem, taskOrder),
+    documentedScope: buildDocumentedAhtScope(rows)};
+}
+
 export async function getWfmCallKpiDashboard(query = {}) {
   const period = normalizeCallKpiPeriod(query.period);
   const comparisonWindow = query[PINNED_VERSION_COMPARISON_WINDOW];
   const requestedSource = String(query.sourceSystem || query.source || 'US_VISA').trim().toUpperCase();
   // Comparison-only: preserve subsets such as FUSECOM,FUSENET for queue queries.
   const sourceSystem = normalizeTaskOrderComparisonSources(requestedSource);
-  const unavailableAhtReason = comparisonWindow ? query[UNVERIFIABLE_DOCUMENTED_AHT]
-    : (sourceSystem.includes(',') ? unavailableDocumentedAhtReason(sourceSystem,query.skill) : null);
+  const unavailableAhtReason = comparisonWindow ? query[UNVERIFIABLE_DOCUMENTED_AHT] : null;
   const reference = validateReferenceDate(query.referenceDate || query.reference);
   const requestedFrom = normalizeDate(query.from || query.dateFrom);
   const requestedTo = normalizeDate(query.to || query.dateTo);
   const taskOrder = normalizeUsVisaTaskOrder(sourceSystem, query.taskOrder);
-  // Shared runtime ownership scope for both queue counts and Dynamics AHT.
+  // Pin the published ownership version for both queue counts and Dynamics AHT.
   const version = await getPublishedVersion(query.taskOrderVersionId || 'current');
   const versionId = version.id; // Pin Current once, even when publication is concurrent.
-  // Source tool groupings are a legacy Documented Calls approximation; the
-  // source workbook contains no telephony tool field. Use the pinned mapping.
+  // Keep existing queue-query scope inputs unchanged. Documented Calls
+  // source filtering is resolved independently from pinned published profiles.
   const sourceToolTaskOrders = {
     FUSECOM: ['TO12', 'TO16'], FUSENET: ['TO14'], HERODASH: ['TO4', 'TO10'],
   };
-  const [ledgerScope, allCountries, sourceToolScope] = await Promise.all([
+  const [ledgerScope, allCountries, sourceToolScope, documentedVersionRows] = await Promise.all([
     getSkillStatisticsTaskOrderCountryScope(taskOrder,versionId),
     getAllMappedTaskOrderCountries(versionId),
     sourceToolTaskOrders[sourceSystem]
       ? getSkillStatisticsTaskOrderCountryScope(sourceToolTaskOrders[sourceSystem],versionId)
       : Promise.resolve({ countries: [] }),
+    unavailableAhtReason ? Promise.resolve(null) : readVersionedCountryRows(versionId),
   ]);
   // Direct TO requests must NEVER fall back to static/current country lists.
   const requestedTaskOrders = (Array.isArray(taskOrder) ? taskOrder : String(taskOrder || '').split(','))
@@ -105,11 +115,9 @@ export async function getWfmCallKpiDashboard(query = {}) {
   };
   // MS Dynamics has no Skill field. Never pass the queue Skill selection into
   // any Documented Calls query, bound lookup, KPI bucket, or AHT calculation.
-  const documentedFilter = {
-    sourceSystem, taskOrder, taskOrderCountries, country,
-    knownTaskOrderCountries: allCountries,
-    sourceToolCountries: sourceToolScope.countries,
-  };
+  const documentedFilter = documentedVersionRows ? await resolveDocumentedAhtReportingFilter({
+    sourceSystem, taskOrder, taskOrderCountries, country, versionId, versionRows:documentedVersionRows,
+  }) : {sourceSystem,taskOrder,taskOrderCountries,country,documentedScope:null};
   const [skillBounds, documentedBounds, availableSkillGrains] = await Promise.all([
     getSkillKpiDateBounds(filter),
     unavailableAhtReason ? Promise.resolve({minDate:null,maxDate:null}) : getDocumentedCallAhtDateBounds(documentedFilter),

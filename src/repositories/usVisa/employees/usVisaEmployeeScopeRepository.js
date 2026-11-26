@@ -304,6 +304,112 @@ export async function findUsVisaRosterEmployeeUids({
   ];
 }
 
+/** Absenteeism only: use only currently active, Kronos-verified US Visa Agents
+ * for every reporting period. Preserve existing Task Order and date-window filters. */
+export async function findUsVisaAbsenteeismRoster({ taskOrder = null, dateFrom, dateTo } = {}) {
+  const from = normalizeDateKey(dateFrom);
+  const to = normalizeDateKey(dateTo);
+  if (!from || !to || from > to) return [];
+  const allowed = new Set(normalizeTaskOrderList(taskOrder));
+  const [rows] = await pmsDb.query(`
+    SELECT REPLACE(UPPER(TRIM(l.sibs_id)), 'SIB-', '') AS employee_uid,
+           l.kronos_employee_id, l.kronos_name, l.task_order AS task_order_raw
+    FROM ${pmsTables.usVisaEmployeeLedger} l
+    WHERE l.sibs_id IS NOT NULL AND TRIM(l.sibs_id) <> ''
+      AND l.organizational_role = 'AGENT'
+      AND l.kronos_user_status = 0
+      AND l.kronos_membership_status = 'CURRENT_US_VISA'
+      AND l.kronos_account_id = 20
+      AND l.task_order IS NOT NULL AND TRIM(l.task_order) <> ''
+      AND COALESCE(l.us_visa_join_date, '1900-01-01') <= ?
+      AND (l.us_visa_departure_date IS NULL OR l.us_visa_departure_date >= ?)
+    ORDER BY employee_uid, l.us_visa_join_date DESC, l.id DESC
+  `, [to, from]);
+  const byUid = new Map();
+  for (const row of rows || []) {
+    const employeeUid = normalizeUid(row.employee_uid).toUpperCase();
+    if (!employeeUid || (allowed.size && !allowed.has(normalizeTaskOrder(row.task_order_raw)))) continue;
+    const gyEmpId = Number(row.kronos_employee_id) || null;
+    const prior = byUid.get(employeeUid);
+    if (prior?.gyEmpId && gyEmpId && prior.gyEmpId !== gyEmpId) {
+      const error = new Error(`Conflicting Kronos identity in Absenteeism roster: ${employeeUid}`);
+      error.code = 'ABSENTEEISM_LEDGER_IDENTITY_CONFLICT';
+      throw error;
+    }
+    if (!prior) byUid.set(employeeUid, { employeeUid, gyEmpId, employeeName: row.kronos_name || null });
+    else if (!prior.gyEmpId && gyEmpId) prior.gyEmpId = gyEmpId;
+  }
+  return [...byUid.values()];
+}
+
+/** Attendance Sheet only: retrieve identity and assignment in the same dated
+ * roster query. Keep the existing UID-only KPI interface unchanged. */
+export async function findUsVisaAttendanceSheetRoster({ dateFrom, dateTo, today } = {}) {
+  const from = normalizeDateKey(dateFrom);
+  const to = normalizeDateKey(dateTo);
+  const manilaToday = normalizeDateKey(today);
+  // The Attendance Sheet is a single-date report. Require its explicit Manila
+  // date boundary so the database/server timezone cannot change eligibility.
+  if (!from || !to || !manilaToday || from !== to) return [];
+  const isHistorical = to < manilaToday;
+
+  // Membership is independent of Task Order and employment status. Account 78
+  // is the existing special path for verified Team Leaders in the US Visa ledger.
+  const currentMembership = `(
+    (l.kronos_membership_status = 'CURRENT_US_VISA' AND l.kronos_account_id = 20)
+    OR (l.organizational_role = 'TEAM_LEADER' AND l.kronos_account_id = 78
+        AND l.role_review_status = 'VERIFIED')
+  )`;
+  const membershipClause = isHistorical
+    ? `(${currentMembership}
+        OR l.kronos_membership_status = 'US_VISA_NAME_MATCH'
+        OR l.us_visa_join_date IS NOT NULL
+        OR l.us_visa_departure_date IS NOT NULL)`
+    : `${currentMembership} AND l.kronos_user_status = 0`;
+
+  const [rows] = await pmsDb.query(`
+    SELECT l.id AS ledger_id,
+           l.sibs_id,
+           REPLACE(UPPER(TRIM(l.sibs_id)), 'SIB-', '') AS employee_uid,
+           l.kronos_name,
+           l.task_order AS task_order_raw,
+           l.organizational_role,
+           l.kronos_account_id,
+           l.kronos_employee_id,
+           DATE_FORMAT(l.us_visa_join_date, '%Y-%m-%d') AS account_join_date,
+           DATE_FORMAT(l.us_visa_departure_date, '%Y-%m-%d') AS account_departure_date
+    FROM ${pmsTables.usVisaEmployeeLedger} l
+    WHERE l.sibs_id IS NOT NULL AND TRIM(l.sibs_id) <> ''
+      AND l.organizational_role IN ('AGENT', 'TEAM_LEADER')
+      AND (l.us_visa_join_date IS NULL OR l.us_visa_join_date <= ?)
+      AND (l.us_visa_departure_date IS NULL OR l.us_visa_departure_date >= ?)
+      AND ${membershipClause}
+    ORDER BY employee_uid ASC, l.us_visa_join_date DESC, l.id DESC
+  `, [to, from]);
+
+  // One eligible identity per SIBS ID. When dated assignments overlap, the
+  // latest eligible join date (then highest ledger ID) is deterministic.
+  const byUid = new Map();
+  for (const row of rows || []) {
+    const employeeUid = normalizeUid(row.employee_uid).toUpperCase();
+    if (!employeeUid || byUid.has(employeeUid)) continue;
+    byUid.set(employeeUid, {
+      employeeUid,
+      sibsId: row.sibs_id,
+      ledgerId: Number(row.ledger_id),
+      kronosName: row.kronos_name || null,
+      organizationalRole: row.organizational_role || null,
+      kronosAccountId: Number(row.kronos_account_id) || null,
+      kronosEmployeeId: Number(row.kronos_employee_id) || null,
+      taskOrderId: normalizeTaskOrder(row.task_order_raw),
+      taskOrderRaw: row.task_order_raw || null,
+      accountJoinDate: row.account_join_date || null,
+      accountDepartureDate: row.account_departure_date || null,
+    });
+  }
+  return [...byUid.values()].sort((a, b) => a.employeeUid.localeCompare(b.employeeUid));
+}
+
 /** Read the US Visa ledger once and return two independent views:
  * 1) original de-duplicated schedule assignments (Attrition % unchanged),
  * 2) each distinct employment window (historical HC, including rehires).

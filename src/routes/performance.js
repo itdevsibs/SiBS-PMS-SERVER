@@ -3,6 +3,7 @@ import express from "express";
 
 import {
   getCallsReport,
+  getDocumentedCallsAhtReport,
   getCallsReportSkillOptions,
   getWfmCallsKpi,
   getWfmSkills,
@@ -40,6 +41,8 @@ router.post('/kpis/us-visa/targets', ...requireKpiTargetAdmin, saveUsVisaKpiTarg
 
 router.get('/kpis/task-order-versions', ...requirePerformanceViewer, getReportTaskOrderVersions);
 router.post('/kpis/task-order-version-comparison', ...requirePerformanceViewer, compareTaskOrderReports);
+
+router.get("/kpis/documented-calls-aht-report", ...requirePerformanceViewer, getDocumentedCallsAhtReport);
 
 router.get(
   "/kpis/calls-report",

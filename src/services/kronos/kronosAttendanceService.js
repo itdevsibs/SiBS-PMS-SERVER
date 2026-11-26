@@ -1,3 +1,5 @@
+import { createProgressiveAttendanceSheet } from "./attendanceSheetProgressiveService.js";
+import { attendanceSheetFetcher } from "./attendanceSheetFetchService.js";
 import {
   getKronosAttendanceSheetScheduleData,
   clearKronosAttendanceSheetSourceCaches,
@@ -14,6 +16,9 @@ import {
 } from "./kronosAttendanceFieldService.js";
 import { resolveCallCenterOperationsAccountScope } from "./kronosAccountScopeService.js";
 import { cleanKronosEmployeeName, getKronosEmployeeNameFromRow } from "./kronosAttendanceEmployeeNames.js";
+
+import { findUsVisaAttendanceSheetRoster } from "../../repositories/usVisa/employees/usVisaEmployeeScopeRepository.js";
+import { attendanceSheetUid, classifyAttendanceSheetRow, summarizeAttendanceSheet, ATTENDANCE_SHEET_FILTERS, matchesAttendanceSheetFilter } from "./attendanceSheetSummaryService.js";
 
 const ATTENDANCE_ENDPOINT = "/api/v1/employee-attendance";
 const TRACKER_HISTORY_ENDPOINT = "/api/v1/employee-tracker-history";
@@ -37,6 +42,7 @@ const ATTENDANCE_SHEET_CACHE_MS = 10 * 60 * 1000;
 const ATTENDANCE_SHEET_TODAY_CACHE_MS = 10 * 60 * 1000;
 const ATTENDANCE_SHEET_MAX_CACHE_DAYS = 30;
 const attendanceSheetCache = new Map();
+const progressiveAttendanceSheet = createProgressiveAttendanceSheet({ fetcher: attendanceSheetFetcher });
 
 function elapsedMs(start) {
   return Math.round(Number(process.hrtime.bigint() - start) / 1e6);
@@ -104,19 +110,36 @@ function getAttendanceScheduleSeeds(rows = [], defaultKronosAccountId = null, ac
   return [...byUid.values()];
 }
 
-async function getCachedAttendanceSheetDay(accountId, workDate, { forceRefresh = false } = {}) {
-  const key = `${accountId}|${workDate}`;
+async function getCachedAttendanceSheetDay(accountId, workDate, { forceRefresh = false, sheetOnly = false } = {}) {
+  const key = `${sheetOnly ? "sheet" : "legacy"}|${accountId}|${workDate}`;
+  const previous = attendanceSheetCache.get(key);
+  const scope = sheetOnly
+    ? ((!forceRefresh && previous && (previous.inFlight || previous.expiresAt > Date.now()))
+        ? previous.scope : await resolveCallCenterOperationsAccountScope(accountId))
+    : null;
+  const today = getManilaTodayIso();
+  const roster = scope && /^US[\s_-]*VISA$/i.test(String(scope.accountName || "").trim())
+    ? await findUsVisaAttendanceSheetRoster({ dateFrom: workDate, dateTo: workDate, today })
+    : null;
+  // Include identity/assignment values, not only membership, so a corrected
+  // ledger name is reflected even when the eligible employee IDs are unchanged.
+  const signature = sheetOnly ? JSON.stringify([roster, workDate < today, process.env.KRONOS_ATTENDANCE_SHEET_STRATEGY]) : "legacy";
   const now = Date.now();
   const existing = attendanceSheetCache.get(key);
-  if (existing && (existing.inFlight || (!forceRefresh && existing.expiresAt > now))) {
+  if (existing && existing.signature === signature && (existing.inFlight || (!forceRefresh && existing.expiresAt > now))) {
     const cacheStatus = existing.inFlight ? "SHARED_REQUEST" : "HIT";
     return { dataset: await existing.promise, cacheStatus };
   }
 
-  if (forceRefresh) clearKronosAttendanceSheetSourceCaches({ workDate });
-  const cacheEntry = { promise: null, expiresAt: 0, inFlight: true };
+  if (forceRefresh) {
+    if (roster) attendanceSheetFetcher.clearDate(workDate);
+    else clearKronosAttendanceSheetSourceCaches({ workDate });
+  }
+  const cacheEntry = { promise: null, expiresAt: 0, inFlight: true, scope, signature };
   // Store the pending promise before awaiting it to deduplicate concurrent UI requests.
-  cacheEntry.promise = buildAttendanceSheetDay(accountId, workDate);
+  cacheEntry.promise = Array.isArray(roster)
+    ? attendanceSheetFetcher.build({ scope, roster, workDate, today })
+    : buildAttendanceSheetDay(accountId, workDate, { scope, roster, sheetOnly, today });
   attendanceSheetCache.delete(key);
   attendanceSheetCache.set(key, cacheEntry);
   while (attendanceSheetCache.size > ATTENDANCE_SHEET_MAX_CACHE_DAYS) {
@@ -127,7 +150,7 @@ async function getCachedAttendanceSheetDay(accountId, workDate, { forceRefresh =
     const ttl = workDate === getManilaTodayIso()
       ? ATTENDANCE_SHEET_TODAY_CACHE_MS
       : ATTENDANCE_SHEET_CACHE_MS;
-    cacheEntry.expiresAt = Date.now() + ttl;
+    cacheEntry.expiresAt = Math.min(Date.now() + ttl, dataset.sourceExpiresAt ?? Infinity);
     cacheEntry.inFlight = false;
     return { dataset, cacheStatus: "MISS" };
   } catch (error) {
@@ -770,9 +793,12 @@ export async function getLiveAttendanceShiftRows({
   dateTo,
   // Default false: existing KPI callers retain precisely their old fetch path.
   strictPagination = false,
+  resolvedScope = null,
+  // Internal Attendance Sheet option only; KPI callers use the original path.
+  verifiedRosterByUid = null,
 }) {
   const range = validateDateRange(dateFrom, dateTo);
-  const scope = await resolveCallCenterOperationsAccountScope(accountId);
+  const scope = resolvedScope || await resolveCallCenterOperationsAccountScope(accountId);
 
   // Always fetch the complete selected account/date range. Utilization requires
   // the true first login and last logoff across the full live source result.
@@ -786,17 +812,17 @@ export async function getLiveAttendanceShiftRows({
   });
 
   const fieldConfiguration = getAttendanceFieldConfiguration(remoteRows);
-  const normalizedRows = normalizeKronosAttendanceRows(remoteRows, { fieldConfiguration });
-  const employeeLedgers = await findEmployeeLedgersByGyEmpCodes(
+  const normalizedRows = resolvedScope && !remoteRows.length ? [] : normalizeKronosAttendanceRows(remoteRows, { fieldConfiguration });
+  const employeeLedgers = verifiedRosterByUid ? [] : await findEmployeeLedgersByGyEmpCodes(
     normalizedRows.map((row) => row.gyEmpCode),
   );
-  const ledgerByUid = new Map(
+  const ledgerByUid = verifiedRosterByUid || new Map(
     employeeLedgers.map((ledger) => [normalizeEmployeeUid(ledger.employeeUid), ledger]),
   );
 
   const rows = normalizedRows
     .map((row) => {
-      const uid = normalizeEmployeeUid(row.employeeUid);
+      const uid = verifiedRosterByUid ? attendanceSheetUid(row.employeeUid) : normalizeEmployeeUid(row.employeeUid);
       const ledger = ledgerByUid.get(uid) || null;
 
       return {
@@ -837,19 +863,41 @@ export async function getLiveAttendanceShiftRows({
 
 // The sheet uses its own date-scoped data assembly. Shared KPI attendance
 // retrieval functions above remain unchanged.
-async function buildAttendanceSheetDay(accountId, workDate) {
+async function buildAttendanceSheetDay(accountId, workDate, { scope = null, roster = null, sheetOnly = false, today = getManilaTodayIso() } = {}) {
   const startedAt = process.hrtime.bigint();
   const attendanceStart = process.hrtime.bigint();
 
-  // Attendance first: it provides the day's punch population and identity seeds.
-  // Schedule retrieval now calls employee-schedules by gy_emp_code; directory data
-  // remains only for account/Team Leader verification and no-attendance identities.
+  // Establish the sheet's complete dated identity population before calling
+  // Kronos. Only attendance and schedule fields are supplemented by Kronos.
+  const rosterByUid = Array.isArray(roster) ? new Map(roster.map(ledger => [attendanceSheetUid(ledger.employeeUid), ledger])) : null;
+  const rosterSet = rosterByUid ? new Set(rosterByUid.keys()) : null;
+  const ledgerName = (uid) => cleanKronosEmployeeName(rosterByUid?.get(uid)?.kronosName, scope?.accountName);
+  const rosterBaseRows = rosterByUid ? new Map([...rosterByUid].map(([uid, ledger]) => [uid, {
+    employeeUid: uid, gyEmpCode: uid, workDate,
+    employeeName: ledgerName(uid),
+    employeeLedgerId: ledger.ledgerId || null,
+    employeeMappingStatus: "MATCHED_US_VISA_ROSTER", taskOrderId: ledger.taskOrderId || null,
+    scheduleIn: null, scheduleOut: null, scheduleMode: null,
+    firstLoginAt: null, lastLogoffAt: null, status: null, shiftStatus: "INCOMPLETE",
+    otHours: null, totalHours: null, shiftSeconds: 0, sourceRowCount: 0, rawJson: [],
+    hrisAccountId: scope.accountId, accountName: scope.accountName,
+    kronosAccountId: scope.kronosMapping?.kronosAccountId,
+    kronosAccountName: scope.kronosMapping?.kronosAccountName || scope.accountName,
+    employeeRole: ledger.organizationalRole || null, departmentId: scope.departmentId, departmentName: scope.departmentName,
+  }])) : null;
   const dataset = await getLiveAttendanceShiftRows({
     accountId,
     dateFrom: workDate,
     dateTo: workDate,
     strictPagination: true,
+    resolvedScope: scope,
+    verifiedRosterByUid: rosterByUid,
   });
+  const excludedAttendanceRows = rosterSet ? dataset.rows.filter(row => !rosterSet.has(attendanceSheetUid(row.employeeUid))).length : 0;
+  if (rosterSet) {
+    dataset.rows = dataset.rows.filter(row => rosterSet.has(attendanceSheetUid(row.employeeUid)) && row.workDate === workDate)
+      .map(row => ({ ...row, employeeUid: attendanceSheetUid(row.employeeUid), gyEmpCode: attendanceSheetUid(row.gyEmpCode ?? row.employeeUid) }));
+  }
   const attendanceMs = elapsedMs(attendanceStart);
 
   const scheduleStart = process.hrtime.bigint();
@@ -871,13 +919,17 @@ async function buildAttendanceSheetDay(accountId, workDate) {
     employeeUids: attendanceEmployeeUids,
     seedEmployees,
     includeAccountPopulation: true,
+    verifiedRosterUids: rosterSet ? [...rosterSet] : null,
+    verifiedRosterNamedUids: rosterSet ? [...rosterSet].filter(uid => ledgerName(uid)) : [],
     dateFrom: workDate,
     dateTo: workDate,
   });
   const scheduleMs = elapsedMs(scheduleStart);
   const joinStart = process.hrtime.bigint();
 
-  const { schedules: accountSchedules, teamLeaders } = scheduleData;
+  const { schedules: rawSchedules, teamLeaders: rawTeamLeaders } = scheduleData;
+  const accountSchedules = rosterSet ? rawSchedules.filter(row => rosterSet.has(attendanceSheetUid(row.employeeUid)) && row.schedDay === workDate) : rawSchedules;
+  const teamLeaders = rosterSet ? rawTeamLeaders.filter(row => rosterSet.has(attendanceSheetUid(row.employeeUid))) : rawTeamLeaders;
   const directoryNamesByUid = new Map(
     (scheduleData.directoryEmployeeNames || []).map((employee) => [
       normalizeEmployeeUid(employee.employeeUid),
@@ -885,6 +937,7 @@ async function buildAttendanceSheetDay(accountId, workDate) {
     ]),
   );
   const resolveSheetName = (uid, attendance, scheduled) =>
+    ledgerName(uid) ||
     directoryNamesByUid.get(uid) ||
     cleanKronosEmployeeName(attendance?.employeeName, dataset.scope.accountName) ||
     (Array.isArray(attendance?.rawJson)
@@ -909,7 +962,9 @@ async function buildAttendanceSheetDay(accountId, workDate) {
         kronosAccountId: TEAM_LEADERS_KRONOS_ACCOUNT_ID,
       },
     };
-    const { rows: rawLeaderAttendance } = await fetchAccountAttendancePagesParallel({
+    const fetchLeaderAttendance = sheetOnly ? fetchAttendancePages : fetchAccountAttendancePagesParallel;
+    const { rows: rawLeaderAttendance } = await fetchLeaderAttendance({
+      strictPagination: sheetOnly,
       scope: leaderScope,
       dateFrom: dataset.range.dateFrom,
       dateTo: dataset.range.dateTo,
@@ -921,14 +976,16 @@ async function buildAttendanceSheetDay(accountId, workDate) {
         (row) => `${normalizeEmployeeUid(row.employeeUid)}|${row.workDate}`,
       ));
       leaderPunchRows = normalized.filter((row) => {
-        const uid = normalizeEmployeeUid(row.employeeUid);
+        const uid = rosterSet ? attendanceSheetUid(row.employeeUid) : normalizeEmployeeUid(row.employeeUid);
         const key = `${uid}|${row.workDate}`;
-        return teamLeadersByUid.has(uid) && !existingKeys.has(key);
+        return teamLeadersByUid.has(uid) && !existingKeys.has(key) && (!sheetOnly || row.workDate === workDate);
       }).map((row) => {
-        const leader = teamLeadersByUid.get(normalizeEmployeeUid(row.employeeUid));
+        const uid = rosterSet ? attendanceSheetUid(row.employeeUid) : normalizeEmployeeUid(row.employeeUid);
+        const leader = teamLeadersByUid.get(uid);
         return {
           ...row,
-          employeeName: resolveSheetName(normalizeEmployeeUid(row.employeeUid), row, leader),
+          ...(rosterSet ? { employeeUid: uid, gyEmpCode: uid } : {}),
+          employeeName: resolveSheetName(uid, row, leader),
           employeeRole: "TEAM_LEADER",
           hrisAccountId: dataset.scope.accountId,
           accountName: dataset.scope.accountName,
@@ -1006,10 +1063,10 @@ async function buildAttendanceSheetDay(accountId, workDate) {
     });
 
     if (missingEmployees.length > 0) {
-      const missingLedgers = await findEmployeeLedgersByGyEmpCodes(
+      const missingLedgers = rosterByUid ? [] : await findEmployeeLedgersByGyEmpCodes(
         missingEmployees.map((e) => e.gyEmpCode),
       );
-      const missingLedgerMap = new Map(
+      const missingLedgerMap = rosterByUid || new Map(
         missingLedgers.map((l) => [normalizeEmployeeUid(l.employeeUid), l]),
       );
 
@@ -1057,17 +1114,57 @@ async function buildAttendanceSheetDay(accountId, workDate) {
     }
   }
 
+  let sheetRows = joinedRows;
+  if (sheetOnly) {
+    const keyFor = rosterSet ? attendanceSheetUid : normalizeEmployeeUid;
+    const scheduleFailedUids = new Set((scheduleData.scheduleFailures || []).map(row => keyFor(row.employeeUid)));
+    const byUid = rosterBaseRows || new Map();
+    const mergedUids = new Set();
+    for (const row of joinedRows) {
+      const uid = keyFor(row.employeeUid);
+      if (!uid || row.workDate !== workDate || (rosterSet && !rosterSet.has(uid)) || mergedUids.has(uid)) continue;
+      mergedUids.add(uid);
+      const base = byUid.get(uid);
+      byUid.set(uid, base && rosterByUid ? {
+        ...base, ...row,
+        employeeName: base.employeeName || row.employeeName || null,
+        employeeLedgerId: base.employeeLedgerId,
+        employeeMappingStatus: base.employeeMappingStatus,
+        employeeRole: base.employeeRole || row.employeeRole || null,
+        taskOrderId: base.taskOrderId,
+      } : row);
+    }
+    // Roster-only employees already have an initialized row, including when
+    // neither remote endpoint has data. Kronos is a name fallback only.
+    if (rosterByUid) {
+      for (const [uid, row] of byUid) {
+        if (mergedUids.has(uid)) continue;
+        const leader = teamLeadersByUid.get(uid);
+        row.employeeName = resolveSheetName(uid, null, leader);
+        if (leader) {
+          row.kronosAccountId = leader.kronosAccountId;
+          row.kronosAccountName = "Team Leaders";
+          row.employeeRole ||= leader.employeeRole;
+        }
+      }
+    }
+    sheetRows = [...byUid.entries()].map(([uid, row]) => classifyAttendanceSheetRow(row, {
+      today, scheduleFailed: scheduleFailedUids.has(uid),
+    })).sort((a, b) => String(a.employeeName || a.employeeUid).localeCompare(String(b.employeeName || b.employeeUid)));
+  }
+
   const finalDataset = {
     scope: dataset.scope,
     sourceEndpoint: dataset.sourceEndpoint,
     sourceRows: dataset.sourceRows + leaderPunchRows.reduce((count, row) => count + (row.sourceRowCount || 0), 0),
-    normalizedRows: joinedRows.length,
-    completeShiftRows: dataset.completeShiftRows,
-    incompleteShiftRows: dataset.incompleteShiftRows,
-    matchedEmployeeLedgerRows: dataset.matchedEmployeeLedgerRows,
+    normalizedRows: sheetRows.length,
+    completeShiftRows: sheetOnly ? sheetRows.filter(row => row.shiftStatus === "COMPLETE").length : dataset.completeShiftRows,
+    incompleteShiftRows: sheetOnly ? sheetRows.filter(row => row.shiftStatus !== "COMPLETE").length : dataset.incompleteShiftRows,
+    matchedEmployeeLedgerRows: sheetOnly ? sheetRows.filter(row => ["MATCHED_LEDGER", "MATCHED_US_VISA_ROSTER"].includes(row.employeeMappingStatus)).length : dataset.matchedEmployeeLedgerRows,
     fieldConfiguration: dataset.fieldConfiguration,
     discoveredFields: dataset.discoveredFields,
-    rows: joinedRows,
+    rows: sheetRows,
+    ...(sheetOnly ? { summary: summarizeAttendanceSheet(sheetRows), attendanceDate: workDate } : {}),
     storageMode: "LIVE_ONLY",
     performance: {
       attendanceMs,
@@ -1075,6 +1172,7 @@ async function buildAttendanceSheetDay(accountId, workDate) {
       joinMs: elapsedMs(joinStart),
       totalMs: elapsedMs(startedAt),
       ...(scheduleData.diagnostics || {}),
+      ...(sheetOnly ? { excludedAttendanceRows, verifiedRosterSize: roster?.length ?? null } : {}),
     },
   };
   return finalDataset;
@@ -1089,6 +1187,10 @@ export async function getLiveAttendance({
   page = 1,
   limit = 50,
   forceRefresh = false,
+  sheetOnly = false,
+  attendanceStatus = "all",
+  role = "all",
+  progressive = false, prefetch = false, sessionId = null,
 }) {
   const range = validateDateRange(dateFrom, dateTo);
   if (range.dateFrom !== range.dateTo) {
@@ -1098,12 +1200,35 @@ export async function getLiveAttendance({
     throw error;
   }
   const requestStart = process.hrtime.bigint();
-  const { dataset, cacheStatus } = await getCachedAttendanceSheetDay(accountId, range.dateFrom, { forceRefresh });
-  const code = normalizeEmployeeUid(gyEmpCode);
+  if (sheetOnly && !ATTENDANCE_SHEET_FILTERS.has(attendanceStatus)) {
+    const error = new Error("Invalid attendance status filter.");
+    error.status = 400;
+    error.code = "ATTENDANCE_SHEET_INVALID_STATUS";
+    throw error;
+  }
+  if (sheetOnly && !["all", "AGENT", "TEAM_LEADER"].includes(role)) {
+    const error = new Error("Invalid Attendance Sheet role filter.");
+    error.status = 400;
+    error.code = "ATTENDANCE_SHEET_INVALID_ROLE";
+    throw error;
+  }
+  if (sheetOnly && progressive) {
+    const scope = await resolveCallCenterOperationsAccountScope(accountId);
+    if (/^US[\s_-]*VISA$/i.test(String(scope.accountName || "").trim())) {
+      const today = getManilaTodayIso();
+      const roster = await findUsVisaAttendanceSheetRoster({ dateFrom: range.dateFrom, dateTo: range.dateTo, today });
+      return progressiveAttendanceSheet.read({ scope, roster, workDate: range.dateFrom, today, forceRefresh, prefetch, sessionId,
+        page: normalizePage(page), limit: normalizeLimit(limit, 25), search, gyEmpCode, attendanceStatus, role });
+    }
+  }
+  const { dataset, cacheStatus } = await getCachedAttendanceSheetDay(accountId, range.dateFrom, { forceRefresh, sheetOnly });
+  const code = sheetOnly ? attendanceSheetUid(gyEmpCode) : normalizeEmployeeUid(gyEmpCode);
   const term = String(search || "").trim().replace(/^SIB-\s*/i, "").toLowerCase();
-  const filteredRows = !code && !term ? dataset.rows : dataset.rows.filter((row) => {
+  const roleRows = sheetOnly && role !== "all" ? dataset.rows.filter(row => row.employeeRole === role) : dataset.rows;
+  const scopedRows = sheetOnly ? roleRows.filter(row => matchesAttendanceSheetFilter(row, attendanceStatus)) : roleRows;
+  const filteredRows = !code && !term ? scopedRows : scopedRows.filter((row) => {
     const uid = normalizeEmployeeUid(row.employeeUid);
-    if (code && uid !== code) return false;
+    if (code && (sheetOnly ? attendanceSheetUid(uid) : uid) !== code) return false;
     return !term || `${uid} ${row.gyEmpCode || ""} ${row.employeeName || ""}`
       .toLowerCase().includes(term);
   });
@@ -1115,8 +1240,10 @@ export async function getLiveAttendance({
   const durationMs = elapsedMs(requestStart);
   return {
     ...dataset,
+    ...(sheetOnly ? { roleFilter: role, summary: summarizeAttendanceSheet(roleRows) } : {}),
     // Do not expose the unpaginated cached rows through the API.
     rows: undefined,
+    sourceExpiresAt: undefined,
     data: filteredRows.slice(offset, offset + safeLimit),
     normalizedRows: total,
     pagination: { currentPage: safePage, totalPages, total, limit: safeLimit },

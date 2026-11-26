@@ -121,7 +121,7 @@ const RETRY_DELAY_MS = 250;
 
 function safeRequestContext(endpoint, options) {
   // Do not include Authorization headers, JWTs or body content in diagnostics.
-  return { endpoint, params: options.query || null };
+  return { endpoint, params: options.query || null, ...(["ATTENDANCE_SHEET", "ABSENTEEISM"].includes(options.module) ? { module: options.module } : {}) };
 }
 
 function retryDelay(attempt) {
@@ -162,6 +162,14 @@ export async function kronosApiRequest(endpoint, options = {}) {
           elapsedMs: Date.now() - startedAt,
         },
       );
+      if (options.module === "ATTENDANCE_SHEET" && response.status === 429) {
+        const header = response.headers.get("Retry-After");
+        if (header != null) {
+          const seconds = Number(header);
+          const millis = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
+          if (Number.isFinite(millis)) err.retryAfterMs = Math.max(0, millis);
+        }
+      }
       if (attempt <= maxRetries && TRANSIENT_HTTP_STATUSES.has(response.status)) {
         console.warn("Retrying temporary Kronos API HTTP failure:", {
           ...context, status: response.status, attempt, maxAttempts: maxRetries + 1,

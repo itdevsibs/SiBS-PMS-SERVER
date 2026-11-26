@@ -5,7 +5,7 @@ import { buildStaffingHeadcountSeries } from './staffingHeadcountAggregation.js'
 
 /** HC uses dated employee-ledger employment; Kronos schedules still support Attrition %. */
 export async function getStaffingHeadcountForDashboard({ period, dateFrom, dateTo, taskOrder }, {
-  scheduleDateFrom = dateFrom, scheduleDateTo = dateTo,
+  scheduleDateFrom = dateFrom, scheduleDateTo = dateTo, forceRefresh = false, fetchSchedule,
 } = {}) {
   const [roster, requirementRows, attritionEvents] = await Promise.all([
     findUsVisaHeadcountRosterAssignments({ taskOrder, dateFrom, dateTo }),
@@ -16,11 +16,13 @@ export async function getStaffingHeadcountForDashboard({ period, dateFrom, dateT
   let scheduledRows = [];
   let scheduleAvailable = true;
   let scheduleError = null;
+  let scheduleRequestCount = 0;
   try {
     const result = await getKronosScheduledEmployeeDayRows({
       employeeUids: [...new Set(rosterAssignments.map(r => r.employeeUid))],
-      dateFrom: scheduleDateFrom, dateTo: scheduleDateTo,
+      dateFrom: scheduleDateFrom, dateTo: scheduleDateTo, forceRefresh, fetchSchedule,
     });
+    scheduleRequestCount = result.remoteRequestCount;
     scheduledRows = result.rows.filter(row => row.workDate >= dateFrom && row.workDate <= dateTo);
   } catch (error) {
     console.error('WFM scheduled headcount source unavailable:', { code: error?.code, message: error?.message });
@@ -32,7 +34,7 @@ export async function getStaffingHeadcountForDashboard({ period, dateFrom, dateT
     employmentAssignments: roster.employmentAssignments, attritionEvents, scheduleAvailable,
     period, dateFrom, dateTo, taskOrder,
   });
-  return { ...result, scheduleError };
+  return { ...result, scheduleError, scheduleRequestCount };
 }
 
 export function attachStaffingToAbsenteeismDashboard(dashboard, staffing) {
@@ -51,6 +53,7 @@ export function attachStaffingToAbsenteeismDashboard(dashboard, staffing) {
       source: staffing.source,
       days: staffing.days,
       scheduleError: staffing.scheduleError,
+      scheduleRequestCount: staffing.scheduleRequestCount,
       headcountBasis: 'EMPLOYMENT_DATE_OPENING_WEEK_SNAPSHOT_OR_CUSTOM_DAILY',
       requirementBasis: 'FIRST_FULLY_PUBLISHED_DAY_IN_WEEK_OR_CUSTOM_DAILY',
       weeklyAggregation: 'OPENING_WEEK_EMPLOYEE_COUNT_NO_AVERAGING',

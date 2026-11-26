@@ -34,7 +34,7 @@ export function approvedLeaveClassification(leave) {
   }
   const days = Math.round((Date.parse(`${from}T00:00:00Z`) - Date.parse(`${filed}T00:00:00Z`)) / 86400000);
   return { employeeUid: normalizeCode(leave.employee_code ?? leave.gy_emp_code), from, to,
-    planned: days >= 3, noticeCalendarDays: days };
+    planned: days >= 7, noticeCalendarDays: days };
 }
 
 export function applyApprovedLeaveToAbsenteeismRows(attendanceRows = [], leaveRows = []) {

@@ -121,3 +121,25 @@ export async function fetchDirectoryScopedAbsenteeismSources({
     },
   };
 }
+
+
+/** Directory-free source orchestration. Identity comes only from the scoped ledger. */
+export async function fetchLedgerScopedAbsenteeismSources({
+  roster, kronosAccountId, dateFrom, dateTo,
+  scheduleDateFrom = dateFrom, scheduleDateTo = dateTo,
+  forceRefresh = false, fetchAttendance, fetchSchedule, scheduleConcurrency = 6,
+}) {
+  const started = Date.now();
+  const byUid = new Map(roster.map(row => [row.employeeUid, row]));
+  const matchedEmployeeCodes = [...byUid.keys()];
+  const [attendance, scheduleResults] = await Promise.all([
+    fetchAttendance({ kronosAccountId, employeeUids: matchedEmployeeCodes, dateFrom, dateTo, forceRefresh }),
+    boundedMap(matchedEmployeeCodes, scheduleConcurrency, async uid => ({
+      uid, gyEmpId: byUid.get(uid).gyEmpId,
+      ...await fetchSchedule(uid, scheduleDateFrom, scheduleDateTo, { forceRefresh }),
+    })),
+  ]);
+  assertDirectoryAttendanceIdentity(attendance.rows, byUid);
+  return { byUid, attendance, scheduleResults, matchedEmployeeCodes,
+    fetchTimingMs: { directory: 0, concurrentSources: Date.now() - started, total: Date.now() - started } };
+}
