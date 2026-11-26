@@ -1,31 +1,22 @@
 import { getKronosApiResponse } from "../../services/kronos/kronosApiClient.js";
 import {
   assertDirectoryAttendanceIdentity,
-  fetchDirectoryScopedAbsenteeismSources,
+  fetchLedgerScopedAbsenteeismSources,
 } from "./absenteeismDirectoryFetchPlan.js";
 import {
   getKronosOptimizedAttendanceEmployeeDayRows,
+  aggregateTrackerEmployeeDays,
   normalizeTrackerEmployeeUid,
 } from "./kronosTrackerRepository.js";
 import { normalizeKronosAccountName } from "../../services/kronos/kronosAccountDirectoryService.js";
-import {
-  fetchCallCenterDepartmentDirectory,
-  selectUsVisaDirectoryEmployees,
-} from "./absenteeismDepartmentDirectory.js";
-
-const EMPLOYEE_DIRECTORY_ENDPOINT = "/api/v1/employee-directory";
 const OPTIMIZED_SCHEDULE_ENDPOINT = "/api/v1/employee-schedules";
 const SCHEDULE_PAGE_LIMIT = 100;
 const MAX_SCHEDULE_PAGES = 200;
 const SCHEDULE_CONCURRENCY = 6;
 // Consistent with the existing Account 20 leave-management source.
 const KRONOS_US_VISA_ACCOUNT_ID = 20;
-const DIRECTORY_CACHE_MS = 30 * 60 * 1000;
 const SCHEDULE_CACHE_MS = 30 * 60 * 1000;
-const DIRECTORY_CACHE_MAX_ENTRIES = 30;
 const SCHEDULE_CACHE_MAX_ENTRIES = 1500;
-const directoryCache = new Map();
-const directoryInFlight = new Map();
 const scheduleCache = new Map();
 const scheduleInFlight = new Map();
 
@@ -141,6 +132,7 @@ async function fetchPageCollection(endpoint, filters, {
         params: { ...filters, page, limit: pageLimit },
         retryTransient: true,
         kpiShared: true,
+        module: "ABSENTEEISM",
       });
     } catch (error) {
       error.stage ??= context;
@@ -154,6 +146,8 @@ async function fetchPageCollection(endpoint, filters, {
     }
 
     const info = pageInfo(payload, page);
+    if (page === 1 && info.currentPage === 1 && info.totalPages === 0 &&
+        info.totalRecords === 0 && batch.length === 0) return { rows: [], requestCount };
     if (!Number.isSafeInteger(info.totalPages) || info.totalPages < 1 ||
         info.totalPages > maxPages || info.currentPage !== page) {
       unavailable(`Kronos ${context} returned invalid pagination on page ${page}.`,
@@ -189,43 +183,61 @@ async function fetchPageCollection(endpoint, filters, {
     "KRONOS_PAGE_LIMIT_EXCEEDED");
 }
 
-function rememberDirectoryCache(accountId, data) {
-  directoryCache.set(accountId, { data, expiresAt: Date.now() + DIRECTORY_CACHE_MS });
-  while (directoryCache.size > DIRECTORY_CACHE_MAX_ENTRIES) {
-    directoryCache.delete(directoryCache.keys().next().value);
-  }
+const targetedAttendanceCache = new Map();
+const targetedAttendanceInFlight = new Map();
+
+export function getAbsenteeismAttendanceStrategy() {
+  return process.env.KRONOS_ABSENTEEISM_ATTENDANCE_STRATEGY === "targeted" ? "targeted" : "bulk";
 }
 
-async function fetchAccountEmployeeDirectory(accountId, { forceRefresh = false } = {}) {
-  const cached = directoryCache.get(accountId);
-  if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
-    return { ...cached.data, requestCount: 0 };
-  }
-
-  let pending = directoryInFlight.get(accountId);
-  const sharedPending = Boolean(pending);
-  if (!pending) {
-    pending = (async () => {
-      const result = await fetchCallCenterDepartmentDirectory({ requestPage: getKronosApiResponse });
-      // Kronos does not support account_id/account_ids on employee-directory.
-      // Department 1 is filtered server-side, then Account 20 here in PMS.
-      const matched = selectUsVisaDirectoryEmployees(result.rows, { accountId, departmentId: 1 });
-      const data = {
-        byUid: matched.byUid,
-        sourceRows: result.rows.length,
-        accountMatchedRows: matched.accountMatchedRows,
-        requestCount: result.requestCount,
-        paginationMode: result.paginationMode,
-      };
-      rememberDirectoryCache(accountId, data);
+/** Optional employee-code attendance strategy for benchmarking. Keep the same
+ * account/date scope and minimal tracker projection as the bulk adapter. */
+export async function getKronosAbsenteeismTargetedAttendanceRows({
+  kronosAccountId, employeeUids = [], dateFrom, dateTo, forceRefresh = false,
+  fetchCollection = fetchPageCollection,
+} = {}) {
+  const endpoint = "/api/v1/employee-attendance";
+  const accountId = positiveInteger(kronosAccountId);
+  const from = normalizeDate(dateFrom), to = normalizeDate(dateTo);
+  if (!accountId || !from || !to || from > to) unavailable("Invalid targeted attendance range.");
+  const ids = [...new Set(employeeUids.map(normalizeTrackerEmployeeUid).filter(Boolean))];
+  const results = await mapWithConcurrency(ids, 3, async uid => {
+    const key = JSON.stringify([accountId, uid, from, to]);
+    const cached = targetedAttendanceCache.get(key);
+    if (!forceRefresh && cached?.expiresAt > Date.now()) return { ...cached.data, requestCount: 0 };
+    if (targetedAttendanceInFlight.has(key)) return { ...await targetedAttendanceInFlight.get(key), requestCount: 0 };
+    const pending = (async () => {
+      const response = await fetchCollection(endpoint, { gy_emp_code: uid, date_from: from, date_to: to },
+        { context: "TARGETED_ATTENDANCE_PAGE_FETCH", maxPages: 200, pageLimit: 100 });
+      const rows = [];
+      for (const raw of response.rows) {
+        const code = normalizeTrackerEmployeeUid(firstDefinedValue(raw, ["gy_emp_code", "employee.gy_emp_code", "employee_code", "sibs_id"]));
+        const rowAccount = positiveInteger(firstDefinedValue(raw, ["gy_acc_id", "gy_account_id", "account_id", "account.gy_acc_id"]));
+        const date = firstDefinedValue(raw, ["gy_tracker_date", "tracker.gy_tracker_date"]);
+        const login = firstDefinedValue(raw, ["gy_tracker_login", "tracker.gy_tracker_login"]);
+        const day = normalizeDate(date || login);
+        if (code !== uid || !rowAccount || !day || day < from || day > to) {
+          unavailable(`Invalid targeted attendance identity or date for ${uid}.`, "KRONOS_ATTENDANCE_SCOPE_MISMATCH");
+        }
+        if (rowAccount !== accountId) continue;
+        rows.push({ gy_emp_code: code, gy_acc_id: rowAccount, gy_tracker_date: date, gy_tracker_login: login,
+          gy_emp_id: firstDefinedValue(raw, ["gy_emp_id", "employee.gy_emp_id", "employee_id"]),
+          gy_tracker_id: firstDefinedValue(raw, ["gy_tracker_id", "tracker.gy_tracker_id"]),
+          gy_tracker_logout: firstDefinedValue(raw, ["gy_tracker_logout", "tracker.gy_tracker_logout"]),
+          gy_tracker_status: firstDefinedValue(raw, ["gy_tracker_status", "tracker.gy_tracker_status"]),
+        });
+      }
+      const data = { rows, sourceRows: response.rows.length, requestCount: response.requestCount };
+      targetedAttendanceCache.set(key, { data, expiresAt: Date.now() + 30 * 60 * 1000 });
+      while (targetedAttendanceCache.size > 1500) targetedAttendanceCache.delete(targetedAttendanceCache.keys().next().value);
       return data;
     })();
-    directoryInFlight.set(accountId, pending);
-    pending.finally(() => directoryInFlight.delete(accountId)).catch(() => {});
-  }
-
-  const data = await pending;
-  return { ...data, requestCount: sharedPending ? 0 : data.requestCount };
+    targetedAttendanceInFlight.set(key, pending);
+    try { return await pending; } finally { if (targetedAttendanceInFlight.get(key) === pending) targetedAttendanceInFlight.delete(key); }
+  });
+  const rows = results.flatMap(result => result.rows);
+  return { rows: aggregateTrackerEmployeeDays(rows, ids), sourceRows: results.reduce((n,r) => n+r.sourceRows,0),
+    accountMatchedRows: rows.length, requestCount: results.reduce((n,r) => n+r.requestCount,0), sourceEndpoint: endpoint };
 }
 
 function findCoveringSchedule(map, employeeUid, from, to, { cache = false } = {}) {
@@ -304,6 +316,23 @@ async function fetchEmployeeSchedulePages(employeeUid, dateFrom, dateTo, { force
       return day && day >= from && day <= to;
     }),
     requestCount: sharedPending ? 0 : data.requestCount,
+  };
+}
+
+/** One shared schedule snapshot per combined Absenteeism/Staffing request.
+ * Both consumers keep independent roster filters and calculations. Even a
+ * forced refresh is issued once per employee/range in this request. */
+export function createAbsenteeismScheduleReader(fetchSchedule = fetchEmployeeSchedulePages) {
+  const requests = new Map();
+  return async (uid, from, to, options = {}) => {
+    const key = JSON.stringify([uid, from, to, Boolean(options.forceRefresh)]);
+    if (requests.has(key)) {
+      const data = await requests.get(key);
+      return { ...data, requestCount: 0 };
+    }
+    const pending = Promise.resolve().then(() => fetchSchedule(uid, from, to, options));
+    requests.set(key, pending);
+    return pending;
   };
 }
 
@@ -414,7 +443,7 @@ function emptyDataset({ requestedEmployeeCount = 0 } = {}) {
     sourceEndpoints: {
       trackerHistory: "/api/v1/employee-attendance",
       rawTrackerSource: null,
-      employeeDirectory: EMPLOYEE_DIRECTORY_ENDPOINT,
+      employeeDirectory: null,
       schedules: OPTIMIZED_SCHEDULE_ENDPOINT,
     },
   };
@@ -424,47 +453,38 @@ function emptyDataset({ requestedEmployeeCount = 0 } = {}) {
  * Shared KPI data adapter. The formulas remain in absenteeismKpiService.js.
  * - Kronos account/date attendance comes from /employee-attendance.
  * - PMS ledger supplies the target/Task Order employee codes.
- * - The Account 20 employee directory verifies roster membership first.
+ * - The dated Ledger roster supplies identity; no directory requests.
  * - Attendance and employee-code schedule fetching then run concurrently.
  * - The shared KPI request pool caps physical calls to Kronos.
  */
 export async function getKronosAbsenteeismEmployeeDayRows({
-  employeeUids = [], dateFrom = null, dateTo = null, accountName = "US Visa", forceRefresh = false,
+  employeeUids = [], roster = null, dateFrom = null, dateTo = null, accountName = "US Visa", forceRefresh = false,
   scheduleDateFrom = dateFrom, scheduleDateTo = dateTo,
+  fetchSchedule = fetchEmployeeSchedulePages,
 } = {}) {
   const from = normalizeDate(dateFrom);
   const to = normalizeDate(dateTo);
-  const employeeCodes = [...new Set(employeeUids.map(normalizeTrackerEmployeeUid).filter(Boolean))];
+  const employeeCodes = [...new Set((roster ? roster.map(row => row.employeeUid) : employeeUids).map(normalizeTrackerEmployeeUid).filter(Boolean))];
   if (!from || !to || from > to || !employeeCodes.length) {
     return emptyDataset({ requestedEmployeeCount: employeeCodes.length });
   }
 
-  // US Visa is Account 20; the directory API itself filters by Department 1 only.
+  // US Visa attendance is restricted to Account 20; the dated Ledger supplies the roster.
   // The PMS employment-date ledger is still the authoritative reporting roster.
   if (normalizeKronosAccountName(accountName) !== normalizeKronosAccountName("US Visa")) {
     unavailable("Absenteeism is scoped to the US Visa account only.", "KRONOS_ACCOUNT_REQUIRED");
   }
   const kronosAccountId = KRONOS_US_VISA_ACCOUNT_ID;
-  const {
-    directory: employeeDirectory,
-    attendance,
-    scheduleResults,
-    matchedEmployeeCodes,
-    unmatchedRosterEmployeeCount,
-    fetchTimingMs,
-  } = await fetchDirectoryScopedAbsenteeismSources({
-    employeeCodes,
-    kronosAccountId,
-    dateFrom: from,
-    dateTo: to,
-    scheduleDateFrom,
-    scheduleDateTo,
-    forceRefresh,
-    fetchDirectory: fetchAccountEmployeeDirectory,
-    fetchAttendance: getKronosOptimizedAttendanceEmployeeDayRows,
-    fetchSchedule: fetchEmployeeSchedulePages,
-    scheduleConcurrency: SCHEDULE_CONCURRENCY,
-  });
+  const attendanceStrategy = getAbsenteeismAttendanceStrategy();
+  const fetchAttendance = attendanceStrategy === "targeted" ? getKronosAbsenteeismTargetedAttendanceRows : getKronosOptimizedAttendanceEmployeeDayRows;
+  const rosterByUid = new Map((roster || []).map(row => [normalizeTrackerEmployeeUid(row.employeeUid), row]));
+  const { byUid, attendance, scheduleResults, matchedEmployeeCodes, fetchTimingMs } =
+    await fetchLedgerScopedAbsenteeismSources({
+      roster: employeeCodes.map(employeeUid => ({ ...rosterByUid.get(employeeUid), employeeUid })),
+      kronosAccountId, dateFrom: from, dateTo: to, scheduleDateFrom, scheduleDateTo, forceRefresh,
+      fetchAttendance,
+      fetchSchedule, scheduleConcurrency: SCHEDULE_CONCURRENCY,
+    });
 
   const presenceKeys = new Set();
   const presentRows = [];
@@ -488,6 +508,10 @@ export async function getKronosAbsenteeismEmployeeDayRows({
   const groupedSchedules = new Map();
   for (const entry of scheduleResults) {
     for (const schedule of entry.rows) {
+      const scheduleUid = normalizeTrackerEmployeeUid(firstDefinedValue(schedule, ["gy_emp_code", "employee_code", "employee.gy_emp_code", "schedule.gy_emp_code"]));
+      if (scheduleUid && scheduleUid !== entry.uid) {
+        unavailable(`Kronos schedule employee code mismatch for ${entry.uid}.`, "KRONOS_SCHEDULE_EMPLOYEE_MISMATCH");
+      }
       const scheduleId = positiveInteger(schedule.gy_emp_id);
       if (scheduleId && entry.gyEmpId && scheduleId !== entry.gyEmpId) {
         unavailable(
@@ -522,7 +546,7 @@ export async function getKronosAbsenteeismEmployeeDayRows({
       entry.windows.some((window) => window.overnight))) {
     const extraDate = nextDate(to);
     try {
-      boundaryAttendance = await getKronosOptimizedAttendanceEmployeeDayRows({
+      boundaryAttendance = await fetchAttendance({
         kronosAccountId,
         employeeUids: matchedEmployeeCodes,
         dateFrom: extraDate,
@@ -533,7 +557,7 @@ export async function getKronosAbsenteeismEmployeeDayRows({
       error.stage ??= "OVERNIGHT_BOUNDARY_ATTENDANCE_FETCH";
       throw error;
     }
-    assertDirectoryAttendanceIdentity(boundaryAttendance.rows, employeeDirectory.byUid);
+    assertDirectoryAttendanceIdentity(boundaryAttendance.rows, byUid);
   }
 
   const intervalIndex = indexTrackerIntervals([
@@ -567,17 +591,18 @@ export async function getKronosAbsenteeismEmployeeDayRows({
     presentRows,
     requestedEmployeeCount: employeeCodes.length,
     matchedEmployeeCount: matchedEmployeeCodes.length,
-    unmatchedRosterEmployeeCount,
+    unmatchedRosterEmployeeCount: 0,
+    directoryRequests: 0,
+    attendanceStrategy,
     fetchTimingMs,
     accountCount: 1,
+    attendanceRequestCount: attendance.requestCount + (boundaryAttendance?.requestCount || 0),
+    scheduleRequestCount: scheduleResults.reduce((sum, entry) => sum + entry.requestCount, 0),
     remoteRequestCount:
       attendance.requestCount +
-      employeeDirectory.requestCount +
       (boundaryAttendance?.requestCount || 0) +
       scheduleResults.reduce((sum, entry) => sum + entry.requestCount, 0),
-    accountEmployeeSourceRows: employeeDirectory.sourceRows,
-    directoryAccount20MatchedRows: employeeDirectory.accountMatchedRows,
-    directoryPaginationMode: employeeDirectory.paginationMode,
+    accountEmployeeSourceRows: employeeCodes.length,
     trackerSourceRows: attendance.sourceRows + (boundaryAttendance?.sourceRows || 0),
     trackerAccountMatchedRows:
       attendance.accountMatchedRows + (boundaryAttendance?.accountMatchedRows || 0),
@@ -586,11 +611,11 @@ export async function getKronosAbsenteeismEmployeeDayRows({
     sourceEndpoints: {
       trackerHistory: attendance.sourceEndpoint,
       rawTrackerSource: null,
-      employeeDirectory: EMPLOYEE_DIRECTORY_ENDPOINT,
+      employeeDirectory: null,
       schedules: OPTIMIZED_SCHEDULE_ENDPOINT,
       employeeResource: null,
     },
-    fetchMode: "DIRECTORY_FIRST_CONCURRENT_ATTENDANCE_AND_EMPLOYEE_SCHEDULES",
+    fetchMode: "LEDGER_FIRST_CONCURRENT_ATTENDANCE_AND_EMPLOYEE_SCHEDULES",
     storageMode: "LIVE_ONLY",
     presenceBasis: "KRONOS_TRACKER_LOGIN",
     accountFilter: accountName,
@@ -604,7 +629,7 @@ export async function getKronosAbsenteeismEmployeeDayRows({
  * and work date appears once, regardless of overlapping schedules.
  * All errors propagate: missing Kronos coverage must not masquerade as zero HC.
  */
-export async function getKronosScheduledEmployeeDayRows({ employeeUids = [], dateFrom, dateTo } = {}) {
+export async function getKronosScheduledEmployeeDayRows({ employeeUids = [], dateFrom, dateTo, forceRefresh = false, fetchSchedule = fetchEmployeeSchedulePages } = {}) {
   const from = normalizeDate(dateFrom);
   const to = normalizeDate(dateTo);
   const employeeCodes = [...new Set(employeeUids.map(normalizeTrackerEmployeeUid).filter(Boolean))];
@@ -613,7 +638,7 @@ export async function getKronosScheduledEmployeeDayRows({ employeeUids = [], dat
   }
   if (!employeeCodes.length) return { rows: [], employeesRequested: 0, remoteRequestCount: 0 };
   const responses = await mapWithConcurrency(employeeCodes, SCHEDULE_CONCURRENCY, async uid => ({
-    uid, ...await fetchEmployeeSchedulePages(uid, from, to),
+    uid, ...await fetchSchedule(uid, from, to, { forceRefresh }),
   }));
   const unique = new Map();
   for (const response of responses) {

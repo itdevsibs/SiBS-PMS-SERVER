@@ -411,6 +411,8 @@ export async function getKronosAttendanceSheetScheduleData({
   employeeUids = [],
   seedEmployees = [],
   includeAccountPopulation = true,
+  verifiedRosterUids = null, // Attendance Sheet-only roster snapshot
+  verifiedRosterNamedUids = [], // Ledger names are authoritative in the sheet, not cached here.
   dateFrom,
   dateTo,
 } = {}) {
@@ -420,21 +422,28 @@ export async function getKronosAttendanceSheetScheduleData({
   }
 
   const isUsVisa = isUsVisaAccount(accountName);
+  const strictRoster = isUsVisa && Array.isArray(verifiedRosterUids);
   const rosterUids = isUsVisa
-    ? await findUsVisaRosterEmployeeUids({ dateFrom, dateTo })
+    ? (strictRoster ? verifiedRosterUids : await findUsVisaRosterEmployeeUids({ dateFrom, dateTo }))
     : [];
+  const uidKey = (value) => normalizeEmployeeUid(value).toUpperCase();
   const rosterUidSet = new Set(rosterUids.map(normalizeEmployeeUid).filter(Boolean));
+  const strictRosterSet = new Set(rosterUids.map(uidKey).filter(Boolean));
+  const rosterNamedSet = new Set(strictRoster ? verifiedRosterNamedUids.map(uidKey).filter(Boolean) : []);
 
   // Attendance and directory data remain identity/account verification sources.
   // /employee-schedules itself is now queried by public gy_emp_code, so schedule
   // retrieval no longer depends on resolving an internal gy_emp_id first.
   const seedByUid = new Map();
   for (const seed of seedEmployees) {
-    mergeEmployeeCandidate(seedByUid, seed, { preferIncoming: true });
+    if (strictRoster && !strictRosterSet.has(uidKey(seed.employeeUid ?? seed.gyEmpCode))) continue;
+    mergeEmployeeCandidate(seedByUid, strictRoster ? { ...seed, employeeUid: uidKey(seed.employeeUid ?? seed.gyEmpCode), gyEmpCode: uidKey(seed.employeeUid ?? seed.gyEmpCode) } : seed, { preferIncoming: true });
   }
 
   const requestedUidSet = new Set(employeeUids.map(normalizeEmployeeUid).filter(Boolean));
-  const requiredUids = includeAccountPopulation && isUsVisa
+  const requiredUids = strictRoster
+    ? strictRosterSet
+    : includeAccountPopulation && isUsVisa
     ? new Set([...rosterUidSet, ...requestedUidSet, ...seedByUid.keys()])
     : new Set([...requestedUidSet, ...seedByUid.keys()]);
 
@@ -451,7 +460,7 @@ export async function getKronosAttendanceSheetScheduleData({
     } else if (
       isUsVisa &&
       seedAccountId === TEAM_LEADERS_KRONOS_ACCOUNT_ID &&
-      rosterUidSet.has(uid)
+      (strictRoster ? strictRosterSet.has(uid) : rosterUidSet.has(uid))
     ) {
       mergeEmployeeCandidate(candidates, {
         ...seed,
@@ -493,7 +502,7 @@ export async function getKronosAttendanceSheetScheduleData({
   // directory, instead of showing a generic account label in the sheet.
   const needsDirectory = (uid) => {
     const employee = candidates.get(uid);
-    return !employee?.gyEmpId || !cleanKronosEmployeeName(employee?.employeeName, accountName);
+    return !employee?.gyEmpId || (!rosterNamedSet.has(uid) && !cleanKronosEmployeeName(employee?.employeeName, accountName));
   };
   let unresolvedUids = [...requiredUids].filter(needsDirectory);
 
@@ -504,7 +513,7 @@ export async function getKronosAttendanceSheetScheduleData({
     try {
       accountDirectory = await getAccountEmployees(accountId);
       const accountByUid = new Map(
-        accountDirectory.employees.map((employee) => [employee.employeeUid, employee]),
+        accountDirectory.employees.map((employee) => [strictRoster ? uidKey(employee.employeeUid) : employee.employeeUid, employee]),
       );
       for (const uid of unresolvedUids) {
         const employee = accountByUid.get(uid);
@@ -512,6 +521,7 @@ export async function getKronosAttendanceSheetScheduleData({
         const verifiedName = cleanKronosEmployeeName(employee.employeeName, accountName);
         mergeEmployeeCandidate(candidates, {
           ...employee,
+          ...(strictRoster ? { employeeUid: uid, gyEmpCode: uid } : {}),
           employeeName: verifiedName || candidates.get(uid)?.employeeName || "",
           kronosAccountId: accountId,
           employeeRole: null,
@@ -527,7 +537,7 @@ export async function getKronosAttendanceSheetScheduleData({
   // US Visa Team Leaders live under Kronos account 78. Only already-verified
   // US Visa roster employees may be considered for cross-account resolution.
   const unresolvedRosterUids = unresolvedUids.filter((uid) =>
-    rosterUidSet.has(uid) &&
+    (strictRoster ? strictRosterSet.has(uid) : rosterUidSet.has(uid)) &&
     (!candidates.get(uid)?.gyEmpId || candidates.get(uid)?.employeeRole === "TEAM_LEADER"),
   );
   if (isUsVisa && unresolvedRosterUids.length) {
@@ -535,7 +545,7 @@ export async function getKronosAttendanceSheetScheduleData({
     try {
       teamLeaderDirectory = await getAccountEmployees(TEAM_LEADERS_KRONOS_ACCOUNT_ID);
       const leaderByUid = new Map(
-        teamLeaderDirectory.employees.map((employee) => [employee.employeeUid, employee]),
+        teamLeaderDirectory.employees.map((employee) => [strictRoster ? uidKey(employee.employeeUid) : employee.employeeUid, employee]),
       );
       for (const uid of unresolvedRosterUids) {
         const leader = leaderByUid.get(uid);
@@ -543,6 +553,7 @@ export async function getKronosAttendanceSheetScheduleData({
         const verifiedName = cleanKronosEmployeeName(leader.employeeName, "Team Leaders");
         mergeEmployeeCandidate(candidates, {
           ...leader,
+          ...(strictRoster ? { employeeUid: uid, gyEmpCode: uid } : {}),
           employeeName: verifiedName || candidates.get(uid)?.employeeName || "",
           kronosAccountId: TEAM_LEADERS_KRONOS_ACCOUNT_ID,
           employeeRole: "TEAM_LEADER",
@@ -556,7 +567,7 @@ export async function getKronosAttendanceSheetScheduleData({
   const unresolvedEmployeeUids = [...requiredUids].filter(
     (uid) => !candidates.get(uid)?.gyEmpId,
   );
-  const allEmployees = [...candidates.values()].filter((employee) => employee.employeeUid);
+  const allEmployees = [...candidates.values()].filter((employee) => employee.employeeUid && (!strictRoster || strictRosterSet.has(uidKey(employee.employeeUid))));
   const teamLeaders = allEmployees.filter((employee) => employee.employeeRole === "TEAM_LEADER");
 
   const results = await mapWithConcurrency(
@@ -582,7 +593,10 @@ export async function getKronosAttendanceSheetScheduleData({
 
   const byEmployeeDay = new Map();
   for (const result of results) {
-    for (const schedule of result.schedules) {
+    for (const cachedSchedule of result.schedules) {
+      // The cached schedule may have been loaded for another account before a transfer.
+      // Keep its times, but use the currently verified candidate metadata for this sheet.
+      const schedule = strictRoster ? { ...cachedSchedule, employeeUid: result.employee.employeeUid, gyEmpCode: result.employee.gyEmpCode, employeeName: cleanKronosEmployeeName(result.employee.employeeName, accountName) || cleanKronosEmployeeName(cachedSchedule.employeeName, accountName) || "", employeeRole: result.employee.employeeRole || null, kronosAccountId: result.employee.kronosAccountId } : cachedSchedule;
       const key = `${schedule.employeeUid}|${schedule.schedDay}`;
       const existing = byEmployeeDay.get(key);
       // The Attendance Sheet has one row per employee/day. For duplicate schedule
@@ -622,7 +636,9 @@ export async function getKronosAttendanceSheetScheduleData({
   for (const directory of [accountDirectory, teamLeaderDirectory]) {
     for (const employee of directory.employees) {
       const verifiedName = cleanKronosEmployeeName(employee.employeeName, accountName);
-      if (verifiedName) directoryEmployeeNames.set(employee.employeeUid, verifiedName);
+      if (verifiedName && (!strictRoster || strictRosterSet.has(uidKey(employee.employeeUid)))) {
+        directoryEmployeeNames.set(strictRoster ? uidKey(employee.employeeUid) : employee.employeeUid, verifiedName);
+      }
     }
   }
 

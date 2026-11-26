@@ -1,3 +1,4 @@
+import { getDocumentedAhtReport } from "../services/kpi/usVisa/calls/documentedAhtReportService.js";
 import { invalidateWfmImportedKpiCache, readCachedWfmImportedKpi } from "../services/cache/wfmImportedKpiCacheService.js";
 import { getCountryOwnedReportScope } from "../services/kpi/usVisa/calls/countryOwnedReportScope.js";
 import { getSkillStatisticsTaskOrderCountryScope } from "../services/kpi/usVisa/calls/skillStatisticsTaskOrderScope.js";
@@ -26,6 +27,19 @@ const BAD_REQUEST_CODES = new Set([
   "VERSION_NOT_FOUND",
   "TASK_ORDER_SOURCE_MISMATCH", "COUNTRY_TASK_ORDER_MISMATCH", "INVALID_SOURCE_SYSTEM",
 ]);
+
+export async function getDocumentedCallsAhtReport(req,res) {
+  try {
+    const result=await getDocumentedAhtReport(req.query);
+    res.setHeader('Cache-Control','private, no-store');
+    return res.json({success:true,...result});
+  } catch(error) {
+    const status=error.status || (BAD_REQUEST_CODES.has(error.code) ? 400 : 500);
+    if (status>=500) console.error('GET /api/kpis/documented-calls-aht-report error:',error);
+    return res.status(status).json({success:false,code:status<500 ? error.code : 'DOCUMENTED_AHT_REPORT_ERROR',
+      message:status<500 ? error.message : 'Unable to fetch Documented Calls AHT report.'});
+  }
+}
 
 export async function getCallsReport(req, res) {
   try {

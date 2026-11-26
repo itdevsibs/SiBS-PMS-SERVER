@@ -82,7 +82,7 @@ function buildQueryParams(req) {
 
 export async function getKronosAttendanceSheet(req, res) {
   try {
-    const result = await getLiveAttendance(buildQueryParams(req));
+    const result = await getLiveAttendance({ ...buildQueryParams(req), sheetOnly: true, attendanceStatus: req.query.attendanceStatus ?? "all", role: req.query.role ?? "all", progressive: req.query.progressive === "true", prefetch: req.query.prefetch === "true", sessionId: req.query.sessionId });
     return res.json({
       success: true,
       data: {
