@@ -225,6 +225,7 @@ export async function getKronosAbsenteeismTargetedAttendanceRows({
           gy_tracker_id: firstDefinedValue(raw, ["gy_tracker_id", "tracker.gy_tracker_id"]),
           gy_tracker_logout: firstDefinedValue(raw, ["gy_tracker_logout", "tracker.gy_tracker_logout"]),
           gy_tracker_status: firstDefinedValue(raw, ["gy_tracker_status", "tracker.gy_tracker_status"]),
+          evidence_work_hours: firstDefinedValue(raw, ["gy_tracker_wh", "tracker.gy_tracker_wh", "gy_tracker_ath", "tracker.gy_tracker_ath", "worked_hours", "total_hours", "work_hours"]),
         });
       }
       const data = { rows, sourceRows: response.rows.length, requestCount: response.requestCount };
@@ -273,6 +274,7 @@ async function fetchEmployeeSchedulePagesUncached(employeeUid, dateFrom, dateTo)
 }
 
 async function fetchEmployeeSchedulePages(employeeUid, dateFrom, dateTo, { forceRefresh = false } = {}) {
+  const started=Date.now();
   const uid = normalizeTrackerEmployeeUid(employeeUid);
   const from = normalizeDate(dateFrom);
   const to = normalizeDate(dateTo);
@@ -287,7 +289,7 @@ async function fetchEmployeeSchedulePages(employeeUid, dateFrom, dateTo, { force
         const day = scheduleDate(row);
         return day && day >= from && day <= to;
       }),
-      requestCount: 0,
+      requestCount: 0, cacheStatus:"HIT", sharedWaitMs:0, elapsedMs:Date.now()-started,
     };
   }
 
@@ -309,6 +311,7 @@ async function fetchEmployeeSchedulePages(employeeUid, dateFrom, dateTo, { force
     pending.finally(() => scheduleInFlight.delete(key)).catch(() => {});
   }
 
+  const waitStarted=Date.now();
   const data = await pending;
   return {
     rows: data.rows.filter((row) => {
@@ -316,6 +319,7 @@ async function fetchEmployeeSchedulePages(employeeUid, dateFrom, dateTo, { force
       return day && day >= from && day <= to;
     }),
     requestCount: sharedPending ? 0 : data.requestCount,
+    cacheStatus:sharedPending?"SHARED_INFLIGHT":"MISS",sharedWaitMs:sharedPending?Date.now()-waitStarted:0,elapsedMs:Date.now()-started,
   };
 }
 
@@ -327,8 +331,9 @@ export function createAbsenteeismScheduleReader(fetchSchedule = fetchEmployeeSch
   return async (uid, from, to, options = {}) => {
     const key = JSON.stringify([uid, from, to, Boolean(options.forceRefresh)]);
     if (requests.has(key)) {
+      const started=Date.now();
       const data = await requests.get(key);
-      return { ...data, requestCount: 0 };
+      return { ...data, requestCount: 0, cacheStatus:"SHARED_READER", sharedWaitMs:Date.now()-started,elapsedMs:Date.now()-started };
     }
     const pending = Promise.resolve().then(() => fetchSchedule(uid, from, to, options));
     requests.set(key, pending);
@@ -501,6 +506,7 @@ export async function getKronosAbsenteeismEmployeeDayRows({
       logoutAt: record.lastLogoutAt,
       shiftSeconds: record.shiftSeconds,
       shiftStatus: record.shiftStatus,
+      recordedWorkHoursEvidence: record.recordedWorkHoursEvidence || [],
     });
   }
 
@@ -567,6 +573,7 @@ export async function getKronosAbsenteeismEmployeeDayRows({
   const verifiedRecordedHours = new Set(attendance.rows
     .filter((row) => row.hasVerifiedWorkingHours)
     .map((row) => `${row.employeeUid}|${row.workDate}`));
+  const attendanceByDay = new Map(attendance.rows.map(row => [`${row.employeeUid}|${row.workDate}`, row]));
   const rows = completedSchedules.map((entry) => {
     const evidence = entry.windows.map((window) =>
       classifyWorkingTimeInSchedule(window, intervalIndex.get(entry.uid) || []));
@@ -577,6 +584,12 @@ export async function getKronosAbsenteeismEmployeeDayRows({
       workDate: entry.workDate,
       accountId: kronosAccountId,
       hasAttendance: worked,
+      scheduleWindows: entry.windows.map(({startMs,endMs}) => ({ start: new Date(startMs).toISOString().slice(0,19).replace('T',' '), end: new Date(endMs).toISOString().slice(0,19).replace('T',' ') })),
+      loginAt: attendanceByDay.get(`${entry.uid}|${entry.workDate}`)?.firstLoginAt ?? null,
+      logoutAt: attendanceByDay.get(`${entry.uid}|${entry.workDate}`)?.lastLogoutAt ?? null,
+      completedIntervalEvidence: evidence.some(result => result.worked),
+      recordedWorkHoursEvidence: attendanceByDay.get(`${entry.uid}|${entry.workDate}`)?.recordedWorkHoursEvidence || [],
+      verifiedRecordedHours: verifiedRecordedHours.has(`${entry.uid}|${entry.workDate}`),
       attendanceUnverifiable: !worked && evidence.some((result) => result.unresolved),
     };
   });
@@ -595,6 +608,13 @@ export async function getKronosAbsenteeismEmployeeDayRows({
     directoryRequests: 0,
     attendanceStrategy,
     fetchTimingMs,
+    attendancePartitions: [...(attendance.attendancePartitions || []), ...(boundaryAttendance?.attendancePartitions || [])],
+    scheduleSourceDiagnostics: {
+      cacheHits:scheduleResults.filter(row=>row.cacheStatus==="HIT").length,
+      sharedRequests:scheduleResults.filter(row=>["SHARED_INFLIGHT","SHARED_READER"].includes(row.cacheStatus)).length,
+      cacheMisses:scheduleResults.filter(row=>row.cacheStatus==="MISS").length,
+      cumulativeSharedWaitMs:scheduleResults.reduce((sum,row)=>sum+(row.sharedWaitMs||0),0),
+    },
     accountCount: 1,
     attendanceRequestCount: attendance.requestCount + (boundaryAttendance?.requestCount || 0),
     scheduleRequestCount: scheduleResults.reduce((sum, entry) => sum + entry.requestCount, 0),

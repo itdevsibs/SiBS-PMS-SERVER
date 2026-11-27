@@ -3,16 +3,11 @@ import crypto from "crypto";
 
 const CONTENT_FIELDS = [
   "source_system",
-  "source_sheet",
-  "report_date",
+  "period_start",
+  "period_end",
+  "reporting_grain",
   "agent_name_raw",
-  "source_agent_key",
-  "sibs_id",
-  "mapping_status",
-  "mapping_method",
   "skill_name_raw",
-  "country_region",
-  "task_order_id",
   "answered_calls",
   "total_talking_seconds",
   "total_hold_seconds",
@@ -36,7 +31,9 @@ function stableHash(parts) {
 export function createAgentPerformanceBySkillIdentityHash(row = {}) {
   return stableHash([
     normalize(row.source_system),
-    normalize(row.report_date),
+    "SKILL_V2",
+    normalize(row.period_start),
+    normalize(row.period_end),
     normalize(row.agent_name_raw),
     normalize(row.skill_name_raw),
   ]);

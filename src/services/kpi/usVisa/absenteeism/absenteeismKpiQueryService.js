@@ -32,10 +32,11 @@ function buildAbsenteeismCacheKey({
   dateTo,
   referenceDate,
   taskOrder,
-  taskOrderVersionId, rosterKey,
+  taskOrderVersionId, rosterKey, headcountOnly = false,
 }) {
   return `ABSENTEEISM_DASHBOARD:${JSON.stringify({
-    version: 23,
+    version: 25,
+    headcountOnly,
     rosterPolicy: ABSENTEEISM_ROSTER_POLICY,
     source: "KRONOS_API",
     account: "US_VISA",
@@ -60,6 +61,7 @@ async function loadAbsenteeismDashboard(resolved, { forceRefresh = false, progre
     return buildWfmAbsenteeismKpiDashboard({
       attendanceRows: [],
       presentRows: [],
+      evidenceRoster: roster,
       metadata: {
         status: "NO_ROSTER_EMPLOYEES",
         headcountStatus: "AVAILABLE",
@@ -92,11 +94,13 @@ async function loadAbsenteeismDashboard(resolved, { forceRefresh = false, progre
       scheduleDateFrom: fullRange.dateFrom, scheduleDateTo: fullRange.dateTo,
     });
     const leaveRange = { dateFrom: fullRange.dateFrom, dateTo: fullRange.dateTo, forceRefresh };
-    const leavePromise = targetedLeaveEnabled()
+    const leaveStarted = Date.now();
+    let leaveElapsedMs=0;
+    const leavePromise = (targetedLeaveEnabled()
       ? attendancePromise.then(dataset => getKronosAbsenteeismTargetedLeaveRows({
           ...leaveRange, attendanceRows: dataset.rows,
         }))
-      : getKronosUsVisaLeaveRows(leaveRange);
+      : getKronosUsVisaLeaveRows(leaveRange)).finally(()=>{leaveElapsedMs=Date.now()-leaveStarted;});
     const [attendanceDataset, leaveDataset] = await Promise.all([attendancePromise, leavePromise]);
     const classified = applyApprovedLeaveToAbsenteeismRows(
       attendanceDataset.rows, leaveDataset.rows,
@@ -108,6 +112,7 @@ async function loadAbsenteeismDashboard(resolved, { forceRefresh = false, progre
     return buildWfmAbsenteeismKpiDashboard({
       attendanceRows: classified.rows,
       presentRows: attendanceDataset.presentRows,
+      evidenceRoster: roster,
       metadata: {
         // An unverified employee-day is excluded from the reported KPI;
         // verified days remain reportable without a partial-data banner.
@@ -146,7 +151,9 @@ async function loadAbsenteeismDashboard(resolved, { forceRefresh = false, progre
         directoryRequests: 0,
         rosterIdentitySource: "EMPLOYEE_LEDGER",
         attendanceStrategy: attendanceDataset.attendanceStrategy,
-        sourceFetchTimingMs: attendanceDataset.fetchTimingMs || null,
+        sourceFetchTimingMs: {...attendanceDataset.fetchTimingMs, leave:leaveElapsedMs},
+        attendancePartitions: attendanceDataset.attendancePartitions || [],
+        scheduleSourceDiagnostics:attendanceDataset.scheduleSourceDiagnostics || null,
         accountCount: attendanceDataset.accountCount,
         presentEmployeeDays: attendanceDataset.presentRows.length,
         scheduledEmployeeDays: classified.rows.filter((row) => !row.attendanceUnverifiable).length,
@@ -214,7 +221,8 @@ async function loadAbsenteeismDashboard(resolved, { forceRefresh = false, progre
 }
 
 function shouldCacheAbsenteeismDashboard(dashboard) {
-  return dashboard?.absenteeism?.status !== "UNAVAILABLE" && !dashboard?.staffing?.scheduleError;
+  return (dashboard?.staffing?.headcountOnly || dashboard?.absenteeism?.status !== "UNAVAILABLE") &&
+    !dashboard?.staffing?.scheduleError && !Object.keys(dashboard?.staffing?.sourceErrors || {}).length;
 }
 
 function attachAbsenteeismCacheMetadata(dashboard, cache) {
@@ -247,31 +255,48 @@ export async function getWfmAbsenteeismKpiDashboard(query = {}) {
       snapshot, sources, resolved.taskOrder,
     );
   }
-  const roster = await findUsVisaAbsenteeismRoster({ taskOrder: resolved.taskOrder, dateFrom: resolved.dateFrom, dateTo: resolved.dateTo });
-  const cacheKey = buildAbsenteeismCacheKey({ ...resolved, taskOrderVersionId,
-    rosterKey: roster.map(row => [row.employeeUid, row.gyEmpId]) });
-
+  const headcountOnly = query.headcountOnly === true || query.headcountOnly === 'true' || query.headcountOnly === '1';
+  let roster = [], rosterError = null;
+  if (!headcountOnly) {
+    try { roster = await findUsVisaAbsenteeismRoster({ taskOrder: resolved.taskOrder, dateFrom: resolved.dateFrom, dateTo: resolved.dateTo }); }
+    catch (error) { rosterError = error; console.error('WFM absence roster unavailable:', {message:error?.message}); }
+  }
+  const cacheKey = buildAbsenteeismCacheKey({ ...resolved, taskOrderVersionId, headcountOnly,
+    rosterKey: rosterError ? "ROSTER_UNAVAILABLE" : roster.map(row => [row.employeeUid, row.gyEmpId]) });
+  const unavailableAbsence = (status = 'UNAVAILABLE') => buildWfmAbsenteeismKpiDashboard({
+    ...resolved, bucketCount: weekSelection.progressiveWeek ? 1 : 6,
+    metadata: {status, headcountStatus:'UNAVAILABLE', message: status === 'NOT_REQUESTED' ? 'Headcount-only request.' : 'Absenteeism verification unavailable.'},
+  });
   const result = await getOrCreateAbsenteeismCacheEntry({
     key: cacheKey,
     loader: async () => {
-      const fetchSchedule = createAbsenteeismScheduleReader();
-      // Keep scheduled HC independent of attendance/absence KPI availability.
-      const [absenteeism, staffing] = await Promise.all([
-        loadAbsenteeismDashboard(resolved, {
-          forceRefresh, progressiveWeek: weekSelection.progressiveWeek, fullRange, roster, fetchSchedule,
-        }),
+      const fetchSchedule = headcountOnly ? undefined : createAbsenteeismScheduleReader();
+      const [absenceResult, staffingResult] = await Promise.allSettled([
+        headcountOnly || rosterError ? Promise.resolve(unavailableAbsence(headcountOnly ? 'NOT_REQUESTED' : 'UNAVAILABLE')) :
+          loadAbsenteeismDashboard(resolved, { forceRefresh, progressiveWeek: weekSelection.progressiveWeek, fullRange, roster, fetchSchedule }),
         getStaffingHeadcountForDashboard(resolved, {
-          scheduleDateFrom: fullRange.dateFrom, scheduleDateTo: fullRange.dateTo, forceRefresh, fetchSchedule,
+          scheduleDateFrom: fullRange.dateFrom, scheduleDateTo: fullRange.dateTo, forceRefresh, fetchSchedule, headcountOnly,
         }),
       ]);
-      return attachStaffingToAbsenteeismDashboard(absenteeism, staffing);
+      if (absenceResult.status === 'rejected') console.error('WFM absence calculation unavailable:', absenceResult.reason);
+      const absenteeism = absenceResult.status === 'fulfilled' ? absenceResult.value : unavailableAbsence();
+      // Zero employee-days in a failed calculation are not verified zeroes.
+      if (['UNAVAILABLE','NOT_REQUESTED'].includes(absenteeism.absenteeism?.status)) {
+        const mask = row => ({...row, absenteeismPct:null,presentHeadcount:null,presentEmployeeDays:null,absentHeadcount:null,absentEmployeeDays:null,plannedLeaveEmployeeDays:null,unverifiedEmployeeDays:null,scheduledEmployeeDays:null,scheduledDays:null});
+        absenteeism.summary = mask(absenteeism.summary);
+        absenteeism.series = absenteeism.series.map(mask);
+      }
+      if (staffingResult.status === 'fulfilled') return attachStaffingToAbsenteeismDashboard(absenteeism, staffingResult.value);
+      console.error('WFM staffing calculation unavailable:', staffingResult.reason);
+      const maskStaffing = row => ({...row, actualHeadcount:null, requiredHeadcount:null, buffer:null, staffingCoverage:null, staffingCoverageStatus:'INCOMPLETE', headcountStatus:'UNAVAILABLE', scheduledHeadcountStatus:'UNAVAILABLE', attritedHeadcount:null, attritionPct:null});
+      return {...absenteeism, summary:maskStaffing(absenteeism.summary), series:absenteeism.series.map(maskStaffing), staffing:{sourceErrors:{staffing:'Source unavailable'}, headcountOnly}};
     },
     shouldCache: shouldCacheAbsenteeismDashboard,
     forceRefresh,
   });
 
   console.info("Kronos Absenteeism progressive:", {
-    module: "ABSENTEEISM", stage: weekSelection.progressiveWeek ? (resolved.dateTo === fullRange.dateTo ? "FIRST_WEEK" : "WEEK") : "COMPLETE",
+    module: headcountOnly ? "HEADCOUNT" : "ABSENTEEISM", stage: weekSelection.progressiveWeek ? (resolved.dateTo === fullRange.dateTo ? "FIRST_WEEK" : "WEEK") : "COMPLETE",
     dateFrom: resolved.dateFrom, dateTo: resolved.dateTo, directoryRequests: 0,
     rosterEmployees: roster.length, rosterPolicy: ABSENTEEISM_ROSTER_POLICY, attendanceStrategy: getAbsenteeismAttendanceStrategy(), elapsedMs: Date.now() - started,
     cache: result.cache,
@@ -279,6 +304,9 @@ export async function getWfmAbsenteeismKpiDashboard(query = {}) {
     scheduleRequests: result.cache.status === "HIT" || result.cache.status === "SHARED" ? 0 : result.value?.absenteeism?.scheduleRequestCount,
     leaveRequests: result.cache.status === "HIT" || result.cache.status === "SHARED" ? 0 : result.value?.absenteeism?.leaveRequestCount,
     staffingScheduleRequests: ["HIT", "SHARED"].includes(result.cache.status) ? 0 : result.value?.staffing?.scheduleRequestCount,
+    attendancePartitions: result.cache.status === "MISS" ? result.value?.absenteeism?.attendancePartitions : [],
+    sourceFetchTimingMs: result.cache.status === "MISS" ? result.value?.absenteeism?.sourceFetchTimingMs : null,
+    scheduleSourceDiagnostics:result.cache.status === "MISS" ? result.value?.absenteeism?.scheduleSourceDiagnostics : null,
     status: result.value?.absenteeism?.status,
   });
   return {

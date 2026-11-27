@@ -16,6 +16,8 @@ import {
   getWfmQualityAuditRowDetail,
 } from "../controllers/qualityAuditKpiController.js";
 import {
+  getKpiEvidenceReport,
+  manageKpiEvidence,
   getWfmAbsenteeismKpi,
   getWfmOccupancyKpi,
   getWfmUtilizationKpi,
@@ -122,4 +124,10 @@ router.get(
   getWfmAbsenteeismKpi,
 );
 
+router.get('/kpis/absenteeism-report', ...requirePerformanceViewer, getKpiEvidenceReport('absenteeism'));
+router.get('/kpis/headcount-report', ...requirePerformanceViewer, getKpiEvidenceReport('headcount'));
+router.get('/kpis/occupancy-report', ...requirePerformanceViewer, getKpiEvidenceReport('occupancy'));
+router.get('/kpis/utilization-report', ...requirePerformanceViewer, getKpiEvidenceReport('utilization'));
+router.post('/kpis/evidence/renew', ...requirePerformanceViewer, manageKpiEvidence('renew'));
+router.post('/kpis/evidence/release', ...requirePerformanceViewer, manageKpiEvidence('release'));
 export default router;

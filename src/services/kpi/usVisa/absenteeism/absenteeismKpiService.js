@@ -119,6 +119,7 @@ export function buildWfmAbsenteeismKpiDashboard({
   referenceDate = null,
   taskOrder = null,
   bucketCount = 6,
+  evidenceRoster = null,
 } = {}) {
   const normalizedPeriod = normalizeCallKpiPeriod(period);
   const summary = emptyAccumulator();
@@ -160,7 +161,36 @@ export function buildWfmAbsenteeismKpiDashboard({
     buckets.set(bucket.key, accumulator);
   }
 
+  // Use exactly the same accumulated keys as the graph, including conflicting
+  // unverified days and presence outside completed scheduled shifts.
+  const evidence = new Map();
+  if (evidenceRoster) {
+    const identities = new Map(evidenceRoster.map(r => [normalizeEmployeeUid(r.employeeUid), r]));
+    const byKey = new Map();
+    for (const row of [...presentRows, ...attendanceRows]) {
+      const id = normalizeEmployeeUid(row.employeeUid || row.employee_uid);
+      const day = String(row.workDate || row.work_date || '').slice(0,10);
+      if (!id || !parseCallKpiDateOnly(day)) continue;
+      const key = `${id}:${day}`;
+      const prior = byKey.get(key) || {};
+      byKey.set(key, {...prior, ...row, employeeUid:id, workDate:day, employeeName:identities.get(id)?.employeeName ?? null, taskOrderId:identities.get(id)?.taskOrderId ?? null});
+    }
+    for (const [key,row] of byKey) {
+      const bucket = getCallKpiPeriodBucket(parseCallKpiDateOnly(row.workDate), normalizedPeriod);
+      const acc = buckets.get(bucket.key);
+      if (!acc) continue;
+      const unverified = acc.unknownEmployeeDays.has(key);
+      const scheduled = acc.scheduledEmployeeDays.has(key) && !unverified;
+      const absent = scheduled && acc.absentEmployeeDays.has(key);
+      const planned = scheduled && acc.plannedLeaveDays.has(key);
+      const present = acc.presentEmployeeDays.has(key);
+      const status = unverified ? 'Unverified' : absent ? (row.leaveClassification === 'UNPLANNED' ? 'Unplanned Leave' : 'Absent') : planned && !row.hasAttendance ? 'Planned Leave' : scheduled && row.hasAttendance ? 'Present' : present ? 'Presence outside verified schedule' : 'Other';
+      if (!evidence.has(bucket.key)) evidence.set(bucket.key, []);
+      evidence.get(bucket.key).push({...row, scheduled, absent, planned, present, unverified, status});
+    }
+  }
   return {
+    ...(evidenceRoster ? { [Symbol.for('pms.absenceEvidence')]: evidence } : {}),
     summary: finalize(summary, { headcountAvailable }),
     series: [...buckets.values()]
       .sort((left, right) => left.key.localeCompare(right.key))

@@ -153,6 +153,7 @@ function normalizeTrackerRow(row = {}) {
       "gy_tracker_wh", "tracker.gy_tracker_wh", "gy_tracker_ath",
       "tracker.gy_tracker_ath", "worked_hours", "total_hours", "work_hours",
     ])),
+    evidenceWorkHours: firstDefinedValue(row, ["evidence_work_hours", "gy_tracker_wh", "tracker.gy_tracker_wh", "gy_tracker_ath", "tracker.gy_tracker_ath", "worked_hours", "total_hours", "work_hours"]),
     trackerStatus: firstDefinedValue(row, [
       "gy_tracker_status", "tracker.gy_tracker_status", "tracker_status",
     ]),
@@ -192,9 +193,11 @@ export function aggregateTrackerEmployeeDays(rows = [], allowedEmployeeUids = nu
       trackerReasons: [],
       trackerIntervals: [],
       hasVerifiedWorkingHours: false,
+      recordedWorkHoursEvidence: [],
     };
 
     current.trackerRowCount += 1;
+    if (row.evidenceWorkHours != null && ["number", "string"].includes(typeof row.evidenceWorkHours)) current.recordedWorkHoursEvidence.push({trackerId: row.trackerId, value: row.evidenceWorkHours});
     if (row.hasRecordedWorkingHours) current.hasVerifiedWorkingHours = true;
     if (row.loginEpochMs !== null) {
       current.trackerIntervals.push({
@@ -624,7 +627,7 @@ function rememberAttendanceCache(key, data) {
  * /employee-attendance view. PMS then narrows those rows to the ledger/TO
  * employee codes without issuing N per-employee tracker-history requests.
  */
-export async function getKronosOptimizedAttendanceEmployeeDayRows({
+async function getKronosAttendancePartition({
   kronosAccountId, employeeUids = [], dateFrom, dateTo, forceRefresh = false,
 } = {}) {
   const accountId = Number(kronosAccountId);
@@ -647,17 +650,22 @@ export async function getKronosOptimizedAttendanceEmployeeDayRows({
     };
   }
 
+  const startedAt = Date.now();
   const key = `${accountId}|${from}|${to}`;
   const cached = forceRefresh ? null : findCoveringAttendance(attendanceCache, accountId, from, to, { cache: true });
   let dataset = cached?.data || null;
   if (!dataset && !forceRefresh) {
     dataset = findPartitionedAttendanceCache(accountId, from, to);
-    if (dataset) rememberAttendanceCache(key, dataset);
   }
+  const cacheStatus = dataset ? (cached ? "HIT" : "PARTITION_CACHE") : null;
   let sharedPending = false;
+  let sharedWaitMs = 0;
+  let queueWaitMs = 0;
 
   if (!dataset) {
-    let pendingEntry = findCoveringAttendance(attendanceInFlight, accountId, from, to);
+    // Share only identical unfinished partitions. A covering request may be
+    // much slower; completed covering datasets remain reusable.
+    let pendingEntry = attendanceInFlight.get(key);
     let pending = pendingEntry?.promise || pendingEntry || null;
     if (pending) sharedPending = true;
 
@@ -674,6 +682,7 @@ export async function getKronosOptimizedAttendanceEmployeeDayRows({
             },
             retryTransient: true,
             kpiShared: true,
+            onKpiQueueWait: ms => { queueWaitMs += ms; },
           });
           if (payload?.success === false || !Array.isArray(payload?.data)) {
             failIncompleteAttendance(`Kronos attendance page ${page} did not return a data array.`);
@@ -750,6 +759,8 @@ export async function getKronosOptimizedAttendanceEmployeeDayRows({
           gy_tracker_status: firstDefinedValue(row, [
             "gy_tracker_status", "tracker.gy_tracker_status",
           ]),
+          // Audit only: do not silently change the existing presence policy.
+          evidence_work_hours: firstDefinedValue(row, ["gy_tracker_wh", "tracker.gy_tracker_wh", "gy_tracker_ath", "tracker.gy_tracker_ath", "worked_hours", "total_hours", "work_hours"]),
         }));
         const result = {
           sourceRows: allRows.length,
@@ -762,7 +773,9 @@ export async function getKronosOptimizedAttendanceEmployeeDayRows({
       attendanceInFlight.set(key, { promise: pending, from, to });
       pending.finally(() => attendanceInFlight.delete(key)).catch(() => {});
     }
+    const waitStarted = Date.now();
     dataset = await pending;
+    if (sharedPending) sharedWaitMs = Date.now() - waitStarted;
   }
 
   const employeeSet = new Set(allowedUids);
@@ -791,9 +804,47 @@ export async function getKronosOptimizedAttendanceEmployeeDayRows({
     rows: aggregateTrackerEmployeeDays(matching, allowedUids),
     sourceRows: sourceRowsForRange,
     accountMatchedRows: matching.length,
-    requestCount: cached || sharedPending ? 0 : dataset.requestCount,
+    requestCount: cacheStatus || sharedPending ? 0 : dataset.requestCount,
+    attendancePartitions: [{dateFrom: from, dateTo: to, cacheStatus: cacheStatus || (sharedPending ? "SHARED_INFLIGHT" : "MISS"), sharedWaitMs, queueWaitMs, elapsedMs: Date.now() - startedAt, remoteRequests: cacheStatus || sharedPending ? 0 : dataset.requestCount}],
     sourceEndpoint: OPTIMIZED_ATTENDANCE_ENDPOINT,
     rawSourceEndpoint: null,
     fetchMode: "OPTIMIZED_DATE_FILTERED_ATTENDANCE",
   };
+}
+
+// Sunday-Saturday partitions are non-overlapping. Fetch newest first, so a
+// wide request never owns the entire account window while a week is waiting.
+// The caller still gets a complete result or a failure, never partial evidence.
+export function attendanceDatePartitions(dateFrom, dateTo) {
+  const from = normalizeDate(dateFrom), to = normalizeDate(dateTo);
+  const valid = day => day && Number.isFinite(Date.parse(day)) && new Date(Date.parse(day)).toISOString().slice(0,10) === day;
+  if (!valid(from) || !valid(to) || from > to) {
+    failIncompleteAttendance("Valid attendance dates are required.", "KRONOS_ATTENDANCE_FILTER_INVALID");
+  }
+  const parts = [];
+  let cursor = from;
+  while (cursor <= to) {
+    const start = new Date(`${cursor}T00:00:00Z`);
+    const end = new Date(start.getTime() + (6 - start.getUTCDay()) * 86400000).toISOString().slice(0,10);
+    const dateTo = end < to ? end : to;
+    parts.push({dateFrom:cursor, dateTo});
+    cursor = new Date(Date.parse(dateTo) + 86400000).toISOString().slice(0,10);
+  }
+  return parts.reverse();
+}
+
+export async function getKronosOptimizedAttendanceEmployeeDayRows(options = {}) {
+  const parts = attendanceDatePartitions(options.dateFrom, options.dateTo);
+  if (parts.length === 1) return getKronosAttendancePartition(options);
+  const result = {rows: [], sourceRows: 0, requestCount: 0, accountMatchedRows: 0,
+    sourceEndpoint: OPTIMIZED_ATTENDANCE_ENDPOINT, rawSourceEndpoint:null,
+    fetchMode:"OPTIMIZED_DATE_FILTERED_ATTENDANCE", attendancePartitions: []};
+  for (const part of parts) {
+    const data = await getKronosAttendancePartition({...options,...part});
+    result.rows.push(...data.rows);
+    for (const key of ["sourceRows","requestCount","accountMatchedRows"]) result[key] += data[key] || 0;
+    result.attendancePartitions.push(...(data.attendancePartitions || []));
+  }
+  result.rows.sort((a,b)=>a.workDate.localeCompare(b.workDate)||a.employeeUid.localeCompare(b.employeeUid));
+  return result;
 }

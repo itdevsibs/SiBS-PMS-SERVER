@@ -1,3 +1,4 @@
+import { publishKpiEvidence, readKpiEvidence, renewKpiEvidence, releaseKpiEvidence } from "../services/kpi/usVisa/kpiEvidenceReportService.js";
 import { getWfmOccupancyKpiDashboard } from "../services/kpi/usVisa/occupancy/occupancyKpiQueryService.js";
 import { getWfmUtilizationKpiDashboard } from "../services/kpi/usVisa/utilization/utilizationKpiQueryService.js";
 import { getWfmAbsenteeismKpiDashboard } from "../services/kpi/usVisa/absenteeism/absenteeismKpiQueryService.js";
@@ -35,7 +36,7 @@ function sendBadRequestOrServerError(res, error, {
 export async function getWfmOccupancyKpi(req, res) {
   try {
     const dashboard = await getWfmOccupancyKpiDashboard(req.query);
-    return res.json({ success: true, data: dashboard });
+    return res.json({ success: true, data: publishKpiEvidence(dashboard, req.user, ["occupancy"]) });
   } catch (error) {
     return sendBadRequestOrServerError(res, error, {
       fallbackCode: "OCCUPANCY_KPI_QUERY_FAILED",
@@ -48,7 +49,7 @@ export async function getWfmOccupancyKpi(req, res) {
 export async function getWfmUtilizationKpi(req, res) {
   try {
     const dashboard = await getWfmUtilizationKpiDashboard(req.query);
-    return res.json({ success: true, data: dashboard });
+    return res.json({ success: true, data: publishKpiEvidence(dashboard, req.user, ["utilization"]) });
   } catch (error) {
     return sendBadRequestOrServerError(res, error, {
       fallbackCode: "UTILIZATION_KPI_QUERY_FAILED",
@@ -79,7 +80,29 @@ export async function getWfmAbsenteeismKpi(req, res) {
   try {
     const query = await scopedStaffingQuery(req);
     const dashboard = await getWfmAbsenteeismKpiDashboard(query);
-    return res.json({ success: true, data: dashboard });
+    // A diagnostic report publication failure must not hide a successfully
+    // calculated graph or prevent publication of the other metric's evidence.
+    try { return res.json({ success: true, data: publishKpiEvidence(dashboard, req.user, ['absenteeism','headcount']) }); }
+    catch (error) { console.error('WFM combined evidence publication failed:', {message:error?.message}); }
+    const evidenceErrors = {};
+    const evidenceByMetric = {};
+    for (const metric of ['absenteeism', 'headcount']) {
+      try {
+        evidenceByMetric[metric] = new Map(publishKpiEvidence(dashboard, req.user, [metric]).series.map(row => [row.key, row[`${metric}EvidenceId`]]));
+      } catch (error) {
+        evidenceErrors[metric] = 'Calculation evidence unavailable';
+        console.error('WFM KPI evidence publication failed:', { metric, message: error?.message });
+      }
+    }
+    const series = dashboard.series.map(row => {
+      const result = {...row};
+      for (const metric of ['absenteeism','headcount']) {
+        const id = evidenceByMetric[metric]?.get(row.key);
+        if (id) result[`${metric}EvidenceId`] = id;
+      }
+      return result;
+    });
+    return res.json({ success: true, data: {...dashboard, series, ...(Object.keys(evidenceErrors).length ? {evidenceErrors} : {})} });
   } catch (error) {
     if (error?.status === 403 || error?.status === 400) return res.status(error.status).json({ success: false, code: error.code, message: error.message });
     return sendBadRequestOrServerError(res, error, {
@@ -90,3 +113,37 @@ export async function getWfmAbsenteeismKpi(req, res) {
   }
 }
 
+
+export function getKpiEvidenceReport(metric) {
+  return async (req,res) => {
+    try {
+      const access=Number(req.user?.adminAccess ?? req.user?.admin_access ?? 0);
+      const role=String(req.user?.role||'').toLowerCase();
+      const scope=[5,8].includes(access)||['om','tl'].includes(role) ? await resolveUsVisaOrgScope(req.user) : null;
+      return res.json({success:true,data:readKpiEvidence({metric,query:req.query,user:req.user,scope})});
+    } catch(error) {
+      if(error.status) return res.status(error.status).json({success:false,code:error.code,message:error.message});
+      console.error('KPI evidence report failed:', error);
+      return res.status(500).json({success:false,code:'KPI_EVIDENCE_REPORT_FAILED',message:'Unable to load calculation evidence.'});
+    }
+  };
+}
+
+// Heartbeats only touch in-memory evidence; authorization follows report reads.
+export function manageKpiEvidence(action) {
+  return async (req,res) => {
+    try {
+      const {metric,evidenceId,leaseId}=req.body||{};
+      if (!['absenteeism','headcount','occupancy','utilization'].includes(metric)) return res.status(400).json({success:false,code:'INVALID_EVIDENCE_METRIC',message:'Invalid report metric.'});
+      const access=Number(req.user?.adminAccess ?? req.user?.admin_access ?? 0);
+      const role=String(req.user?.role||'').toLowerCase();
+      const scope=action==='renew' && ([5,8].includes(access)||['om','tl'].includes(role)) ? await resolveUsVisaOrgScope(req.user) : null;
+      const args={metric,evidenceId,leaseId,user:req.user,scope};
+      return res.json({success:true,data:action==='renew'?renewKpiEvidence(args):releaseKpiEvidence(args)});
+    } catch(error) {
+      if(error.status) return res.status(error.status).json({success:false,code:error.code,message:error.message});
+      console.error('KPI evidence lifecycle failed:',error);
+      return res.status(500).json({success:false,code:'KPI_EVIDENCE_LIFECYCLE_FAILED',message:'Unable to maintain report snapshot.'});
+    }
+  };
+}

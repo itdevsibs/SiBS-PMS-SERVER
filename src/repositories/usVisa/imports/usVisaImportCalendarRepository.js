@@ -10,7 +10,8 @@ const REPORT_LEVELS = Object.freeze({
   "DOCUMENTED CALLS": ["DOCUMENTED_CALLS"],
   "CHAT REPORT (EOD)": ["CHAT_REPORT", "CHAT_EOD"],
   "AGENT OCCUPANCY": ["AGENT_OCCUPANCY"],
-  "AGENT ACTIVITY - PRODUCTIVE BREAKS": ["PRODUCTIVE_BREAKS"],
+  "AGENT ACTIVITY & BREAKS": ["FUSECOM_AGENT_ACTIVITY", "FUSENET_AGENT_ACTIVITY", "HERODASH_AGENT_ACTIVITY_PRODUCTIVE_BREAKS"],
+  "AGENT LOGIN & LOGOUT": ["HERODASH_AGENT_LOGIN_LOGOUT"],
   "AGENT PERFORMANCE BY SKILL": ["PERFORMANCE_BY_SKILL"],
   "EMAIL LEVEL": ["EMAIL"],
   "QUALITY AUDIT": ["QUALITY_AUDIT"],
@@ -28,7 +29,8 @@ const TOOLS_BY_LEVEL = Object.freeze({
   "DOCUMENTED CALLS": ["MS Dynamics"],
   "CHAT REPORT (EOD)": ["Fusecom", "FuseNet", "HeroDash"],
   "AGENT OCCUPANCY": ["Fusecom", "FuseNet", "HeroDash"],
-  "AGENT ACTIVITY - PRODUCTIVE BREAKS": ["HeroDash"],
+  "AGENT ACTIVITY & BREAKS": ["Fusecom", "FuseNet", "HeroDash"],
+  "AGENT LOGIN & LOGOUT": ["HeroDash"],
   "AGENT PERFORMANCE BY SKILL": ["HeroDash"],
   "EMAIL LEVEL": ["MS Dynamics"],
   "QUALITY AUDIT": ["Quality Audit"],
@@ -47,7 +49,8 @@ export function parseCalendarRequest(query = {}, { requireDay = false } = {}) {
       throw Object.assign(new Error("date must be a valid day within the selected month."), { status: 400 });
     }
   }
-  const level = String(query.level || "ALL").trim().toUpperCase();
+  const requestedLevel = String(query.level || "ALL").trim().toUpperCase();
+  const level = requestedLevel === "AGENT ACTIVITY - PRODUCTIVE BREAKS" ? "AGENT ACTIVITY & BREAKS" : requestedLevel;
   if (level !== "ALL" && !REPORT_LEVELS[level]) {
     throw Object.assign(new Error("Unknown report category."), { status: 400 });
   }
@@ -85,8 +88,14 @@ export function calendarWhere(filters, { daily = false } = {}) {
   }
   if (filters.level !== "ALL") {
     const codes = REPORT_LEVELS[filters.level];
-    clauses.push(`(${codes.map(() => "UPPER(COALESCE(p.profile_code,'')) LIKE ?").join(" OR ")})`);
-    params.push(...codes.map((c) => `%${c}%`));
+    if (["AGENT ACTIVITY & BREAKS", "AGENT LOGIN & LOGOUT"].includes(filters.level)) {
+      // Both report levels may share a server report_type. Use exact upload profile codes.
+      clauses.push(`UPPER(COALESCE(p.profile_code,'')) IN (${codes.map(() => "?").join(", ")})`);
+      params.push(...codes);
+    } else {
+      clauses.push(`(${codes.map(() => "UPPER(COALESCE(p.profile_code,'')) LIKE ?").join(" OR ")})`);
+      params.push(...codes.map((c) => `%${c}%`));
+    }
   }
   if (filters.tool !== "ALL") {
     if (filters.tool === "MS Dynamics") {

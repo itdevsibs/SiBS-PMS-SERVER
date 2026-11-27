@@ -17,7 +17,7 @@ function validDate(value) {
   const text = String(value).trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
   const parsed = new Date(`${text}T00:00:00Z`);
-  return !Number.isNaN(parsed.getTime());
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0,10) === text;
 }
 
 function validDateTime(value) {
@@ -49,14 +49,14 @@ function addRequired(issues, row, fieldName) {
   ));
 }
 
-export function validateCanonicalAgentActivityRow(row = {}) {
+export function validateCanonicalAgentActivityRow(row = {}, grain = "AGENT_ACTIVITY_INTERVAL") {
   const issues = [];
   addRequired(issues, row, "source_system");
   addRequired(issues, row, "source_sheet");
   addRequired(issues, row, "production_date");
   addRequired(issues, row, "agent_name_raw");
   addRequired(issues, row, "start_at");
-  addRequired(issues, row, "status_raw");
+  if (grain !== "AGENT_LOGIN_SESSION") addRequired(issues, row, "status_raw");
 
   if (!isBlank(row.production_date) && !validDate(row.production_date)) {
     issues.push(issue(

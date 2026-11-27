@@ -101,9 +101,11 @@ export async function getAgentOccupancyKpiRows({
   dateFrom = null,
   dateTo = null,
   taskOrder = null,
+  unmappedOnly = false,
 } = {}) {
   const { conditions, values } = baseConditions();
   appendTaskOrderFilter(conditions, values, taskOrder);
+  if (unmappedOnly) conditions.push("(COALESCE(ao.mapping_status, '') <> 'MATCHED' OR ao.sibs_id IS NULL OR TRIM(ao.sibs_id) = '')");
 
   if (dateFrom) {
     conditions.push("ao.production_date >= ?");
@@ -132,6 +134,8 @@ export async function getAgentOccupancyKpiRows({
           THEN TRIM(ao.sibs_id)
           ELSE NULL
         END AS employee_uid,
+        ao.task_order_id, ao.source_system, ao.batch_id,
+        MIN(ao.agent_name_raw) AS employee_name,
         COALESCE(SUM(ao.talking_seconds), 0) AS talking_seconds,
         COALESCE(SUM(ao.hold_seconds), 0) AS hold_seconds,
         COALESCE(SUM(ao.wrapup_seconds), 0) AS wrapup_seconds,
@@ -143,7 +147,7 @@ export async function getAgentOccupancyKpiRows({
       INNER JOIN ${pmsTables.usVisaImportBatches} b ON b.id = ao.batch_id
       WHERE ${conditions.join("\n        AND ")}
       GROUP BY
-        ao.production_date,
+        ao.production_date, ao.task_order_id, ao.source_system, ao.batch_id,
         CASE
           WHEN UPPER(TRIM(COALESCE(ao.mapping_status, ''))) = 'MATCHED'
             AND ao.sibs_id IS NOT NULL
@@ -239,6 +243,8 @@ export async function getAgentOccupancyDailyKpiRows({
       SELECT
         REPLACE(UPPER(TRIM(ao.sibs_id)), 'SIB-', '') AS employee_uid,
         DATE_FORMAT(ao.production_date, '%Y-%m-%d') AS production_date,
+        MIN(ao.agent_name_raw) AS employee_name,
+        GROUP_CONCAT(DISTINCT ao.task_order_id ORDER BY ao.task_order_id SEPARATOR ', ') AS task_orders,
         COALESCE(SUM(ao.talking_seconds), 0) AS talking_seconds,
         COALESCE(SUM(ao.hold_seconds), 0) AS hold_seconds,
         COALESCE(SUM(ao.after_call_seconds), 0) AS after_call_seconds,
@@ -260,6 +266,8 @@ export async function getAgentOccupancyDailyKpiRows({
   return rows.map((row) => ({
     employeeUid: String(row.employee_uid || "").trim(),
     productionDate: row.production_date || null,
+    employeeName: row.employee_name || null,
+    taskOrderId: row.task_orders || null,
     talkingSeconds: Number(row.talking_seconds || 0),
     holdSeconds: Number(row.hold_seconds || 0),
     afterCallSeconds: Number(row.after_call_seconds || 0),

@@ -1,4 +1,5 @@
 // Orchestrates US VISA raw XLSX/CSV imports from upload through canonical storage.
+import { classifyPeriod } from "./agentActivity/activitySourceValues.js";
 import path from "node:path";
 import { pmsDb, pmsTables } from "../../../config/db.js";
 import {
@@ -512,6 +513,9 @@ export async function importUsVisaRawWorkbook(options = {}) {
       percent: 34,
       message: "Validating file structure and required fields.",
     });
+    if (profile.reportType === "AGENT_PERFORMANCE_BY_SKILL" && !classifyPeriod(options.reportDateFrom,options.reportDateTo)) {
+      throw new UsVisaImportError("Confirm both reporting dates for Agent Performance By Skill.", {code:"REPORTING_PERIOD_REQUIRED"});
+    }
     const workbookValidationStartedAt = Date.now();
     const workbookValidation = validateWorkbookProfile(workbook, profileCode);
 

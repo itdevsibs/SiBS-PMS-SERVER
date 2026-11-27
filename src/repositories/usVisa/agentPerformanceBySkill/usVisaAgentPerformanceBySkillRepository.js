@@ -8,7 +8,11 @@ const INSERT_COLUMNS = [
   "source_system",
   "source_sheet",
   "source_row_number",
-  "report_date",
+  "period_start",
+  "period_end",
+  "reporting_grain",
+  "data_quality_status",
+  "ingestion_status",
   "agent_name_raw",
   "source_agent_key",
   "sibs_id",
@@ -16,7 +20,6 @@ const INSERT_COLUMNS = [
   "mapping_method",
   "skill_name_raw",
   "country_region",
-  "task_order_id",
   "answered_calls",
   "total_talking_seconds",
   "total_hold_seconds",
@@ -62,7 +65,7 @@ function getInsertValues(row = {}) {
     row.sourceSystem,
     row.sourceSheet,
     row.sourceRowNumber,
-    row.reportDate,
+    row.periodStart, row.periodEnd, row.reportingGrain, row.dataQualityStatus, row.ingestionStatus,
     toNullableValue(row.agentNameRaw),
     toNullableValue(row.sourceAgentKey),
     toNullableValue(row.sibsId),
@@ -70,7 +73,6 @@ function getInsertValues(row = {}) {
     toNullableValue(row.mappingMethod),
     row.skillNameRaw,
     toNullableValue(row.countryRegion),
-    row.taskOrderId,
     toNullableValue(row.answeredCalls),
     toNullableValue(row.totalTalkingSeconds),
     toNullableValue(row.totalHoldSeconds),
@@ -84,10 +86,12 @@ function getInsertValues(row = {}) {
   ];
 }
 
-export async function findAgentPerformanceBySkillByIdentityHashes(rowIdentityHashes = []) {
+export async function findAgentPerformanceBySkillByIdentityHashes(rowIdentityHashes = [], currentBatchId = null) {
   const uniqueHashes = [...new Set(rowIdentityHashes.filter(Boolean))];
   if (!uniqueHashes.length) return [];
 
+  const resultRows=[];
+  for(let i=0;i<uniqueHashes.length;i+=500){const chunk=uniqueHashes.slice(i,i+500);
   const [rows] = await pmsDb.query(
     `
       SELECT
@@ -100,18 +104,24 @@ export async function findAgentPerformanceBySkillByIdentityHashes(rowIdentityHas
       FROM ${pmsTables.usVisaRawAgentPerformanceBySkill} p
       INNER JOIN ${pmsTables.usVisaRawImportRows} rr
         ON rr.id = p.raw_import_row_id
-      WHERE rr.row_identity_hash IN (${buildInPlaceholders(uniqueHashes)})
+      INNER JOIN ${pmsTables.usVisaImportBatches} b ON b.id=p.batch_id
+      WHERE p.ingestion_status = 'ACCEPTED' AND (b.status IN ('COMPLETED','COMPLETED_WITH_ERRORS') OR p.batch_id=?) AND rr.row_identity_hash IN (${buildInPlaceholders(chunk)})
+      ORDER BY p.id DESC
     `,
-    uniqueHashes,
+    [currentBatchId,...chunk],
   );
 
-  return rows.map(mapRow);
+  resultRows.push(...rows.map(mapRow));
+  }
+  return resultRows;
 }
 
 export async function insertAgentPerformanceBySkillRowsWithDuplicateProtection(rows = []) {
   if (!rows.length) return { affectedCount: 0 };
 
   const columnSql = INSERT_COLUMNS.map(quoteIdentifier).join(", ");
+  let affectedCount=0, firstInsertId=null;
+  for(let i=0;i<rows.length;i+=500){const chunk=rows.slice(i,i+500);
   const [result] = await pmsDb.query(
     `
       INSERT INTO ${pmsTables.usVisaRawAgentPerformanceBySkill}
@@ -119,11 +129,20 @@ export async function insertAgentPerformanceBySkillRowsWithDuplicateProtection(r
       VALUES ?
       ON DUPLICATE KEY UPDATE id = id
     `,
-    [rows.map(getInsertValues)],
+    [chunk.map(getInsertValues)],
   );
 
-  return {
-    affectedCount: result.affectedRows || 0,
-    firstInsertId: result.insertId || null,
-  };
+  affectedCount+=result.affectedRows||0; firstInsertId ||= result.insertId||null;
+  }
+  return {affectedCount,firstInsertId};
+}
+
+export async function assertNoLegacySkillOverlap(from,to) {
+  // Batch dates are only used as a conservative overlap guard, not as confirmed periods.
+  const [rows]=await pmsDb.query(`SELECT 1 FROM ${pmsTables.usVisaRawAgentPerformanceBySkill} p JOIN ${pmsTables.usVisaImportBatches} b ON b.id=p.batch_id WHERE p.data_quality_status='LEGACY_UNVERIFIED' AND (b.report_date_from IS NULL OR b.report_date_to IS NULL OR (b.report_date_from<=? AND b.report_date_to>=?)) LIMIT 1`,[to,from]);
+  if(rows.length) throw Object.assign(new Error("Existing legacy Skill Performance may overlap this reporting period. Verify legacy batch date ranges or replace affected batches before importing."),{code:"LEGACY_SKILL_OVERLAP"});
+}
+
+export async function hasOverlappingSkillPeriod(from,to,source) {
+  const [rows]=await pmsDb.query(`SELECT 1 FROM ${pmsTables.usVisaRawAgentPerformanceBySkill} p JOIN ${pmsTables.usVisaImportBatches} b ON b.id=p.batch_id WHERE p.source_system=? AND p.ingestion_status='ACCEPTED' AND b.status IN ('COMPLETED','COMPLETED_WITH_ERRORS') AND p.period_start<=? AND p.period_end>=? AND NOT(p.period_start=? AND p.period_end=?) LIMIT 1`,[source,to,from,from,to]);return rows.length>0;
 }

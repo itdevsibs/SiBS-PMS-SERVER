@@ -29,7 +29,7 @@ function validDate(value) {
   const text = String(value).trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
   const parsed = new Date(`${text}T00:00:00Z`);
-  return !Number.isNaN(parsed.getTime());
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0,10) === text;
 }
 
 function issue(errorCode, fieldName, rawValue, message) {
@@ -58,37 +58,14 @@ export function validateCanonicalAgentPerformanceBySkillRow(row = {}, options = 
   const issues = [];
   addRequired(issues, row, "source_system");
   addRequired(issues, row, "source_sheet");
-  addRequired(issues, row, "report_date");
   addRequired(issues, row, "agent_name_raw");
   addRequired(issues, row, "skill_name_raw");
-
-  if (!isBlank(row.report_date) && !validDate(row.report_date)) {
-    issues.push(issue(
-      AGENT_PERFORMANCE_BY_SKILL_VALIDATION_ERROR_CODES.INVALID_DATE,
-      "report_date",
-      row.report_date,
-      "report_date must be a valid date.",
-    ));
+  addRequired(issues, row, "period_start");
+  addRequired(issues, row, "period_end");
+  addRequired(issues, row, "reporting_grain");
+  if (!validDate(row.period_start) || !validDate(row.period_end) || row.period_start > row.period_end) {
+    issues.push(issue("INVALID_DATE","period_start",row.period_start,"A valid reporting period is required."));
   }
-
-  if (options.taskResolution?.status === "UNMATCHED") {
-    issues.push(issue(
-      AGENT_PERFORMANCE_BY_SKILL_VALIDATION_ERROR_CODES.TASK_ORDER_SKILL_UNMATCHED,
-      "skill_name_raw",
-      row.skill_name_raw,
-      "Country could not be identified from Skill or is not mapped to an active Task Order.",
-    ));
-  } else if (options.taskResolution?.status === "CONFLICT") {
-    issues.push(issue(
-      AGENT_PERFORMANCE_BY_SKILL_VALIDATION_ERROR_CODES.TASK_ORDER_SKILL_CONFLICT,
-      "skill_name_raw",
-      row.skill_name_raw,
-      options.taskResolution.warning || "Country parsed from Skill conflicts with the active Task Order mapping.",
-    ));
-  } else {
-    addRequired(issues, row, "task_order_id");
-  }
-
   for (const fieldName of NUMBER_FIELDS) {
     const value = row[fieldName];
     if (isBlank(value)) continue;

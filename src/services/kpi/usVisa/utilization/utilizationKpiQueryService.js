@@ -1,6 +1,7 @@
 import { applyProgressiveWeekWindow } from "../progressiveWeekWindow.js";
 import {
   getAgentOccupancyDailyKpiRows,
+  getAgentOccupancyKpiRows,
   getAgentOccupancyKpiDateBounds,
 } from "../../../../repositories/usVisa/occupancy/usVisaOccupancyKpiRepository.js";
 import { normalizeUsVisaTaskOrderId } from "../../../../config/usVisaTaskOrders.js";
@@ -12,8 +13,8 @@ import {
 import { buildWfmUtilizationKpiDashboard } from "../occupancy/occupancyKpiService.js";
 import { getCallCenterOperationsAccountsWithMappings } from "../../../kronos/kronosAccountScopeService.js";
 import { normalizeKronosAccountName } from "../../../kronos/kronosAccountDirectoryService.js";
-import { getKronosOptimizedAttendanceEmployeeDayRows } from "../../../../repositories/kronos/kronosTrackerRepository.js";
-import { getOrCreateUtilizationCacheEntry } from "../../../cache/utilizationCacheService.js";
+import { attendanceDatePartitions, getKronosOptimizedAttendanceEmployeeDayRows } from "../../../../repositories/kronos/kronosTrackerRepository.js";
+import { getOrCreateUtilizationCacheEntry, peekUtilizationCacheEntry } from "../../../cache/utilizationCacheService.js";
 
 function normalizeDate(value) {
   const text = String(value || "").trim();
@@ -171,12 +172,46 @@ async function loadWfmUtilizationKpiDashboard(resolved, { progressiveWeek = null
     taskOrder,
   });
   const occupancyReadMs = Date.now() - startedAt;
+  // Diagnostic rows never contribute to the utilization numerator/denominator.
+  // Keep this optional read separate so a diagnostic query failure cannot change the KPI.
+  let unmappedRows = [], diagnosticUnavailable = false;
+  const diagnosticStartedAt = Date.now();
+  let diagnosticQueryMs = 0;
+  const diagnostics = (async () => {
+  try {
+    const rawUnmapped = await getAgentOccupancyKpiRows({dateFrom,dateTo,taskOrder,unmappedOnly:true});
+    unmappedRows = rawUnmapped.map(r => {
+      const components = {talk:Number(r.talking_seconds)||0,hold:Number(r.hold_seconds)||0,
+        afterCall:Number(r.after_call_seconds)||0,wrap:Number(r.wrapup_seconds)||0,
+        email:Number(r.email_seconds)||0,chat:Number(r.chatting_seconds)||0};
+      const workSeconds = Object.values(components).reduce((a,b)=>a+b,0);
+      const idleSeconds = Number(r.available_idle_seconds)||0;
+      return {employeeUid:null,employeeName:'Unmapped Employee',productionDate:r.production_date,
+        workDate:r.production_date,taskOrderId:r.task_order_id,sourceSystem:r.source_system,batchId:r.batch_id,
+        ...components,workSeconds,idleSeconds,productiveSeconds:workSeconds+idleSeconds,
+        shiftSeconds:null,utilizationValid:false,status:'Unmapped Employee'};
+    });
+  } catch (error) {
+    diagnosticUnavailable=true;
+    console.warn('Utilization unmapped diagnostics unavailable:',error?.code||error?.message);
+  } finally { diagnosticQueryMs = Date.now() - diagnosticStartedAt; }
+  })();
+  const evidenceFor = (row, tracker, status, valid=false) => ({
+    employeeUid:normalizeEmployeeUid(row.employeeUid),employeeName:row.employeeName||null,
+    workDate:row.productionDate,productionDate:row.productionDate,taskOrderId:row.taskOrderId,
+    workSeconds:productiveSecondsFromOccupancy({...row,availableIdleSeconds:0}),idleSeconds:Number(row.availableIdleSeconds)||0,
+    productiveSeconds:productiveSecondsFromOccupancy(row),shiftSeconds:valid?Number(tracker.shiftSeconds):null,
+    loginAt:tracker?.firstLoginAt??null,logoutAt:tracker?.lastLogoutAt??null,shiftStatus:tracker?.shiftStatus??null,
+    talk:row.talkingSeconds,hold:row.holdSeconds,afterCall:row.afterCallSeconds,wrap:row.wrapupSeconds,email:row.emailSeconds,chat:row.chattingSeconds,
+    utilizationValid:valid,status,
+  });
 
   if (!dailyOccupancyRows.length) {
+    await diagnostics;
     return buildWfmUtilizationKpiDashboard({
-      rows: [],
+      rows: [], evidenceRows: unmappedRows,
       metadata: {
-        status: "NO_OCCUPANCY_DATA",
+        status: "NO_OCCUPANCY_DATA", diagnosticUnavailable,
         source: "KRONOS_API",
         fetchMode: "OPTIMIZED_DATE_FILTERED_ATTENDANCE",
         storageMode: "LIVE_ONLY",
@@ -189,7 +224,7 @@ async function loadWfmUtilizationKpiDashboard(resolved, { progressiveWeek = null
         missingAttendanceDays: 0,
         incompleteShiftDays: 0,
         remoteRequestCount: 0,
-        timingsMs: { occupancyRead: occupancyReadMs, total: Date.now() - startedAt },
+        timingsMs: { occupancyRead: occupancyReadMs, diagnosticQuery: diagnosticQueryMs, total: Date.now() - startedAt },
       },
       period,
       dateFrom,
@@ -201,7 +236,6 @@ async function loadWfmUtilizationKpiDashboard(resolved, { progressiveWeek = null
   }
 
   const targetEmployeeRanges = buildTargetEmployeeRanges(dailyOccupancyRows);
-  const targetEmployeeUids = targetEmployeeRanges.map((target) => target.employeeUid);
 
   try {
     const accountLookupStartedAt = Date.now();
@@ -212,10 +246,11 @@ async function loadWfmUtilizationKpiDashboard(resolved, { progressiveWeek = null
     );
 
     if (!usVisaAccount?.kronosMapping) {
+      await diagnostics;
       return buildWfmUtilizationKpiDashboard({
-        rows: [],
+        rows: [], evidenceRows: [...unmappedRows,...dailyOccupancyRows.map(r=>evidenceFor(r,null,"Verification Unavailable"))],
         metadata: {
-          status: "ACCOUNT_UNAVAILABLE",
+          status: "ACCOUNT_UNAVAILABLE", diagnosticUnavailable,
           source: "KRONOS_API",
           fetchMode: "OPTIMIZED_DATE_FILTERED_ATTENDANCE",
           storageMode: "LIVE_ONLY",
@@ -229,7 +264,7 @@ async function loadWfmUtilizationKpiDashboard(resolved, { progressiveWeek = null
           missingAttendanceDays: dailyOccupancyRows.length,
           incompleteShiftDays: 0,
           remoteRequestCount: 0,
-          timingsMs: { occupancyRead: occupancyReadMs, accountResolution: accountResolutionMs,
+          timingsMs: { occupancyRead: occupancyReadMs, diagnosticQuery: diagnosticQueryMs, accountResolution: accountResolutionMs,
             total: Date.now() - startedAt },
         },
         period,
@@ -247,12 +282,25 @@ async function loadWfmUtilizationKpiDashboard(resolved, { progressiveWeek = null
     // occupancy-targeted employee codes in memory. The Utilization calculation below
     // remains unchanged.
     const attendanceStartedAt = Date.now();
-    const trackerDataset = await getKronosOptimizedAttendanceEmployeeDayRows({
-      kronosAccountId: usVisaAccount.kronosMapping.kronosAccountId,
-      employeeUids: targetEmployeeUids,
-      dateFrom,
-      dateTo,
-    });
+    // Keep the displayed range intact; only fetch weeks with imported
+    // employee-days. Sunday-Saturday partitions match Absenteeism's cache.
+    const requiredDates = new Set(targetEmployeeRanges.flatMap(target => target.requiredDates));
+    const requiredPartitions = attendanceDatePartitions(dateFrom, dateTo).filter(part =>
+      [...requiredDates].some(day => day >= part.dateFrom && day <= part.dateTo));
+    const trackerDataset = {rows:[], sourceRows:0, requestCount:0, attendancePartitions:[],
+      fetchMode:"OPTIMIZED_DATE_FILTERED_ATTENDANCE", sourceEndpoint:"/api/v1/employee-attendance"};
+    for (const part of requiredPartitions) {
+      const partEmployees = targetEmployeeRanges.filter(target => target.requiredDates.some(day =>
+        day >= part.dateFrom && day <= part.dateTo)).map(target=>target.employeeUid);
+      const data = await getKronosOptimizedAttendanceEmployeeDayRows({
+        kronosAccountId: usVisaAccount.kronosMapping.kronosAccountId,
+        employeeUids: partEmployees, ...part,
+      });
+      trackerDataset.rows.push(...data.rows);
+      trackerDataset.sourceRows += data.sourceRows;
+      trackerDataset.requestCount += data.requestCount;
+      trackerDataset.attendancePartitions.push(...(data.attendancePartitions || []));
+    }
     const attendanceFetchMs = Date.now() - attendanceStartedAt;
 
     const trackerByKey = new Map();
@@ -262,7 +310,9 @@ async function loadWfmUtilizationKpiDashboard(resolved, { progressiveWeek = null
       trackerByKey.set(`${uid}|${tracker.workDate}`, tracker);
     }
 
+    await diagnostics;
     const utilizationRows = [];
+    const evidenceRows = [...unmappedRows];
     let missingTrackerDays = 0;
     let incompleteShiftDays = 0;
 
@@ -273,6 +323,7 @@ async function loadWfmUtilizationKpiDashboard(resolved, { progressiveWeek = null
 
       if (!tracker || !tracker.isPresent) {
         missingTrackerDays += 1;
+        evidenceRows.push(evidenceFor(occupancy,tracker,"No Attendance"));
         continue;
       }
 
@@ -283,9 +334,11 @@ async function loadWfmUtilizationKpiDashboard(resolved, { progressiveWeek = null
         shiftSeconds <= 0
       ) {
         incompleteShiftDays += 1;
+        evidenceRows.push(evidenceFor(occupancy,tracker,tracker.shiftStatus==="COMPLETE"||(tracker.hasLogin&&tracker.hasLogout&&!(shiftSeconds>0))?"Invalid Shift":"Incomplete Shift"));
         continue;
       }
 
+      evidenceRows.push(evidenceFor(occupancy,tracker,"Included",true));
       utilizationRows.push({
         employeeUid: uid,
         productionDate: occupancy.productionDate,
@@ -296,9 +349,9 @@ async function loadWfmUtilizationKpiDashboard(resolved, { progressiveWeek = null
     }
 
     return buildWfmUtilizationKpiDashboard({
-      rows: utilizationRows,
+      rows: utilizationRows, evidenceRows,
       metadata: {
-        status: utilizationRows.length ? "AVAILABLE" : "NO_MATCHED_SHIFT_DATA",
+        status: utilizationRows.length ? "AVAILABLE" : "NO_MATCHED_SHIFT_DATA", diagnosticUnavailable,
         source: "KRONOS_API",
         fetchMode: trackerDataset.fetchMode,
         storageMode: "LIVE_ONLY",
@@ -317,11 +370,13 @@ async function loadWfmUtilizationKpiDashboard(resolved, { progressiveWeek = null
         missingAttendanceDays: missingTrackerDays,
         incompleteShiftDays,
         remoteRequestCount: trackerDataset.requestCount,
+        attendancePartitions: trackerDataset.attendancePartitions,
+        requiredProductionDates: [...requiredDates].sort(),
         sourceEndpoint: trackerDataset.sourceEndpoint,
         rawSourceEndpoint: trackerDataset.rawSourceEndpoint || null,
         fallbackReason: trackerDataset.fallbackReason || null,
         timingsMs: {
-          occupancyRead: occupancyReadMs,
+          occupancyRead: occupancyReadMs, diagnosticQuery: diagnosticQueryMs,
           accountResolution: accountResolutionMs,
           attendanceFetch: attendanceFetchMs,
           total: Date.now() - startedAt,
@@ -335,6 +390,7 @@ async function loadWfmUtilizationKpiDashboard(resolved, { progressiveWeek = null
       bucketCount: progressiveWeek ? 1 : 6,
     });
   } catch (error) {
+    await diagnostics;
     console.error("Attendance-based utilization fetch failed:", {
       code: error?.code,
       status: error?.status,
@@ -347,9 +403,9 @@ async function loadWfmUtilizationKpiDashboard(resolved, { progressiveWeek = null
     });
 
     return buildWfmUtilizationKpiDashboard({
-      rows: [],
+      rows: [], evidenceRows: [...unmappedRows,...dailyOccupancyRows.map(r=>evidenceFor(r,null,"Verification Unavailable"))],
       metadata: {
-        status: "UNAVAILABLE",
+        status: "UNAVAILABLE", diagnosticUnavailable,
         source: "KRONOS_API",
         fetchMode: "OPTIMIZED_DATE_FILTERED_ATTENDANCE",
         storageMode: "LIVE_ONLY",
@@ -364,7 +420,7 @@ async function loadWfmUtilizationKpiDashboard(resolved, { progressiveWeek = null
         missingAttendanceDays: dailyOccupancyRows.length,
         incompleteShiftDays: 0,
         remoteRequestCount: 0,
-        timingsMs: { occupancyRead: occupancyReadMs, total: Date.now() - startedAt },
+        timingsMs: { occupancyRead: occupancyReadMs, diagnosticQuery: diagnosticQueryMs, total: Date.now() - startedAt },
       },
       period,
       dateFrom,
@@ -390,7 +446,7 @@ function buildUtilizationCacheKey({
       : [];
 
   return JSON.stringify({
-    version: 4,
+    version: 6,
     account: "US_VISA",
     period: period || null,
     dateFrom: dateFrom || null,
@@ -422,10 +478,60 @@ function attachUtilizationCacheMetadata(dashboard, cache) {
   };
 }
 
+// Rebuild the total using the original unrounded employee-day inputs rather
+// than averaging percentages or summing rounded bucket values. Only complete,
+// compatible cached weeks qualify. Import invalidation clears the same cache.
+function reuseWeeklyUtilization(resolved) {
+  const started=Date.now();
+  if (resolved.period !== "weekly" || !resolved.dateFrom || !resolved.dateTo || !resolved.referenceDate) return null;
+  const parts = attendanceDatePartitions(resolved.dateFrom,resolved.dateTo);
+  if (parts.length !== 6 || parts.some(p => Date.parse(p.dateTo)-Date.parse(p.dateFrom)!==6*86400000)) return null;
+  const entries = parts.map(part => peekUtilizationCacheEntry(buildUtilizationCacheKey({...resolved,...part})));
+  const verified = new Set(["AVAILABLE","NO_OCCUPANCY_DATA","NO_MATCHED_SHIFT_DATA"]);
+  const evidenceSymbol = Symbol.for("pms.utilizationEvidence");
+  if (entries.some(entry => !entry || !verified.has(entry.value?.utilization?.status) || entry.value.series?.length !== 1 || !(entry.value[evidenceSymbol] instanceof Map))) return null;
+  const evidenceRows = entries.flatMap(entry=>[...entry.value[evidenceSymbol].values()].flat());
+  const rows = evidenceRows.filter(row=>row.utilizationValid);
+  const metas = entries.map(entry=>entry.value.utilization);
+  const populated = metas.filter(m=>m.occupancyEmployeeDays > 0);
+  if (new Set(populated.map(m=>m.kronosAccountId)).size > 1) return null;
+  if (entries.some(entry=>[...entry.value[evidenceSymbol].values()].flat().filter(r=>r.utilizationValid).length !== entry.value.summary.utilizationMatchedEmployeeDays)) return null;
+  const metadata = {...(populated[0] || metas[0]),
+    status:rows.length ? "AVAILABLE" : populated.length ? "NO_MATCHED_SHIFT_DATA" : "NO_OCCUPANCY_DATA",
+    diagnosticUnavailable:metas.some(m=>m.diagnosticUnavailable),
+    targetedEmployeeCount:new Set(evidenceRows.map(r=>r.employeeUid).filter(Boolean)).size,
+    requiredProductionDates:[...new Set(metas.flatMap(m=>m.requiredProductionDates || []))].sort(),
+    attendancePartitions:[], remoteRequestCount:0, summarySource:"VERIFIED_WEEKLY_EVIDENCE",
+    timingsMs:{occupancyRead:0,diagnosticQuery:0,attendanceFetch:0,total:0},
+  };
+  for (const key of ["occupancyEmployeeDays","trackerEmployeeDays","attendanceEmployeeDays","trackerSourceRows","validEmployeeDays","missingTrackerDays","missingAttendanceDays","incompleteShiftDays"]) metadata[key]=metas.reduce((sum,m)=>sum+(Number(m[key])||0),0);
+  const dashboard=buildWfmUtilizationKpiDashboard({...resolved,rows,evidenceRows,metadata});
+  metadata.timingsMs.total=Date.now()-started;
+  // No derived cache entry: reuse only while every contributing entry is fresh.
+  const cache={...entries[0].cache,status:"WEEKLY_REUSE",ageMs:Math.max(...entries.map(e=>e.cache.ageMs)),expiresInMs:Math.min(...entries.map(e=>e.cache.expiresInMs))};
+  return attachUtilizationCacheMetadata(dashboard,cache);
+}
+
 export async function getWfmUtilizationKpiDashboard(query = {}) {
+  const started=Date.now();
   const fullRange = await resolveUtilizationDateRange(query);
   const weekSelection = applyProgressiveWeekWindow(fullRange, query);
   const resolved = weekSelection.resolved;
+  const log=(dashboard)=>{
+    const meta=dashboard.utilization || {};
+    const reused=meta.cache?.status!=="MISS";
+    console.info("Kronos Utilization progressive:", {
+      module:"UTILIZATION",stage:weekSelection.progressiveWeek ? (resolved.dateTo===fullRange.dateTo?"FIRST_WEEK":"WEEK") : "COMPLETE",
+      dateFrom:resolved.dateFrom,dateTo:resolved.dateTo,elapsedMs:Date.now()-started,status:meta.status,cache:meta.cache,
+      remoteRequests:reused?0:meta.remoteRequestCount,attendancePartitions:reused?[]:meta.attendancePartitions,
+      timingsMs:reused && meta.cache?.status!=="WEEKLY_REUSE"?null:meta.timingsMs,summarySource:meta.summarySource||null,
+    });
+    return dashboard;
+  };
+  if (!weekSelection.progressiveWeek) {
+    const reused = reuseWeeklyUtilization(resolved);
+    if (reused) return log(reused);
+  }
   const cacheKey = buildUtilizationCacheKey(resolved);
 
   const result = await getOrCreateUtilizationCacheEntry({
@@ -434,9 +540,9 @@ export async function getWfmUtilizationKpiDashboard(query = {}) {
     shouldCache: shouldCacheUtilizationDashboard,
   });
 
-  return {
+  return log({
     ...attachUtilizationCacheMetadata(result.value, result.cache),
     ...(weekSelection.progressiveWeek ? { progressiveWeek: weekSelection.progressiveWeek } : {}),
-  };
+  });
 }
 
