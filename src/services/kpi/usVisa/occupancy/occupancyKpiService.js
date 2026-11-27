@@ -143,12 +143,14 @@ export function buildWfmOccupancyKpiDashboard({
   referenceDate = null,
   taskOrder = null,
   availableTaskOrders = [],
+  retainEvidence = false,
 } = {}) {
   const normalizedPeriod = normalizeCallKpiPeriod(period);
   const summary = emptyAccumulator();
   const utilizationSummary = emptyUtilizationAccumulator();
   const buckets = new Map();
   const utilizationBuckets = new Map();
+  const evidence = new Map();
 
   seedCallKpiReferencePeriodBuckets(buckets, {
     period: normalizedPeriod,
@@ -172,6 +174,13 @@ export function buildWfmOccupancyKpiDashboard({
     const bucket = getCallKpiPeriodBucket(date, normalizedPeriod);
     const accumulator = buckets.get(bucket.key) || emptyAccumulator(bucket);
     addRow(accumulator, row);
+    if (retainEvidence) {
+      if (!evidence.has(bucket.key)) evidence.set(bucket.key, []);
+      const components = {talk:toFiniteNumber(row.talking_seconds),hold:toFiniteNumber(row.hold_seconds),afterCall:toFiniteNumber(row.after_call_seconds),wrap:toFiniteNumber(row.wrapup_seconds),email:toFiniteNumber(row.email_seconds),chat:toFiniteNumber(row.chatting_seconds)};
+      const workSeconds = Object.values(components).reduce((a,b)=>a+b,0);
+      const idleSeconds = toFiniteNumber(row.available_idle_seconds);
+      evidence.get(bucket.key).push({employeeUid:row.employee_uid ? String(row.employee_uid).trim() : null, employeeName:row.employee_uid ? row.employee_name ?? null : 'Unmapped Employee', workDate:row.production_date, taskOrderId:row.task_order_id, sourceSystem:row.source_system, batchId:row.batch_id, mappingStatus:row.mapping_status, ...components,workSeconds,idleSeconds,occupancyPct: workSeconds+idleSeconds>0 ? round(workSeconds/(workSeconds+idleSeconds)*100,2):null});
+    }
     buckets.set(bucket.key, accumulator);
   }
 
@@ -189,6 +198,7 @@ export function buildWfmOccupancyKpiDashboard({
   }
 
   return {
+    ...(retainEvidence ? {[Symbol.for("pms.occupancyEvidence")]:evidence} : {}),
     summary: {
       ...finalize(summary),
       ...finalizeUtilization(utilizationSummary),
@@ -224,6 +234,7 @@ export function buildWfmUtilizationKpiDashboard({
   referenceDate = null,
   taskOrder = null,
   bucketCount = 6,
+  evidenceRows = null,
 } = {}) {
   const normalizedPeriod = normalizeCallKpiPeriod(period);
   const summary = emptyUtilizationAccumulator();
@@ -249,7 +260,16 @@ export function buildWfmUtilizationKpiDashboard({
     buckets.set(bucket.key, accumulator);
   }
 
+  const evidence = new Map();
+  for (const row of evidenceRows || []) {
+    const date = parseCallKpiDateOnly(row.productionDate || row.workDate);
+    if (!date) continue;
+    const {key} = getCallKpiPeriodBucket(date, normalizedPeriod);
+    if (!evidence.has(key)) evidence.set(key, []);
+    evidence.get(key).push({...row,utilizationPct:row.utilizationValid&&row.shiftSeconds>0?round(row.productiveSeconds/row.shiftSeconds*100):null});
+  }
   return {
+    ...(evidenceRows ? {[Symbol.for('pms.utilizationEvidence')]:evidence} : {}),
     summary: finalizeUtilization(summary),
     series: [...buckets.values()]
       .sort((a, b) => a.key.localeCompare(b.key))

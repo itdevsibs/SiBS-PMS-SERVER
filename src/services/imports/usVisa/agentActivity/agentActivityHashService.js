@@ -1,45 +1,6 @@
-// Builds Agent Activity business identity and content hashes.
 import crypto from "crypto";
-
-const CONTENT_FIELDS = [
-  "source_system",
-  "source_sheet",
-  "production_date",
-  "agent_name_raw",
-  "source_agent_key",
-  "sibs_id",
-  "mapping_status",
-  "mapping_method",
-  "task_order_id",
-  "start_at",
-  "end_at",
-  "duration_seconds",
-  "status_raw",
-];
-
-function normalize(value) {
-  if (value === null || value === undefined) return "";
-  return String(value).trim().replace(/\s+/g, " ").toUpperCase();
-}
-
-function stableHash(parts) {
-  return crypto.createHash("sha256").update(JSON.stringify(parts)).digest("hex");
-}
-
-export function buildAgentActivityIdentityParts(row = {}) {
-  return [
-    normalize(row.source_system),
-    normalize(row.agent_name_raw),
-    normalize(row.production_date),
-    normalize(row.start_at),
-    normalize(row.status_raw),
-  ];
-}
-
-export function createAgentActivityIdentityHash(row = {}) {
-  return stableHash(buildAgentActivityIdentityParts(row));
-}
-
-export function createAgentActivityContentHash(row = {}) {
-  return stableHash(CONTENT_FIELDS.map((field) => [field, normalize(row[field])]));
-}
+const norm = v => v == null ? "" : String(v).trim().replace(/\s+/g," ").toUpperCase();
+const hash = fields => crypto.createHash("sha256").update(JSON.stringify(fields.map(norm))).digest("hex");
+export function buildAgentActivityIdentityParts(r={}) {return ["ACTIVITY_V2",r.source_system,r.interval_role,r.agent_name_raw,r.production_date,r.start_at,r.end_at,r.status_raw,r.session_type_raw,r.logged_in_raw,r.application_raw,r.clid_raw,r.agent_login_raw,r.personal_id_raw,r.client_raw,r.os_raw,r.ip_raw];}
+export function createAgentActivityIdentityHash(r={}) {return hash(buildAgentActivityIdentityParts(r));}
+export function createAgentActivityContentHash(r={}) {return hash([...buildAgentActivityIdentityParts(r),r.duration_seconds]);}

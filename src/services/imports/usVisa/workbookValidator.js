@@ -21,6 +21,9 @@ export const IMPORT_PROFILE_CODES = {
   FUSECOM_AGENT_OCCUPANCY: "FUSECOM_AGENT_OCCUPANCY",
   FUSENET_AGENT_OCCUPANCY: "FUSENET_AGENT_OCCUPANCY",
   HERODASH_AGENT_OCCUPANCY: "HERODASH_AGENT_OCCUPANCY",
+  FUSECOM_AGENT_ACTIVITY: "FUSECOM_AGENT_ACTIVITY",
+  FUSENET_AGENT_ACTIVITY: "FUSENET_AGENT_ACTIVITY",
+  HERODASH_AGENT_LOGIN_LOGOUT: "HERODASH_AGENT_LOGIN_LOGOUT",
   HERODASH_AGENT_ACTIVITY_PRODUCTIVE_BREAKS: "HERODASH_AGENT_ACTIVITY_PRODUCTIVE_BREAKS",
   HERODASH_AGENT_PERFORMANCE_BY_SKILL: "HERODASH_AGENT_PERFORMANCE_BY_SKILL",
   US_VISA_EMAIL_RAW_DATA: "US_VISA_EMAIL_RAW_DATA",
@@ -712,6 +715,25 @@ export const WORKBOOK_PROFILE_DEFINITIONS = {
         ignoredHeaders: HERODASH_AGENT_OCCUPANCY_IGNORED_HEADERS,
       },
     ],
+  },
+  ...Object.fromEntries(["FUSECOM", "FUSENET"].map(sourceSystem => [
+    `${sourceSystem}_AGENT_ACTIVITY`, {
+      profileCode: `${sourceSystem}_AGENT_ACTIVITY`, sourceSystem,
+      requiredSheets: [
+        { sheetName: "Productive Breaks", dataGrain: "AGENT_ACTIVITY_INTERVAL", requiredHeaders: [...HERODASH_AGENT_ACTIVITY_REQUIRED_HEADERS, "Session Type"] },
+        { sheetName: "System Auto-Pauses", dataGrain: "AGENT_SYSTEM_AUTO_PAUSE", requiredHeaders: HERODASH_AGENT_ACTIVITY_REQUIRED_HEADERS },
+        { sheetName: "Login Details", dataGrain: "AGENT_LOGIN_SESSION", requiredHeaders: [["Agent Name", "Agent name"], "Logged in", "Login", "Logout", "Duration", "Logout reason"] },
+      ].map(rule => ({ ...rule, headerRowNumber: 1, headerRowCandidates: Array.from({length: 30}, (_, i) => i + 1), allowUnknownHeaders: true, disableHeaderFallbackForXlsx: true })),
+    },
+  ])),
+  [IMPORT_PROFILE_CODES.HERODASH_AGENT_LOGIN_LOGOUT]: {
+    profileCode: IMPORT_PROFILE_CODES.HERODASH_AGENT_LOGIN_LOGOUT,
+    sourceSystem: "HERODASH",
+    requiredSheets: [{ sheetName: null, sheetNameCandidates: ["Sheet1", "Login/Logout", "Login Logout"],
+      dataGrain: "AGENT_LOGIN_SESSION", headerRowNumber: 1,
+      headerRowCandidates: Array.from({length: 30}, (_, i) => i + 1),
+      requiredHeaders: [["Agent Name", "Agent name"], "Logged in", "Login", "Logout", "Duration", "Logout reason"],
+      allowUnknownHeaders: true, preferMatchingHeaderSheet: true }],
   },
   [IMPORT_PROFILE_CODES.HERODASH_AGENT_ACTIVITY_PRODUCTIVE_BREAKS]: {
     profileCode: IMPORT_PROFILE_CODES.HERODASH_AGENT_ACTIVITY_PRODUCTIVE_BREAKS,

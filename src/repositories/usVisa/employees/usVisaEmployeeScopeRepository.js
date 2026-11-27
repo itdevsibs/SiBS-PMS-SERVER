@@ -336,7 +336,7 @@ export async function findUsVisaAbsenteeismRoster({ taskOrder = null, dateFrom, 
       error.code = 'ABSENTEEISM_LEDGER_IDENTITY_CONFLICT';
       throw error;
     }
-    if (!prior) byUid.set(employeeUid, { employeeUid, gyEmpId, employeeName: row.kronos_name || null });
+    if (!prior) byUid.set(employeeUid, { employeeUid, gyEmpId, employeeName: row.kronos_name || null, taskOrderId: normalizeTaskOrder(row.task_order_raw) });
     else if (!prior.gyEmpId && gyEmpId) prior.gyEmpId = gyEmpId;
   }
   return [...byUid.values()];
@@ -421,6 +421,7 @@ export async function findUsVisaHeadcountRosterAssignments({ taskOrder = null, d
   const allowed = new Set(normalizeTaskOrderList(taskOrder));
   const [rows] = await pmsDb.query(`
     SELECT TRIM(l.sibs_id) AS employeeUid,
+           l.kronos_name AS employeeName, l.organizational_role AS employeeRole, l.kronos_user_status AS userStatus,
            l.task_order AS taskOrderRaw,
            DATE_FORMAT(l.us_visa_join_date, '%Y-%m-%d') AS effectiveFrom,
            DATE_FORMAT(l.us_visa_departure_date, '%Y-%m-%d') AS effectiveTo,
@@ -438,7 +439,7 @@ export async function findUsVisaHeadcountRosterAssignments({ taskOrder = null, d
     const employeeUid = normalizeUid(row.employeeUid).toUpperCase();
     if (!employeeUid || !taskOrderId || (allowed.size && !allowed.has(taskOrderId))) continue;
     const assignment = {
-      employeeUid, taskOrderId,
+      employeeUid, taskOrderId, employeeName: row.employeeName || null, employeeRole: row.employeeRole || null, userStatus: row.userStatus ?? null,
       effectiveFrom: row.effectiveFrom || '1900-01-01',
       effectiveTo: row.effectiveTo || null,
       inactiveWithoutDeparture: row.rosterStatus === 'INACTIVE' && !row.effectiveTo,

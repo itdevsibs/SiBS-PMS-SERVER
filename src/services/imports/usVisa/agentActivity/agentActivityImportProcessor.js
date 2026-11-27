@@ -1,6 +1,7 @@
 // Processes HeroDash Agent Activity - Productive Breaks into raw audit + canonical storage.
 import {
   findAgentActivityByIdentityHashes,
+  assertNoLegacyActivityOverlap,
   insertAgentActivityRowsWithDuplicateProtection,
 } from "../../../../repositories/usVisa/agentActivity/usVisaAgentActivityRepository.js";
 import {
@@ -26,6 +27,8 @@ import {
   createAgentActivityContentHash,
   createAgentActivityIdentityHash,
 } from "./agentActivityHashService.js";
+import { extractAgentOccupancyWorkbookMetadata } from "../agentOccupancy/agentOccupancyWorkbookMetadata.js";
+import { durationCell } from "./activitySourceValues.js";
 import { mapAgentActivityIdentity, mapAgentActivityRow } from "./agentActivityMapper.js";
 import { validateCanonicalAgentActivityRow } from "./agentActivityValidator.js";
 
@@ -142,10 +145,10 @@ function openIntervalWarning(row, context) {
     ...context,
     severity: "WARNING",
     errorType: "SOURCE_DATA",
-    errorCode: "OPEN_ACTIVITY_INTERVAL",
+    errorCode: row.mappedRow.data_quality_status || "OPEN_ACTIVITY_INTERVAL",
     columnName: "End time",
     rawValue: row.mappedRow?.end_at || null,
-    errorMessage: "Activity interval has no completed End time and/or Duration. The row was retained as an open interval.",
+    errorMessage: `Source interval retained with quality status ${row.mappedRow.data_quality_status}.`,
     existingRowId: null,
   };
 }
@@ -209,6 +212,10 @@ function buildCanonicalRow(row, batch, profile) {
     durationSeconds: row.mappedRow.duration_seconds,
     statusRaw: row.mappedRow.status_raw,
     rowContentHash: row.contentHash,
+    sessionTypeRaw: row.mappedRow.session_type_raw, intervalRole: row.mappedRow.interval_role,
+    loggedInRaw: row.mappedRow.logged_in_raw, sourceTimezone: row.mappedRow.source_timezone,
+    dataQualityStatus: row.mappedRow.data_quality_status,
+    ingestionStatus: row.classification === IMPORT_ROW_CLASSIFICATIONS.DUPLICATE_ROW ? "DUPLICATE" : "ACCEPTED",
   };
 }
 
@@ -222,19 +229,24 @@ function updateCounters(counters, rows) {
   }
 }
 
-export async function processAgentActivityWorkbook({
+async function processActivitySheet({
   workbook,
   batch,
   profile,
   workbookValidation,
   counters,
+  reportDateFrom, reportDateTo,
   onProgress,
 }) {
+  const grain = workbookValidation.sheets[0].dataGrain;
+  const sourceSystem = String(profile.sourceSystem).toUpperCase();
+  const declaredTimezone = extractAgentOccupancyWorkbookMetadata(workbook,workbookValidation.sheets[0].sheetName).sourceTimezone;
+  const sourceTimezone = declaredTimezone === "Asia/Manila" || (!declaredTimezone && ["FUSECOM","FUSENET"].includes(sourceSystem)) ? "Asia/Manila" : null;
   const startedAt = Date.now();
   const preparedRows = [];
   const identitiesByKey = new Map();
 
-  onProgress?.({ stage: "processing", percent: 52, processedRows: 0, totalRows: null, message: "Reading HeroDash Agent Activity rows." });
+  onProgress?.({ stage: "processing", percent: 52, processedRows: 0, totalRows: null, message: "Reading Agent Activity source rows." });
 
   for (const sheet of workbookValidation.sheets || []) {
     const headers = readHeaderRow(workbook, sheet.sheetName, sheet.headerRowNumber);
@@ -242,9 +254,10 @@ export async function processAgentActivityWorkbook({
     for (const sourceRow of sourceRows) {
       const mapped = mapAgentActivityRow(sourceRow.rowJson, {
         sheetName: sheet.sheetName,
-        excelRowNumber: sourceRow.excelRowNumber,
+        excelRowNumber: sourceRow.excelRowNumber, sourceSystem, sourceTimezone, dataGrain: grain,
+        durationCell: name => durationCell(workbook,sheet.sheetName,sourceRow.excelRowNumber,headers,name),
       });
-      const identity = mapAgentActivityIdentity(sourceRow.rowJson);
+      const identity = mapAgentActivityIdentity(sourceRow.rowJson, sourceSystem);
       if (identity.agentName) {
         identitiesByKey.set(
           createAgentIdentityCacheKey(identity, { matchMode: AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY }),
@@ -262,6 +275,7 @@ export async function processAgentActivityWorkbook({
     }
   }
 
+  if(grain === "AGENT_ACTIVITY_INTERVAL") {const dates=preparedRows.map(r=>r.mappedRow.production_date).filter(Boolean).sort(); await assertNoLegacyActivityOverlap(sourceSystem,dates[0],dates.at(-1));}
   const identityResolver = await createBulkAgentIdentityResolver([...identitiesByKey.values()], {
     matchMode: AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY,
     allowKronosNameFallback: true,
@@ -278,8 +292,9 @@ export async function processAgentActivityWorkbook({
   const scopeIndex = buildScopeIndex(await findScopeAssignmentsByEmployeeUids(matchedSibsIds));
 
   for (const row of preparedRows) {
-    applyIdentityAndScope(row.mappedRow, row.identityMatch, scopeIndex);
-    const validation = validateCanonicalAgentActivityRow(row.mappedRow);
+    if (grain === "AGENT_ACTIVITY_INTERVAL") applyIdentityAndScope(row.mappedRow, row.identityMatch, scopeIndex);
+    else { row.mappedRow.mapping_status = row.identityMatch.matchStatus || "UNMATCHED"; row.mappedRow.mapping_method = row.identityMatch.matchMethod || null; row.mappedRow.sibs_id = row.identityMatch.matchStatus === "MATCHED" ? row.identityMatch.employee?.employeeUid || null : null; }
+    const validation = validateCanonicalAgentActivityRow(row.mappedRow, grain);
     row.validationErrors = validation.errors;
     row.isValid = row.conversionErrors.length === 0 && validation.errors.length === 0;
     row.rowHash = createAgentActivityIdentityHash(row.mappedRow);
@@ -287,7 +302,7 @@ export async function processAgentActivityWorkbook({
   }
 
   const validHashes = [...new Set(preparedRows.filter((row) => row.isValid).map((row) => row.rowHash))];
-  const existingRows = await findAgentActivityByIdentityHashes(validHashes);
+  const existingRows = await findAgentActivityByIdentityHashes(validHashes, grain, batch.id);
   const classifiedRows = classifyPreparedChunkRows({
     rows: preparedRows,
     existingByHash: mapRowsByHash(existingRows),
@@ -297,32 +312,36 @@ export async function processAgentActivityWorkbook({
   for (const sheet of workbookValidation.sheets || []) {
     const sheetRows = classifiedRows.filter((row) => row.sheet.sheetName === sheet.sheetName);
     if (!sheetRows.length) continue;
-    await insertRawImportRows(sheetRows.map((row) => ({
+    for (let i=0;i<sheetRows.length;i+=500) { const chunk=sheetRows.slice(i,i+500);
+    await insertRawImportRows(chunk.map((row) => ({
       batchId: batch.id,
       sheetName: sheet.sheetName,
       excelRowNumber: row.excelRowNumber,
-      dataGrain: "AGENT_ACTIVITY_INTERVAL",
+      dataGrain: grain,
       rowJson: row.rowJson,
       rowHash: row.rowHash,
       validationStatus: rawStatus(row.classification),
     })));
-    const rawRows = await getRawImportRowsByBatchSheetRowNumbers(batch.id, sheet.sheetName, sheetRows.map((row) => row.excelRowNumber));
+    const rawRows = await getRawImportRowsByBatchSheetRowNumbers(batch.id, sheet.sheetName, chunk.map((row) => row.excelRowNumber));
     const byNumber = mapRawRowsByExcelNumber(rawRows);
-    for (const row of sheetRows) row.rawRowId = byNumber.get(Number(row.excelRowNumber))?.id || null;
+    for (const row of chunk) {row.rawRowId = byNumber.get(Number(row.excelRowNumber))?.id || null; if(!row.rawRowId) throw new Error("Missing raw row provenance");}
+    }
   }
 
   const newRows = classifiedRows.filter((row) => row.classification === IMPORT_ROW_CLASSIFICATIONS.NEW);
   if (newRows.length) {
-    await insertAgentActivityRowsWithDuplicateProtection(newRows.map((row) => buildCanonicalRow(row, batch, profile)));
+    await insertAgentActivityRowsWithDuplicateProtection(newRows.map((row) => buildCanonicalRow(row, batch, profile)), grain);
   }
-  const storedRows = newRows.length ? await findAgentActivityByIdentityHashes(validHashes) : existingRows;
+  const storedRows = newRows.length ? await findAgentActivityByIdentityHashes(validHashes, grain, batch.id) : existingRows;
   const finalRows = reconcileClassificationsWithStoredRows({ rows: classifiedRows, storedByHash: mapRowsByHash(storedRows), batchId: batch.id });
 
+  const duplicateRows = finalRows.filter(row => row.classification === IMPORT_ROW_CLASSIFICATIONS.DUPLICATE_ROW);
+  if (duplicateRows.length) await insertAgentActivityRowsWithDuplicateProtection(duplicateRows.map(row=>buildCanonicalRow(row,batch,profile)),grain);
   const statusUpdates = finalRows.filter((row) => row.classification !== IMPORT_ROW_CLASSIFICATIONS.INVALID).map((row) => ({
     rawRowId: row.rawRowId,
     validationStatus: row.classification === IMPORT_ROW_CLASSIFICATIONS.NEW ? "PROCESSED" : rawStatus(row.classification),
   })).filter((row) => row.rawRowId);
-  if (statusUpdates.length) await updateRawImportValidationStatuses(statusUpdates);
+  for(let i=0;i<statusUpdates.length;i+=500) await updateRawImportValidationStatuses(statusUpdates.slice(i,i+500));
 
   const errors = [];
   for (const row of finalRows) {
@@ -344,14 +363,33 @@ export async function processAgentActivityWorkbook({
       errors.push(mappingWarning(row, context));
       counters.warningRows += 1;
     }
-    if (!row.mappedRow.end_at || !Number.isFinite(row.mappedRow.duration_seconds)) {
+    if (!["VALID","TIMEZONE_UNVERIFIED"].includes(row.mappedRow.data_quality_status)) {
       errors.push(openIntervalWarning(row, context));
       counters.warningRows += 1;
     }
   }
-  if (errors.length) await insertImportErrors(errors);
+  for(let i=0;i<errors.length;i+=500) await insertImportErrors(errors.slice(i,i+500));
   updateCounters(counters, finalRows);
 
+  if(!sourceTimezone && preparedRows.length) {await insertImportErrors([{batchId:batch.id,rawRowId:null,sheetName:workbookValidation.sheets[0].sheetName,excelRowNumber:null,severity:"WARNING",errorType:"SOURCE_DATA",errorCode:"TIMEZONE_UNVERIFIED",columnName:null,rawValue:declaredTimezone||null,errorMessage:"Source timestamps retained as reported; timezone is unverified.",existingRowId:null}]); counters.warningRows+=1;}
+  const observedDates=preparedRows.map(r=>r.mappedRow.production_date).filter(Boolean).sort();
+  const observedFrom=observedDates[0]||null, observedTo=observedDates.at(-1)||null;
+  const possibleTruncation=sourceSystem === "HERODASH" && grain === "AGENT_ACTIVITY_INTERVAL" && preparedRows.length >= 10000;
+  const coverageStatus=possibleTruncation?"POSSIBLY_TRUNCATED":preparedRows.length===0?"NO_DATA":"UNKNOWN";
+  const sheet=workbookValidation.sheets[0];
+  sheet.coverage={requestedFrom:reportDateFrom||null,requestedTo:reportDateTo||null,observedFrom,observedTo,status:coverageStatus,sourceRows:preparedRows.length};
+  if(!possibleTruncation && preparedRows.length && reportDateFrom && reportDateTo && (!observedFrom || !observedTo || observedFrom>reportDateFrom || observedTo<reportDateTo)){
+    await insertImportErrors([{batchId:batch.id,rawRowId:null,sheetName:sheet.sheetName,excelRowNumber:null,severity:"WARNING",errorType:"SOURCE_DATA",errorCode:"COVERAGE_UNVERIFIED",columnName:"Date",rawValue:null,errorMessage:`Requested ${reportDateFrom}–${reportDateTo}; observed ${observedFrom||"unknown"}–${observedTo||"unknown"}. Sparse source dates do not prove completeness or missing activity.`,existingRowId:null}]);counters.warningRows+=1;
+  }
+  if(possibleTruncation) {
+    await insertImportErrors([{batchId:batch.id,rawRowId:null,sheetName:workbookValidation.sheets[0].sheetName,excelRowNumber:null,severity:"WARNING",errorType:"SOURCE_DATA",errorCode:"POSSIBLY_TRUNCATED",columnName:null,rawValue:String(preparedRows.length),errorMessage:`Possible export limit; observed production dates ${observedDates[0]||"unknown"} to ${observedDates.at(-1)||"unknown"}. Completeness not verified.`,existingRowId:null}]); counters.warningRows+=1;
+  }
   onProgress?.({ stage: "processing", percent: 90, processedRows: finalRows.length, totalRows: finalRows.length, message: "Agent Activity records processed." });
-  return { processorTotalMs: Date.now() - startedAt, processedRows: finalRows.length, processedChunks: finalRows.length ? 1 : 0, ...identityResolver.stats };
+  return { processorTotalMs: Date.now() - startedAt, processedRows: finalRows.length, processedChunks: finalRows.length ? Math.ceil(finalRows.length/500) : 0, sheet:sheet.sheetName, coverage:sheet.coverage, ...identityResolver.stats };
+}
+
+export async function processAgentActivityWorkbook(options) {
+  const sheets=options.workbookValidation.sheets || []; const result=[];
+  for (let index=0;index<sheets.length;index++){const sheet=sheets[index]; result.push(await processActivitySheet({...options,workbookValidation:{...options.workbookValidation,sheets:[sheet]},onProgress:progress=>{const fraction=Math.max(0,Math.min(1,(Number(progress.percent||52)-52)/38));options.onProgress?.({...progress,percent:52+Math.floor((index+fraction)*38/sheets.length),message:`${sheet.sheetName}: ${progress.message}`});}}));}
+  return {processedRows:result.reduce((n,r)=>n+r.processedRows,0), processedChunks:result.reduce((n,r)=>n+r.processedChunks,0), sheets:result};
 }

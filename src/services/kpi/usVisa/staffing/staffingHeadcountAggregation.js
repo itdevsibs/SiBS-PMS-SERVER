@@ -56,6 +56,12 @@ export function buildStaffingHeadcountSeries({
   // must not erase an earlier employment span. No attendance dependency.
   const activeByDay = new Map(allDates.map(date => [date, new Set()]));
   const missingJoinDateUids = new Set();
+  const assignmentsByDay = new Map();
+  const seenBuckets = new Set();
+  for (const date of allDates) {
+    const key = getCallKpiPeriodBucket(parseCallKpiDateOnly(date), period).key;
+    if (!seenBuckets.has(key)) { seenBuckets.add(key); assignmentsByDay.set(date, new Map()); }
+  }
   for (const assignment of employmentAssignments ?? rosterAssignments) {
     const id = String(assignment.employeeUid || '').trim().toUpperCase();
     const to = normalizeUsVisaTaskOrderId(assignment.taskOrderId);
@@ -66,7 +72,13 @@ export function buildStaffingHeadcountSeries({
     if (assignment.inactiveWithoutDeparture && !assignment.effectiveTo) continue;
     const end = assignment.effectiveTo || '9999-12-31';
     for (const date of allDates) {
-      if (date >= joinDate && date <= end) activeByDay.get(date).add(id);
+      if (date >= joinDate && date <= end) {
+        activeByDay.get(date).add(id);
+        const byId = assignmentsByDay.get(date);
+        if (!byId) continue;
+        if (!byId.has(id)) byId.set(id, []);
+        byId.get(id).push({employeeUid:id, employeeName:assignment.employeeName ?? null, employeeRole:assignment.employeeRole ?? null, userStatus:assignment.userStatus ?? null, taskOrderId:to, effectiveFrom:joinDate, effectiveTo:assignment.effectiveTo ?? null});
+      }
     }
   }
   const expectedByDay = new Map(allDates.map(date => [date, new Set()]));
@@ -176,7 +188,16 @@ export function buildStaffingHeadcountSeries({
     headcountStatus: latest.headcountStatus,
     requiredSnapshotDate: latest.requiredSnapshotDate,
   } : legacySummary;
+  const evidence = new Map();
+  for (const bucket of orderedBuckets) {
+    const metric = series.find(row => row.key === bucket.key);
+    const snapshotDate = bucket.rows[0]?.date;
+    const roster = metric.actualHeadcount == null ? [] : [...(assignmentsByDay.get(snapshotDate) || new Map()).values()].map(assignments => ({...assignments[0], taskOrderId: [...new Set(assignments.map(a => a.taskOrderId))].sort().join(', '), assignments, snapshotDate}));
+    const required = metric.requiredSnapshotDate ? [...(expectedByDay.get(metric.requiredSnapshotDate) || [])].map(taskOrderId => ({taskOrderId, date:metric.requiredSnapshotDate, requiredHeadcount:requirementMap.get(`${taskOrderId}|${metric.requiredSnapshotDate}`) ?? null})) : [];
+    evidence.set(bucket.key, {roster, required, snapshotDate, availabilityDays:bucket.rows.map(r => r.date)});
+  }
   return {
+    [Symbol.for('pms.headcountEvidence')]: evidence,
     summary, days, series,
     source: {
       required: 'STAFFING_REQUIREMENTS_PUBLISHED',

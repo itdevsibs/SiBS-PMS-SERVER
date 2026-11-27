@@ -1,6 +1,8 @@
 // Processes HeroDash Agent Performance By Skill into raw audit + canonical storage.
 import {
   findAgentPerformanceBySkillByIdentityHashes,
+  assertNoLegacySkillOverlap,
+  hasOverlappingSkillPeriod,
   insertAgentPerformanceBySkillRowsWithDuplicateProtection,
 } from "../../../../repositories/usVisa/agentPerformanceBySkill/usVisaAgentPerformanceBySkillRepository.js";
 import {
@@ -9,7 +11,7 @@ import {
   updateRawImportValidationStatuses,
 } from "../../../../repositories/usVisa/imports/usVisaRawImportRepository.js";
 import { insertImportErrors } from "../../../../repositories/usVisa/imports/usVisaImportErrorRepository.js";
-import { findScopeAssignmentsByEmployeeUids } from "../../../../repositories/usVisa/employees/usVisaEmployeeScopeRepository.js";
+import { durationCell, classifyPeriod } from "../agentActivity/activitySourceValues.js";
 import {
   IMPORT_ROW_CLASSIFICATIONS,
   classifyPreparedChunkRows,
@@ -32,11 +34,6 @@ import {
 } from "./agentPerformanceBySkillMapper.js";
 import { createAgentPerformanceBySkillTaskOrderResolver } from "./agentPerformanceBySkillTaskOrderResolver.js";
 import { validateCanonicalAgentPerformanceBySkillRow } from "./agentPerformanceBySkillValidator.js";
-
-function normalizeTaskOrder(value) {
-  const match = String(value || "").toUpperCase().match(/\bTO\s*([0-9]+)\b/);
-  return match ? `TO${Number(match[1])}` : null;
-}
 
 function mapRowsByHash(rows = []) {
   return new Map(rows.filter((row) => row?.rowIdentityHash).map((row) => [
@@ -82,31 +79,6 @@ function employeeWarning(row, context) {
   return { ...context, severity: "WARNING", errorType: "EMPLOYEE_MAPPING", errorCode: code, columnName: "Agent Name", rawValue: row.mappedRow?.agent_name_raw || null, errorMessage: status === "AMBIGUOUS" ? "Agent Performance row matched multiple possible employees and was left unmapped." : "Agent Performance row was imported but its Agent Name is not yet mapped to a SIBS employee.", existingRowId: null };
 }
 
-function employeeTaskOrderMismatchWarning(row, context) {
-  return { ...context, severity: "WARNING", errorType: "TASK_ORDER_MAPPING", errorCode: "EMPLOYEE_TASK_ORDER_MISMATCH", columnName: "Skill", rawValue: row.mappedRow?.skill_name_raw || null, errorMessage: `Skill resolves to ${row.mappedRow?.task_order_id || "an unknown Task Order"}, but the matched employee's applicable roster scope is ${row.employeeScopeTaskOrders.join(", ") || "not available"}. Source Skill attribution was preserved.`, existingRowId: null };
-}
-
-function buildScopeIndex(assignments = []) {
-  const index = new Map();
-  for (const assignment of assignments) {
-    const sibsId = String(assignment?.employeeUid || "").trim();
-    if (!sibsId) continue;
-    const list = index.get(sibsId) || [];
-    list.push(assignment);
-    index.set(sibsId, list);
-  }
-  return index;
-}
-
-function applicableTaskOrders(scopeIndex, sibsId, reportDate) {
-  const date = String(reportDate || "").slice(0, 10);
-  return [...new Set((scopeIndex.get(String(sibsId || "")) || []).filter((assignment) => {
-    const from = String(assignment?.effectiveFrom || "1900-01-01").slice(0, 10);
-    const to = assignment?.effectiveTo ? String(assignment.effectiveTo).slice(0, 10) : null;
-    return date && from <= date && (!to || to >= date);
-  }).map((assignment) => normalizeTaskOrder(assignment.taskOrderId)).filter(Boolean))];
-}
-
 function buildCanonicalRow(row, batch, profile) {
   const m = row.mappedRow;
   return {
@@ -116,7 +88,9 @@ function buildCanonicalRow(row, batch, profile) {
     sourceSystem: m.source_system,
     sourceSheet: m.source_sheet,
     sourceRowNumber: m.source_row_number,
-    reportDate: m.report_date,
+    periodStart: m.period_start, periodEnd: m.period_end, reportingGrain: m.reporting_grain,
+    dataQualityStatus: m.data_quality_status,
+    ingestionStatus: row.classification === IMPORT_ROW_CLASSIFICATIONS.DUPLICATE_ROW ? "DUPLICATE" : "ACCEPTED",
     agentNameRaw: m.agent_name_raw,
     sourceAgentKey: m.source_agent_key,
     sibsId: m.sibs_id,
@@ -124,7 +98,6 @@ function buildCanonicalRow(row, batch, profile) {
     mappingMethod: m.mapping_method,
     skillNameRaw: m.skill_name_raw,
     countryRegion: m.country_region,
-    taskOrderId: m.task_order_id,
     answeredCalls: m.answered_calls,
     totalTalkingSeconds: m.total_talking_seconds,
     totalHoldSeconds: m.total_hold_seconds,
@@ -159,7 +132,9 @@ export async function processAgentPerformanceBySkillWorkbook({
   onProgress,
 }) {
   const startedAt = Date.now();
-  const reportDate = reportDateFrom || reportDateTo || null;
+  if (!classifyPeriod(reportDateFrom,reportDateTo)) throw new Error("A valid reporting date range is required for Agent Performance By Skill.");
+  await assertNoLegacySkillOverlap(reportDateFrom,reportDateTo);
+  const overlappingPeriod = await hasOverlappingSkillPeriod(reportDateFrom,reportDateTo,"HERODASH");
   const preparedRows = [];
   const identitiesByKey = new Map();
   const taskOrderResolver = await createAgentPerformanceBySkillTaskOrderResolver();
@@ -173,7 +148,7 @@ export async function processAgentPerformanceBySkillWorkbook({
       const mapped = mapAgentPerformanceBySkillRow(sourceRow.rowJson, {
         sheetName: sheet.sheetName,
         excelRowNumber: sourceRow.excelRowNumber,
-        reportDate,
+        reportDateFrom, reportDateTo, durationCell: name => durationCell(workbook,sheet.sheetName,sourceRow.excelRowNumber,headers,name),
       });
       const identity = mapAgentPerformanceBySkillIdentity(sourceRow.rowJson);
       if (identity.agentName) {
@@ -184,7 +159,6 @@ export async function processAgentPerformanceBySkillWorkbook({
   }
 
   const identityResolver = await createBulkAgentIdentityResolver([...identitiesByKey.values()], { matchMode: AGENT_IDENTITY_MATCH_MODES.AGENT_NAME_ONLY, allowKronosNameFallback: true });
-  const matchedSibsIds = [];
 
   for (const row of preparedRows) {
     const identityMatch = identityResolver.resolve(row.identity);
@@ -192,25 +166,14 @@ export async function processAgentPerformanceBySkillWorkbook({
     row.mappedRow.sibs_id = identityMatch.matchStatus === AGENT_MAPPING_STATUSES.MATCHED ? identityMatch.employee?.employeeUid || null : null;
     row.mappedRow.mapping_status = identityMatch.matchStatus || "UNMATCHED";
     row.mappedRow.mapping_method = identityMatch.matchMethod || null;
-    if (row.mappedRow.sibs_id) matchedSibsIds.push(row.mappedRow.sibs_id);
 
     const taskResolution = taskOrderResolver.resolve(row.mappedRow.skill_name_raw);
     row.taskResolution = taskResolution;
-    if (taskResolution.status === "MATCHED") {
-      row.mappedRow.task_order_id = taskResolution.taskOrderId;
-      row.mappedRow.country_region = taskResolution.country;
-    }
+    row.mappedRow.country_region = taskResolution.country || null;
+    row.mappedRow.data_quality_status = !taskResolution.country ? "COUNTRY_UNRESOLVED" : taskResolution.status === "CONFLICT" ? "SCOPE_UNRESOLVED" : "VALID";
   }
 
-  const scopeIndex = buildScopeIndex(await findScopeAssignmentsByEmployeeUids(matchedSibsIds));
   for (const row of preparedRows) {
-    row.employeeScopeTaskOrders = row.mappedRow.sibs_id ? applicableTaskOrders(scopeIndex, row.mappedRow.sibs_id, reportDate) : [];
-    row.hasEmployeeTaskOrderMismatch = Boolean(
-      row.mappedRow.sibs_id &&
-      row.mappedRow.task_order_id &&
-      row.employeeScopeTaskOrders.length &&
-      !row.employeeScopeTaskOrders.includes(row.mappedRow.task_order_id)
-    );
     const validation = validateCanonicalAgentPerformanceBySkillRow(row.mappedRow, { taskResolution: row.taskResolution });
     row.validationErrors = validation.errors;
     row.isValid = row.conversionErrors.length === 0 && validation.errors.length === 0;
@@ -219,13 +182,14 @@ export async function processAgentPerformanceBySkillWorkbook({
   }
 
   const validHashes = [...new Set(preparedRows.filter((row) => row.isValid).map((row) => row.rowHash))];
-  const existingRows = await findAgentPerformanceBySkillByIdentityHashes(validHashes);
+  const existingRows = await findAgentPerformanceBySkillByIdentityHashes(validHashes,batch.id);
   const classifiedRows = classifyPreparedChunkRows({ rows: preparedRows, existingByHash: mapRowsByHash(existingRows), seenRows: new Map() });
 
   for (const sheet of workbookValidation.sheets || []) {
     const sheetRows = classifiedRows.filter((row) => row.sheet.sheetName === sheet.sheetName);
     if (!sheetRows.length) continue;
-    await insertRawImportRows(sheetRows.map((row) => ({
+    for(let i=0;i<sheetRows.length;i+=500){const chunk=sheetRows.slice(i,i+500);
+    await insertRawImportRows(chunk.map((row) => ({
       batchId: batch.id,
       sheetName: sheet.sheetName,
       excelRowNumber: row.excelRowNumber,
@@ -234,18 +198,21 @@ export async function processAgentPerformanceBySkillWorkbook({
       rowHash: row.rowHash,
       validationStatus: rawStatus(row.classification),
     })));
-    const rawRows = await getRawImportRowsByBatchSheetRowNumbers(batch.id, sheet.sheetName, sheetRows.map((row) => row.excelRowNumber));
+    const rawRows = await getRawImportRowsByBatchSheetRowNumbers(batch.id, sheet.sheetName, chunk.map((row) => row.excelRowNumber));
     const byNumber = mapRawRowsByExcelNumber(rawRows);
-    for (const row of sheetRows) row.rawRowId = byNumber.get(Number(row.excelRowNumber))?.id || null;
+    for(const row of chunk){row.rawRowId=byNumber.get(Number(row.excelRowNumber))?.id||null;if(!row.rawRowId)throw new Error("Missing raw row provenance");}
+    }
   }
 
   const newRows = classifiedRows.filter((row) => row.classification === IMPORT_ROW_CLASSIFICATIONS.NEW);
   if (newRows.length) await insertAgentPerformanceBySkillRowsWithDuplicateProtection(newRows.map((row) => buildCanonicalRow(row, batch, profile)));
-  const storedRows = newRows.length ? await findAgentPerformanceBySkillByIdentityHashes(validHashes) : existingRows;
+  const storedRows = newRows.length ? await findAgentPerformanceBySkillByIdentityHashes(validHashes,batch.id) : existingRows;
   const finalRows = reconcileClassificationsWithStoredRows({ rows: classifiedRows, storedByHash: mapRowsByHash(storedRows), batchId: batch.id });
 
+  const duplicates=finalRows.filter(row=>row.classification===IMPORT_ROW_CLASSIFICATIONS.DUPLICATE_ROW);
+  if(duplicates.length) await insertAgentPerformanceBySkillRowsWithDuplicateProtection(duplicates.map(row=>buildCanonicalRow(row,batch,profile)));
   const statusUpdates = finalRows.filter((row) => row.classification !== IMPORT_ROW_CLASSIFICATIONS.INVALID).map((row) => ({ rawRowId: row.rawRowId, validationStatus: row.classification === IMPORT_ROW_CLASSIFICATIONS.NEW ? "PROCESSED" : rawStatus(row.classification) })).filter((row) => row.rawRowId);
-  if (statusUpdates.length) await updateRawImportValidationStatuses(statusUpdates);
+  for(let i=0;i<statusUpdates.length;i+=500) await updateRawImportValidationStatuses(statusUpdates.slice(i,i+500));
 
   const errors = [];
   for (const row of finalRows) {
@@ -267,13 +234,15 @@ export async function processAgentPerformanceBySkillWorkbook({
       errors.push(employeeWarning(row, context));
       counters.warningRows += 1;
     }
-    if (row.hasEmployeeTaskOrderMismatch) {
-      errors.push(employeeTaskOrderMismatchWarning(row, context));
+    if (row.mappedRow.data_quality_status !== "VALID") {
+      errors.push({...context, severity:"WARNING", errorType:"TASK_ORDER_MAPPING", errorCode:row.mappedRow.data_quality_status, columnName:"Skill", rawValue:row.mappedRow.skill_name_raw, errorMessage:"Country or scope unresolved; original skill and performance preserved.", existingRowId:null});
       counters.warningRows += 1;
     }
   }
-  if (errors.length) await insertImportErrors(errors);
+  for(let i=0;i<errors.length;i+=500) await insertImportErrors(errors.slice(i,i+500));
   updateCounters(counters, finalRows);
+  for(const sheet of workbookValidation.sheets||[])sheet.coverage={requestedFrom:reportDateFrom,requestedTo:reportDateTo,observedFrom:null,observedTo:null,status:"UNKNOWN",reportingGrain:classifyPeriod(reportDateFrom,reportDateTo)};
+  if(overlappingPeriod){await insertImportErrors([{batchId:batch.id,rawRowId:null,sheetName:null,excelRowNumber:null,severity:"WARNING",errorType:"SOURCE_DATA",errorCode:"OVERLAPPING_REPORT_PERIOD",columnName:null,rawValue:`${reportDateFrom} to ${reportDateTo}`,errorMessage:"Overlapping aggregate periods retained independently. Do not sum overlapping periods.",existingRowId:null}]);counters.warningRows+=1;}
 
   onProgress?.({ stage: "processing", percent: 90, processedRows: finalRows.length, totalRows: finalRows.length, message: "Agent Performance By Skill records processed." });
   return { processorTotalMs: Date.now() - startedAt, processedRows: finalRows.length, processedChunks: finalRows.length ? 1 : 0, ...identityResolver.stats };

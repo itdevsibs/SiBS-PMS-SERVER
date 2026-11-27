@@ -400,6 +400,7 @@ export async function uploadUsVisaImport(req, res) {
     return res.status(200).json({
       success: true,
       batch: pickBatchResponse(result.batch, await getImportIssueSummaryByBatchId(result.batch.id), result.emailMetrics),
+      ...(result.workbookValidation?.sheets?.some(sheet=>sheet.coverage) ? { sheetCoverage: result.workbookValidation.sheets.map(sheet=>({sheetName:sheet.sheetName,dataGrain:sheet.dataGrain,...sheet.coverage})) } : {}),
     });
   } catch (error) {
     console.error("POST /api/us-visa/imports error:", {
@@ -634,10 +635,21 @@ export async function getUsVisaImportRawData(req, res) {
       isAgentLevel || isCallReport || isChatReport || isAgentOccupancy ||
       isEmailRawData || isQualityAudit || isAgentActivity || isAgentPerformanceBySkill ||
       isDocumentedCalls;
+    // 2. Get available sheets for this batch
+    const [sheetRows] = await pmsDb.query(
+      `SELECT DISTINCT sheet_name FROM ${pmsTables.usVisaRawImportRows} WHERE batch_id = ? ORDER BY sheet_name ASC`,
+      [batch.id],
+    );
+    const sheets = sheetRows.map((r) => r.sheet_name).filter(Boolean);
+    const selectedSheet =
+      req.query.sheet && sheets.includes(req.query.sheet)
+        ? req.query.sheet
+        : sheets[0] || "Sheet1";
+
     const mappingTable = isDocumentedCalls
       ? pmsTables.usVisaRawDocumentedCalls
       : isAgentActivity
-      ? pmsTables.usVisaRawAgentActivity
+      ? (profileCode === "HERODASH_AGENT_LOGIN_LOGOUT" || /^login details$/i.test(selectedSheet.trim()) ? pmsTables.usVisaRawAgentLoginSessions : /^system auto-pauses$/i.test(selectedSheet.trim()) ? pmsTables.usVisaRawAgentSystemAutoPauses : pmsTables.usVisaRawAgentActivity)
       : isAgentPerformanceBySkill
         ? pmsTables.usVisaRawAgentPerformanceBySkill
       : isCallReport
@@ -679,17 +691,6 @@ export async function getUsVisaImportRawData(req, res) {
       "r.validation_status NOT IN ('DUPLICATE', 'INVALID')";
     const isSibsSql = `${isEligibleForEmployeeClassification} AND ${mappingStatusSql} = 'MATCHED'`;
     const isNonSibsSql = `${isEligibleForEmployeeClassification} AND ${mappingStatusSql} IS NOT NULL AND ${mappingStatusSql} <> 'MATCHED'`;
-
-    // 2. Get available sheets for this batch
-    const [sheetRows] = await pmsDb.query(
-      `SELECT DISTINCT sheet_name FROM ${pmsTables.usVisaRawImportRows} WHERE batch_id = ? ORDER BY sheet_name ASC`,
-      [batch.id],
-    );
-    const sheets = sheetRows.map((r) => r.sheet_name).filter(Boolean);
-    const selectedSheet =
-      req.query.sheet && sheets.includes(req.query.sheet)
-        ? req.query.sheet
-        : sheets[0] || "Sheet1";
 
     // 3. Pagination, Search & SIBS filter
     const isExport = req.query.exportAll === "true" || req.query.isExport === "true";

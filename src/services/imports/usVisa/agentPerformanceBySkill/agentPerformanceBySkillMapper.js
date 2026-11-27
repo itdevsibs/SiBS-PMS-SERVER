@@ -1,9 +1,10 @@
 // Maps HeroDash Agent Performance By Skill rows into canonical storage.
 import {
-  toDurationSecondsValue,
   toIntegerValue,
   toStringValue,
 } from "../../shared/valueConversionService.js";
+
+import { durationForCell, classifyPeriod } from "../agentActivity/activitySourceValues.js";
 
 function normalizeHeader(value) {
   return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
@@ -40,9 +41,9 @@ function getInteger(sourceRow, candidates, errors, fieldName) {
   return result.value;
 }
 
-function getDuration(sourceRow, candidates, errors, fieldName) {
+function getDuration(sourceRow, candidates, errors, fieldName, options) {
   const found = findValue(sourceRow, candidates);
-  const result = toDurationSecondsValue(found.value);
+  const result = durationForCell(found.value, options.durationCell?.(found.key));
   if (!result.ok) {
     errors.push({
       fieldName,
@@ -74,7 +75,9 @@ export function mapAgentPerformanceBySkillRow(sourceRow = {}, options = {}) {
       source_system: "HERODASH",
       source_sheet: options.sheetName || "Sheet1",
       source_row_number: options.excelRowNumber || null,
-      report_date: options.reportDate || null,
+      period_start: options.reportDateFrom || null,
+      period_end: options.reportDateTo || null,
+      reporting_grain: classifyPeriod(options.reportDateFrom, options.reportDateTo),
       agent_name_raw: getString(sourceRow, ["Agent Name", "Agent name", "Agent"]),
       source_agent_key: getString(sourceRow, ["Agent Name", "Agent name", "Agent"]),
       sibs_id: null,
@@ -82,16 +85,16 @@ export function mapAgentPerformanceBySkillRow(sourceRow = {}, options = {}) {
       mapping_method: null,
       skill_name_raw: getString(sourceRow, ["Skill", "Skill Name"]),
       country_region: null,
-      task_order_id: null,
+      data_quality_status: "VALID",
       answered_calls: getInteger(sourceRow, ["Answered calls", "Answered Calls"], conversionErrors, "answered_calls"),
-      total_talking_seconds: getDuration(sourceRow, ["Total talking time", "Total Talking Time"], conversionErrors, "total_talking_seconds"),
-      total_hold_seconds: getDuration(sourceRow, ["Total hold time", "Total Hold Time"], conversionErrors, "total_hold_seconds"),
-      total_wrapup_seconds: getDuration(sourceRow, ["Total wrap-up time", "Total wrap up time", "Total Wrap-up Time"], conversionErrors, "total_wrapup_seconds"),
-      total_handling_seconds: getDuration(sourceRow, ["Total handling time", "Total Handling Time"], conversionErrors, "total_handling_seconds"),
-      avg_talking_seconds: getDuration(sourceRow, ["Average talking time", "Average Talking Time"], conversionErrors, "avg_talking_seconds"),
-      avg_wrapup_seconds: getDuration(sourceRow, ["Average wrap-up time", "Average wrap up time", "Average Wrap-up Time"], conversionErrors, "avg_wrapup_seconds"),
-      avg_hold_seconds: getDuration(sourceRow, ["Average hold time", "Average Hold Time"], conversionErrors, "avg_hold_seconds"),
-      avg_handling_seconds: getDuration(sourceRow, ["Average handing time", "Average handling time", "Average Handling Time"], conversionErrors, "avg_handling_seconds"),
+      total_talking_seconds: getDuration(sourceRow, ["Total talking time", "Total Talking Time"], conversionErrors, "total_talking_seconds", options),
+      total_hold_seconds: getDuration(sourceRow, ["Total hold time", "Total Hold Time"], conversionErrors, "total_hold_seconds", options),
+      total_wrapup_seconds: getDuration(sourceRow, ["Total wrap-up time", "Total wrap up time", "Total Wrap-up Time"], conversionErrors, "total_wrapup_seconds", options),
+      total_handling_seconds: getDuration(sourceRow, ["Total handling time", "Total Handling Time"], conversionErrors, "total_handling_seconds", options),
+      avg_talking_seconds: getDuration(sourceRow, ["Average talking time", "Average Talking Time"], conversionErrors, "avg_talking_seconds", options),
+      avg_wrapup_seconds: getDuration(sourceRow, ["Average wrap-up time", "Average wrap up time", "Average Wrap-up Time"], conversionErrors, "avg_wrapup_seconds", options),
+      avg_hold_seconds: getDuration(sourceRow, ["Average hold time", "Average Hold Time"], conversionErrors, "avg_hold_seconds", options),
+      avg_handling_seconds: getDuration(sourceRow, ["Average handing time", "Average handling time", "Average Handling Time"], conversionErrors, "avg_handling_seconds", options),
     },
     rowJson: { ...sourceRow },
     conversionErrors,

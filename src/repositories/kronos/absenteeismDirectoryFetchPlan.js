@@ -132,14 +132,16 @@ export async function fetchLedgerScopedAbsenteeismSources({
   const started = Date.now();
   const byUid = new Map(roster.map(row => [row.employeeUid, row]));
   const matchedEmployeeCodes = [...byUid.keys()];
+  let attendanceMs=0, schedulesMs=0;
+  const timed=async (work, record)=>{const t=Date.now();try{return await work();}finally{record(Date.now()-t);}};
   const [attendance, scheduleResults] = await Promise.all([
-    fetchAttendance({ kronosAccountId, employeeUids: matchedEmployeeCodes, dateFrom, dateTo, forceRefresh }),
-    boundedMap(matchedEmployeeCodes, scheduleConcurrency, async uid => ({
+    timed(()=>fetchAttendance({ kronosAccountId, employeeUids: matchedEmployeeCodes, dateFrom, dateTo, forceRefresh }), ms=>{attendanceMs=ms;}),
+    timed(()=>boundedMap(matchedEmployeeCodes, scheduleConcurrency, async uid => ({
       uid, gyEmpId: byUid.get(uid).gyEmpId,
       ...await fetchSchedule(uid, scheduleDateFrom, scheduleDateTo, { forceRefresh }),
-    })),
+    })), ms=>{schedulesMs=ms;}),
   ]);
   assertDirectoryAttendanceIdentity(attendance.rows, byUid);
   return { byUid, attendance, scheduleResults, matchedEmployeeCodes,
-    fetchTimingMs: { directory: 0, concurrentSources: Date.now() - started, total: Date.now() - started } };
+    fetchTimingMs: { directory: 0, attendance:attendanceMs, schedules:schedulesMs, concurrentSources: Date.now() - started, total: Date.now() - started } };
 }

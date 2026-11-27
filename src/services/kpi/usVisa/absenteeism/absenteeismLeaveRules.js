@@ -34,7 +34,7 @@ export function approvedLeaveClassification(leave) {
   }
   const days = Math.round((Date.parse(`${from}T00:00:00Z`) - Date.parse(`${filed}T00:00:00Z`)) / 86400000);
   return { employeeUid: normalizeCode(leave.employee_code ?? leave.gy_emp_code), from, to,
-    planned: days >= 7, noticeCalendarDays: days };
+    planned: days >= 7, noticeCalendarDays: days, filed, approvedDate: dateOnly(leave.leave_date_approved), leaveId: leave.leave_id ?? null };
 }
 
 export function applyApprovedLeaveToAbsenteeismRows(attendanceRows = [], leaveRows = []) {
@@ -59,7 +59,7 @@ export function applyApprovedLeaveToAbsenteeismRows(attendanceRows = [], leaveRo
     const plannedLeave = matching.some((leave) => leave.planned);
     if (plannedLeave) plannedEmployeeDays += 1;
     else if (matching.length) unplannedEmployeeDays += 1;
-    return { ...row, plannedLeave, leaveClassification: plannedLeave ? "PLANNED" : matching.length ? "UNPLANNED" : null };
+    return { ...row, plannedLeave, leaveClassification: plannedLeave ? "PLANNED" : matching.length ? "UNPLANNED" : null, leaveEvidence: matching };
   });
   return { rows, plannedEmployeeDays, unplannedEmployeeDays };
 }

@@ -151,7 +151,7 @@ function buildOccupancyCacheKey({
   taskOrder,
 }) {
   return `OCCUPANCY_DASHBOARD:${JSON.stringify({
-    version: 2,
+    version: 3,
     account: "US_VISA",
     period: period || null,
     dateFrom: dateFrom || null,
@@ -176,7 +176,7 @@ async function loadOccupancyDashboard(resolved) {
   ]);
 
   return buildWfmOccupancyKpiDashboard({
-    rows,
+    rows, retainEvidence: true,
     period,
     dateFrom,
     dateTo,

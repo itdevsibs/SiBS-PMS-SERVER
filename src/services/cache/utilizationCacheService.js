@@ -129,3 +129,11 @@ export function getUtilizationCacheStats() {
     maxEntries: getUtilizationCacheMaxEntries(),
   };
 }
+
+/** Read without starting a loader or extending a source cache lifetime. */
+export function peekUtilizationCacheEntry(key) {
+  const now = Date.now();
+  const entry = cache.get(key);
+  if (!entry || entry.expiresAt <= now) { if (entry) cache.delete(key); return null; }
+  return {value:entry.value, cache:createCacheInfo("HIT",entry,now)};
+}

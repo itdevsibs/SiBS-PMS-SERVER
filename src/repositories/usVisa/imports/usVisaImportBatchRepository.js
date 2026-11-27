@@ -337,7 +337,11 @@ async function deleteEmailBatchRows(connection, batchId) {
 
 export async function deleteBatchById(batchId, { isEmail = false } = {}) {
   const connection = await pmsDb.getConnection();
+  let locked = false;
   try {
+    const [[lock]]=await connection.query("SELECT GET_LOCK(?, ?) AS acquired",["sibs:pms:us-visa:raw-import",120]);
+    if(Number(lock?.acquired)!==1) throw Object.assign(new Error("An import is running. Retry deletion after it completes."),{code:"US_VISA_IMPORT_LOCK_TIMEOUT"});
+    locked=true;
     await connection.beginTransaction();
     if (isEmail) await deleteEmailBatchRows(connection, batchId);
 
@@ -349,11 +353,30 @@ export async function deleteBatchById(batchId, { isEmail = false } = {}) {
       pmsTables.usVisaRawCalls,
       pmsTables.usVisaRawChats,
       pmsTables.usVisaRawAgentOccupancy,
+      pmsTables.usVisaRawAgentLoginSessions,
+      pmsTables.usVisaRawAgentSystemAutoPauses,
       pmsTables.usVisaRawAgentActivity,
       pmsTables.usVisaRawAgentPerformanceBySkill,
     ];
     for (const table of structuredTables) {
       try {
+        if ([pmsTables.usVisaRawAgentActivity,pmsTables.usVisaRawAgentPerformanceBySkill,pmsTables.usVisaRawAgentLoginSessions,pmsTables.usVisaRawAgentSystemAutoPauses].includes(table)) {
+          // Promote an equivalent surviving evidence copy before deleting its accepted representative.
+          // Grouping materializes the derived table to avoid MySQL target-table restrictions.
+          try {
+            await connection.query(`UPDATE ${table} d JOIN (
+              SELECT MIN(copy.id) AS keep_id
+              FROM ${table} original
+              JOIN ${pmsTables.usVisaImportBatches} owner ON owner.id=original.batch_id AND owner.status IN ('COMPLETED','COMPLETED_WITH_ERRORS')
+              JOIN ${pmsTables.usVisaRawImportRows} r1 ON r1.id=original.raw_import_row_id
+              JOIN ${pmsTables.usVisaRawImportRows} r2 ON r2.row_identity_hash=r1.row_identity_hash AND r2.batch_id<>?
+              JOIN ${table} copy ON copy.raw_import_row_id=r2.id AND copy.row_content_hash=original.row_content_hash
+              JOIN ${pmsTables.usVisaImportBatches} survivor ON survivor.id=copy.batch_id AND survivor.status IN ('COMPLETED','COMPLETED_WITH_ERRORS')
+              WHERE original.batch_id=? AND original.ingestion_status='ACCEPTED' AND copy.ingestion_status='DUPLICATE'
+              GROUP BY r1.row_identity_hash,original.row_content_hash
+            ) chosen ON d.id=chosen.keep_id SET d.ingestion_status='ACCEPTED'`,[batchId,batchId]);
+          } catch(error) {if(error?.code!=="ER_BAD_FIELD_ERROR") throw error; /* pre-migration schema */}
+        }
         await connection.query(`DELETE FROM ${table} WHERE batch_id = ?`, [batchId]);
       } catch (error) {
         // Optional import tables may not exist in older installations.
@@ -375,7 +398,7 @@ export async function deleteBatchById(batchId, { isEmail = false } = {}) {
     await connection.rollback();
     throw error;
   } finally {
-    connection.release();
+    try { if(locked) await connection.query("SELECT RELEASE_LOCK(?)",["sibs:pms:us-visa:raw-import"]); } finally {connection.release();}
   }
 }
 

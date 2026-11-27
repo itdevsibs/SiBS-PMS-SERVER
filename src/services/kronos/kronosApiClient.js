@@ -57,19 +57,31 @@ function kpiConcurrencyLimit() {
     ? configured : 3;
 }
 
-async function acquireKpiSlot() {
+// Attendance pages unblock both KPI families. Prefer them and leave over
+// the much larger schedule queue, but age waiters to avoid starvation.
+function kpiPriority(endpoint) {
+  if (endpoint === "/api/v1/employee-attendance") return 0;
+  if (endpoint === "/api/v1/leave-management") return 1;
+  return 2;
+}
+async function acquireKpiSlot(endpoint) {
   if (kpiSlots.active < kpiConcurrencyLimit()) {
     kpiSlots.active += 1;
   } else {
-    await new Promise((resolve) => kpiSlots.waiting.push(resolve));
+    await new Promise((resolve) => kpiSlots.waiting.push({resolve, queuedAt:Date.now(), priority:kpiPriority(endpoint)}));
   }
   // Ownership of the reserved slot is handed to the next waiter on release.
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    const next = kpiSlots.waiting.shift();
-    if (next) next();
+    const now = Date.now();
+    let index = kpiSlots.waiting.findIndex(waiter => now - waiter.queuedAt >= 1000);
+    if (index < 0 && kpiSlots.waiting.length) {
+      index = kpiSlots.waiting.reduce((best, waiter, i, all) => waiter.priority < all[best].priority ? i : best, 0);
+    }
+    const next = index < 0 ? null : kpiSlots.waiting.splice(index, 1)[0];
+    if (next) next.resolve();
     else kpiSlots.active -= 1;
   };
 }
@@ -78,7 +90,11 @@ async function executeRequest(endpoint, options, token) {
   const controller = new AbortController();
   // The queue covers each physical HTTP call only, not token refreshes or
   // retry backoff. A slow retry cannot monopolize the KPI request slots.
-  const releaseKpiSlot = options.kpiShared ? await acquireKpiSlot() : null;
+  const queueStartedAt = Date.now();
+  const releaseKpiSlot = options.kpiShared ? await acquireKpiSlot(endpoint) : null;
+  if (options.kpiShared && typeof options.onKpiQueueWait === "function") {
+    try { options.onKpiQueueWait(Date.now() - queueStartedAt); } catch { /* diagnostics must never block a request */ }
+  }
   const timeout = setTimeout(() => controller.abort(), kronosApiConfig.requestTimeoutMs);
 
   try {
